@@ -12,11 +12,11 @@ def main():
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
         'deploy', 'adopt', 'recover', 'rollback-release', 'publish', 'serve', 'list', 'check',
         'router-maintenance-begin', 'router-maintenance-end'])
-    parser.add_argument('--profile', choices=['daytime', 'daytime-swift'])
+    parser.add_argument('--profile', choices=['daytime'])
     parser.add_argument('--full-hash', action='store_true')
     args = parser.parse_args()
     if args.action == 'list':
-        print('primary: selected Daytime profile + Nighttime\ndaytime: original Daytime\ndaytime-swift: Swift Daytime')
+        print('primary: Daytime (160K) + Nighttime (128K)\ndaytime: original Daytime')
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check')
     controller = Controller(system=System(readonly=readonly))

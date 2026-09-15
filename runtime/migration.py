@@ -14,7 +14,7 @@ from .config import read, render, require
 from .system import atomic_json, lock, now
 from .update import Updater
 
-WRAPPERS = ['primary', 'daytime', 'daytime-swift', 'nighttime', 'daytime-256', 'nighttime-256', 'local-ai-config.sh']
+WRAPPERS = ['primary', 'daytime', 'nighttime', 'daytime-256', 'nighttime-256', 'local-ai-config.sh']
 
 
 def sha(path):

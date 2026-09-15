@@ -49,7 +49,7 @@ class UpdateTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.state = self.root / '.state'; self.state.mkdir()
         (self.root / '.env').write_text('RUNTIME_IMAGE=old-image\nKEEP_THIS=value\n')
-        self.active = {'revision': A, 'image': 'old-image', 'bundle': {'profile': 'daytime-swift'}}
+        self.active = {'revision': A, 'image': 'old-image', 'bundle': {'profile': 'daytime'}}
         atomic_json(self.state / 'active.json', self.active)
         self.h = Harness(self.root); self.u = Updater(self.root, execute=self.h)
         def export(revision):

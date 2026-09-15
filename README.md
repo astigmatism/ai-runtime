@@ -6,7 +6,6 @@ Versioned startup, launch configuration, and catalog publication for Rosalina's 
 
 | Profile | Daytime model | Context | GPU pair |
 | --- | --- | --- | --- |
-| `daytime-swift` | Swift-Qwen3.8-27B Q8 with embedded MTP3 | 128K | RTX 3090 + RTX 4080 SUPER |
 | `daytime` | Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
 
 Both include Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule.
@@ -24,10 +23,10 @@ Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials
 ### Where to change settings
 
 - `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and pinned engine identity.
-- `config/profiles/*.json`: one definition each for original Daytime, Swift Daytime, and Nighttime. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact qualified invocation and must list each effective argument once.
+- `config/profiles/*.json`: one definition each for Daytime and Nighttime. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact qualified invocation and must list each effective argument once.
 - `.state/host.json`: private host deployment settings, GPU UUIDs, model root, and router integration paths. Start with `config/host.example.json` for another machine. The migration imports Rosalina's existing settings automatically.
 
-For example, changing Swift's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
+For example, changing Daytime's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
 
 The initial implementation preserves the existing single-slot and unrestricted generation contracts. Context is limited to 163840 tokens by the current router contract. Changes outside those contracts require a coordinated router/runtime release. The status page does not select models or edit configuration. Existing SSH profile commands remain available.
 
@@ -41,7 +40,7 @@ After cutover, open `http://192.168.1.21:11436` for deployed revision, selected 
 | --- | --- |
 | `~/primary status` | Current pair, revision, and health |
 | `~/primary` | Ensure the selected pair is running |
-| `~/daytime` / `~/daytime-swift` | Select that existing profile; drain first and preserve Nighttime |
+| `~/daytime` | Ensure original Daytime is selected; drain first and preserve Nighttime |
 | `~/local-ai-config.sh list` | List supported configurations |
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |

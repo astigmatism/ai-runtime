@@ -20,7 +20,7 @@ def require(condition, message):
 
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
-    require(profile in ('daytime', 'daytime-swift'), 'Unknown daytime profile')
+    require(profile == 'daytime', 'Unknown or retired daytime profile')
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 1, 'Unsupported configuration version')
     root = Path(host['model_root'])

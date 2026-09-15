@@ -36,7 +36,7 @@ class Controller:
 
     def desired(self, profile=None):
         current = self.load('active.json', {})
-        selected = profile or current.get('bundle', {}).get('profile') or self.host.get('initial_profile', 'daytime-swift')
+        selected = profile or current.get('bundle', {}).get('profile') or self.host.get('initial_profile', 'daytime')
         return render(self.config_dir, self.host, selected)
 
     def backend_url(self, cfg):

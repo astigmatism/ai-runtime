@@ -15,8 +15,8 @@ def dispatch(argv):
         'render-runtime': 'render', 'active-check': 'inspect'}.get(action, action)
     if action not in ('list', 'render', 'inspect', 'validate', 'status', 'apply'):
         raise RuntimeError('Use list, status, apply, validate, plan, or active-check; historical restore commands are retired')
-    profile_args = ['--profile', profile] if profile in ('daytime', 'daytime-swift') else []
-    if profile not in ('primary', 'daytime', 'daytime-swift', 'nighttime', 'daytime-256', 'nighttime-256'):
+    profile_args = ['--profile', profile] if profile == 'daytime' else []
+    if profile not in ('primary', 'daytime', 'nighttime', 'daytime-256', 'nighttime-256'):
         raise RuntimeError('Unknown or retired profile')
     return [action, *profile_args]
 

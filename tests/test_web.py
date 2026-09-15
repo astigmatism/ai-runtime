@@ -11,7 +11,7 @@ from runtime.compat import dispatch
 
 class StatusTests(unittest.TestCase):
     def setUp(self):
-        self.state = {'status': {'ready': False, 'profile': 'daytime-swift'}}
+        self.state = {'status': {'ready': False, 'profile': 'daytime'}}
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(None, self.state))
         thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
         self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
@@ -37,7 +37,8 @@ class StatusTests(unittest.TestCase):
             self.assertIn(b'AI Runtime', response.read())
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
-        self.assertEqual(dispatch(['daytime-swift']), ['apply', '--profile', 'daytime-swift'])
+        self.assertEqual(dispatch(['daytime']), ['apply', '--profile', 'daytime'])
+        with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['daytime-swift'])
         self.assertEqual(dispatch(['nighttime']), ['apply'])
         self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'daytime']), ['render', '--profile', 'daytime'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['primary', 'rollback'])

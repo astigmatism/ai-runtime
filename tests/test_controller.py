@@ -79,7 +79,7 @@ class ControllerTests(unittest.TestCase):
         self.state = Path(self.tmp.name); host = copy.deepcopy(HOST)
         host['router_state_dir'] = str(self.state / 'router')
         atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
-        self.bundle = render(ROOT / 'config', host, 'daytime-swift')
+        self.bundle = render(ROOT / 'config', host, 'daytime')
         self.system = FakeSystem(self.bundle)
         self.c = Controller(ROOT / 'config', self.state, 'a' * 40, self.system)
         self.active = {'revision': 'a' * 40, 'image': 'old-image', 'bundle': self.bundle}
@@ -98,7 +98,15 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'superseded'): self.c.transition()
         self.assertEqual(self.system.events, [])
 
-    def test_profile_change_recreates_only_daytime_after_drain(self):
+    def propose_daytime_change(self):
+        proposed = copy.deepcopy(self.bundle)
+        cfg = proposed['compose']['services']['coding']
+        cfg['command'][cfg['command'].index('--threads') + 1] = '17'
+        change = patch.object(self.c, 'desired', return_value=proposed)
+        change.start(); self.addCleanup(change.stop)
+
+    def test_launch_change_recreates_only_daytime_after_drain(self):
+        self.propose_daytime_change()
         night = self.system.inspect('qwen38-nighttime')['Id']
         result = self.c.transition('daytime')
         self.assertEqual(result['changed_roles'], ['coding'])
@@ -111,6 +119,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(read(self.state / 'active.json')['bundle']['profile'], 'daytime')
 
     def test_busy_router_queue_or_direct_slot_aborts_before_recreation(self):
+        self.propose_daytime_change()
         for attribute in ['active_count', 'queued_count', 'direct_busy']:
             with self.subTest(attribute=attribute):
                 setattr(self.system, attribute, 1)
@@ -122,6 +131,7 @@ class ControllerTests(unittest.TestCase):
                 setattr(self.system, attribute, 0); self.system.events.clear()
 
     def test_failed_load_recovers_without_recreating_healthy_previous_pair(self):
+        self.propose_daytime_change()
         self.system.fail_reconcile = True
         before = {k: v['Id'] for k, v in self.system.containers.items()}
         with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('daytime')
@@ -130,6 +140,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.system.draining)
 
     def test_failed_recovery_keeps_drain_and_blocks_new_operations(self):
+        self.propose_daytime_change()
         self.system.generation_fails = True
         with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'): self.c.transition('daytime')
         self.assertTrue(self.system.draining)
@@ -149,6 +160,7 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'maintenance lock'): self.c.transition()
 
     def test_adoption_refuses_profile_mismatch(self):
+        self.propose_daytime_change()
         (self.state / 'active.json').unlink()
         with self.assertRaisesRegex(RuntimeError, 'exact match'): self.c.transition('daytime', adopt=True)
         self.assertNotIn(('drain', True), self.system.events)
@@ -186,7 +198,7 @@ class ArtifactTests(unittest.TestCase):
             root = Path(tmp); model = root / 'model.gguf'; model.write_bytes(b'good')
             host = copy.deepcopy(HOST); host['model_root'] = str(root)
             atomic_json(root / 'host.json', host)
-            bundle = render(ROOT / 'config', host, 'daytime-swift')
+            bundle = render(ROOT / 'config', host, 'daytime')
             bundle['artifacts'] = [{'source': str(model), 'bytes': 4, 'sha256': hashlib.sha256(b'good').hexdigest()}]
             c = Controller(ROOT / 'config', root, 'a' * 40, FakeSystem(bundle))
             self.assertTrue(c.validate(bundle)['all_checksums_verified'])
