@@ -46,10 +46,13 @@ class Updater:
         return self.git('rev-parse', 'HEAD')
 
     def fetch(self, before):
-        self.git('fetch', '--no-tags', REMOTE, 'refs/heads/main:refs/remotes/origin/main')
-        target = self.git('rev-parse', 'refs/remotes/origin/main')
+        prior_upstream = self.git('rev-parse', 'refs/remotes/origin/main')
+        self.git('fetch', '--no-tags', REMOTE, 'refs/heads/main')
+        target = self.git('rev-parse', 'FETCH_HEAD')
         require(re.fullmatch('[0-9a-f]{40}', target), 'Invalid release revision')
+        self.git('merge-base', '--is-ancestor', prior_upstream, target)
         self.git('merge-base', '--is-ancestor', before, target)
+        self.git('update-ref', 'refs/remotes/origin/main', target, prior_upstream)
         return target
 
     def export(self, target):

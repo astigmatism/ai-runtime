@@ -15,7 +15,7 @@ A, B = 'a' * 40, 'b' * 40
 
 class Harness:
     def __init__(self, root):
-        self.root = root; self.calls = []; self.head = A; self.remote_head = B
+        self.root = root; self.calls = []; self.head = A; self.remote_head = B; self.upstream_head = A
         self.branch = 'main'; self.upstream = 'origin/main'; self.remote = REMOTE
         self.dirty = ''; self.diverged = False; self.fail_build = False; self.fail_health = False
 
@@ -29,11 +29,13 @@ class Harness:
             ('git', 'remote', 'get-url', 'origin'): self.remote,
             ('git', 'status', '--porcelain', '--untracked-files=normal'): self.dirty,
             ('git', 'rev-parse', 'HEAD'): self.head,
-            ('git', 'rev-parse', 'refs/remotes/origin/main'): self.remote_head,
+            ('git', 'rev-parse', 'refs/remotes/origin/main'): self.upstream_head,
+            ('git', 'rev-parse', 'FETCH_HEAD'): self.remote_head,
         }
         if args in values: stdout = values[args]
         elif args[:3] == ('git', 'merge-base', '--is-ancestor'): code = int(self.diverged)
         elif args[:3] == ('git', 'merge', '--ff-only'): self.head = args[-1]
+        elif args[:3] == ('git', 'update-ref', 'refs/remotes/origin/main'): self.upstream_head = args[-2]
         elif args[:2] == ('docker', 'build'): code = int(self.fail_build)
         elif args[:3] == ('docker', 'image', 'inspect'):
             stdout = json.dumps([{'Config': {'Labels': {'org.opencontainers.image.revision': B}}}])
@@ -75,6 +77,7 @@ class UpdateTests(unittest.TestCase):
         self.h.diverged = True
         with self.assertRaisesRegex(RuntimeError, 'merge-base'): self.u.update()
         self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
+        self.assertEqual(self.h.upstream_head, A)
 
     def test_build_failure_leaves_deployed_runtime_and_source_unchanged(self):
         self.h.fail_build = True
