@@ -1,0 +1,9 @@
+*
+!runtime/
+!runtime/**
+!config/
+!config/**
+!tests/
+!tests/**
+!Dockerfile
+**/__pycache__

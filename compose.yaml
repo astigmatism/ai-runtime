@@ -1,0 +1,58 @@
+name: local-ai-runtime
+services:
+  controller:
+    image: "${RUNTIME_IMAGE:?Set the published runtime image}"
+    container_name: local-ai-runtime
+    init: true
+    restart: unless-stopped
+    user: "${RUNTIME_USER:-1000:1000}"
+    group_add:
+      - "${DOCKER_GID:?Set the host Docker socket GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    environment:
+      RUNTIME_STATE_DIR: "${RUNTIME_STATE_DIR:?Set the absolute state directory}"
+      RUNTIME_IMAGE: "${RUNTIME_IMAGE}"
+    ports:
+      - "${RUNTIME_BIND_IP:-192.168.1.21}:11436:8080"
+    networks:
+      - router
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${RUNTIME_STATE_DIR}"
+        target: "${RUNTIME_STATE_DIR}"
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MODEL_ROOT:?Set the model directory}"
+        target: "${MODEL_ROOT}"
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${ROUTER_STATE_DIR:?Set the router catalog directory}"
+        target: "${ROUTER_STATE_DIR}"
+        bind: {create_host_path: false}
+    labels:
+      io.service-portal.update.enabled: "true"
+      io.service-portal.update.script: scripts/update-and-restart.sh
+      io.service-portal.update.image: "${RUNTIME_IMAGE}"
+      io.service-portal.update.user: "${RUNTIME_USER:-1000:1000}"
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8080/healthz]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+networks:
+  router:
+    external: true
+    name: local-ai-ollama_default

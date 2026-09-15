@@ -1,0 +1,28 @@
+{
+  "model_root": "/home/operator/ai/models",
+  "router_state_dir": "/home/operator/apps/local-ai-ollama-stack/runtime/router",
+  "router_admin_url": "http://local-ai-ollama-router:11435",
+  "router_admin_header": "X-Admin-Token",
+  "uid": 1000,
+  "gid": 1000,
+  "gpu_ids": {
+    "daytime": [
+      "GPU-REPLACE-1",
+      "GPU-REPLACE-2"
+    ],
+    "nighttime": [
+      "GPU-REPLACE-1",
+      "GPU-REPLACE-2"
+    ]
+  },
+  "gpu_names": {
+    "daytime": [
+      "RTX 3090",
+      "RTX 4080 SUPER"
+    ],
+    "nighttime": [
+      "RTX 4080",
+      "RTX 3080 Ti"
+    ]
+  }
+}

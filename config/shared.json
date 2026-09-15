@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "backend_project": "local-ai-primary",
+  "network": "local-ai-ollama_default",
+  "engine": {
+    "image_id": "sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a",
+    "tag": "local/llama.cpp:qwen38-dual-8ea290247c87",
+    "revision": "8ea290247c87ced2ab245b056ffe96dbcf90d36c",
+    "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
+    "runtime_base_id": "sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9"
+  },
+  "container_defaults": {
+    "image": "local/llama.cpp:qwen38-dual-8ea290247c87",
+    "pull_policy": "never",
+    "entrypoint": [
+      "/app/llama-server"
+    ],
+    "restart": "unless-stopped",
+    "read_only": true,
+    "init": true,
+    "ulimits": {
+      "core": 0
+    },
+    "healthcheck": {
+      "test": [
+        "CMD",
+        "curl",
+        "-fsS",
+        "http://127.0.0.1:8080/health"
+      ],
+      "interval": "15s",
+      "timeout": "5s",
+      "retries": 4,
+      "start_period": "180s"
+    },
+    "logging": {
+      "driver": "json-file",
+      "options": {
+        "max-size": "25m",
+        "max-file": "3"
+      }
+    }
+  },
+  "arguments": {
+    "--model": "/weights/main.gguf",
+    "--host": "0.0.0.0",
+    "--port": "8080",
+    "--parallel": "1",
+    "--no-kv-unified": true,
+    "--kv-offload": true,
+    "--cont-batching": true,
+    "--no-context-shift": true,
+    "--cache-prompt": true,
+    "--cache-ram": "8192",
+    "--metrics": true,
+    "--props": true,
+    "--slots": true,
+    "--split-mode": "layer",
+    "--fit": "off",
+    "--tensor-split": "60,40",
+    "--load-mode": "mmap",
+    "--lazy-mode": "off",
+    "--flash-attn": "on",
+    "--cache-type-k": "q8_0",
+    "--cache-type-v": "q8_0",
+    "--jinja": true,
+    "--reasoning": "on",
+    "--reasoning-effort": "default",
+    "--reasoning-budget": "-1",
+    "--reasoning-preserve": true,
+    "--reasoning-format": "deepseek",
+    "--n-predict": "-1",
+    "--temp": "1.0",
+    "--top-p": "0.95",
+    "--top-k": "20",
+    "--min-p": "0.0",
+    "--presence-penalty": "0.0",
+    "--repeat-penalty": "1.0",
+    "--perf": true,
+    "--offline": true,
+    "--log-verbosity": "3",
+    "--mmproj": "/weights/projector.gguf",
+    "--no-mmproj-offload": true,
+    "--mmproj-device": "none"
+  },
+  "catalog_defaults": {
+    "profile": "primary",
+    "model_policy": {
+      "mode": "catalog",
+      "rewrite_requested_to_active": false,
+      "management_enabled": false
+    },
+    "keep_alive": -1,
+    "backend_kind": "llama_cpp",
+    "max_output_tokens": null,
+    "default_output_tokens": null,
+    "context_safety_reserve": 1024,
+    "mmproj_offload": "cpu",
+    "context_shift": false,
+    "global_ram_prompt_cache": true,
+    "slot_prefix_reuse": true,
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "prompt_cache_mode": "volatile_slot_lcp_and_host_ram",
+    "reasoning_policy": {
+      "schema_version": 2,
+      "default_level": "default",
+      "aliases": {
+        "none": "off",
+        "minimal": "low",
+        "high": "xhigh",
+        "max": "xhigh"
+      },
+      "boolean_true_behavior": {
+        "mode": "map",
+        "level": "default"
+      },
+      "output_limit_policy": "reject",
+      "answer_reserve": 0,
+      "reasoning_format": "deepseek",
+      "levels": {
+        "default": {
+          "enabled": true,
+          "template_effort": "default",
+          "default_output_tokens": null,
+          "max_output_tokens": null,
+          "reasoning_budget_tokens": -1
+        },
+        "off": {
+          "enabled": false,
+          "default_output_tokens": null,
+          "max_output_tokens": null
+        },
+        "low": {
+          "enabled": true,
+          "template_effort": "low",
+          "reasoning_budget_tokens": -1,
+          "default_output_tokens": null,
+          "max_output_tokens": null
+        },
+        "medium": {
+          "enabled": true,
+          "template_effort": "medium",
+          "reasoning_budget_tokens": -1,
+          "default_output_tokens": null,
+          "max_output_tokens": null
+        },
+        "xhigh": {
+          "enabled": true,
+          "template_effort": "xhigh",
+          "reasoning_budget_tokens": -1,
+          "default_output_tokens": null,
+          "max_output_tokens": null
+        }
+      }
+    },
+    "deployment_warnings": [],
+    "supported_think_levels": [
+      "default",
+      "off",
+      "low",
+      "medium",
+      "xhigh"
+    ],
+    "reasoning_effort_map": {
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "xhigh",
+      "xhigh": "xhigh",
+      "max": "xhigh",
+      "default": "default"
+    },
+    "server_default_output_tokens": -1,
+    "output_policy": "unrestricted",
+    "slot_save_path": null
+  }
+}

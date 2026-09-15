@@ -1,0 +1,147 @@
+{
+  "id": "daytime-swift",
+  "role": "coding",
+  "display_name": "Daytime-Swift",
+  "container_name": "qwen38-daytime",
+  "host_port": 18080,
+  "gpu_group": "daytime",
+  "context_tokens": 131072,
+  "argument_order": [
+    "--model",
+    "--alias",
+    "--host",
+    "--port",
+    "--ctx-size",
+    "--parallel",
+    "--kv-unified-per-slot",
+    "--no-kv-unified",
+    "--kv-offload",
+    "--cont-batching",
+    "--no-context-shift",
+    "--cache-prompt",
+    "--cache-ram",
+    "--metrics",
+    "--props",
+    "--slots",
+    "--split-mode",
+    "--fit",
+    "--n-gpu-layers",
+    "--tensor-split",
+    "--device",
+    "--load-mode",
+    "--lazy-mode",
+    "--flash-attn",
+    "--cache-type-k",
+    "--cache-type-v",
+    "--threads",
+    "--threads-batch",
+    "--batch-size",
+    "--ubatch-size",
+    "--jinja",
+    "--reasoning",
+    "--reasoning-effort",
+    "--reasoning-budget",
+    "--reasoning-preserve",
+    "--reasoning-format",
+    "--n-predict",
+    "--temp",
+    "--top-p",
+    "--top-k",
+    "--min-p",
+    "--presence-penalty",
+    "--repeat-penalty",
+    "--perf",
+    "--offline",
+    "--log-verbosity",
+    "--spec-type",
+    "--spec-draft-n-max",
+    "--spec-draft-ngl",
+    "--spec-draft-device",
+    "--spec-draft-type-k",
+    "--spec-draft-type-v",
+    "--mmproj",
+    "--no-mmproj-offload",
+    "--mmproj-device"
+  ],
+  "arguments": {
+    "--alias": "swift-qwen3.8-27b-q8_0",
+    "--n-gpu-layers": "66",
+    "--device": "CUDA1,CUDA0",
+    "--threads": "18",
+    "--threads-batch": "18",
+    "--batch-size": "2048",
+    "--ubatch-size": "512",
+    "--spec-type": "draft-mtp",
+    "--spec-draft-n-max": "3",
+    "--spec-draft-ngl": "all",
+    "--spec-draft-device": "CUDA1",
+    "--spec-draft-type-k": "q8_0",
+    "--spec-draft-type-v": "q8_0"
+  },
+  "artifacts": [
+    {
+      "path": "llm/ukisai/Swift-Qwen3.8-27B-GGUF/revisions/b12fc8f44af7bdf31a3c3309891acb345d3106a2/Swift-Qwen3.8-27B-Q8_0.gguf",
+      "target": "/weights/main.gguf",
+      "bytes": 29116389280,
+      "sha256": "83cc7e31e095fbf0a12ff8f883f97e6e399192be74244c06c470affcd1b51b70"
+    },
+    {
+      "path": "llm/ukisai/Swift-Qwen3.8-27B-GGUF/revisions/b12fc8f44af7bdf31a3c3309891acb345d3106a2/mmproj-Swift-Qwen3.8-27B-F16.gguf",
+      "target": "/weights/projector.gguf",
+      "bytes": 927606976,
+      "sha256": "daa1116c9422fa390cc8688495da0e91781f92841dfc3b31a378ff252571745a"
+    }
+  ],
+  "container": {
+    "tmpfs": [
+      "/tmp:rw,nosuid,size=512m"
+    ],
+    "networks": {
+      "router": {
+        "aliases": [
+          "llama-cpp",
+          "qwen38-coding",
+          "qwen38-daytime"
+        ]
+      }
+    },
+    "labels": {
+      "local-ai.profile": "primary",
+      "local-ai.role": "coding"
+    }
+  },
+  "catalog": {
+    "backend_url": "http://qwen38-daytime:8080",
+    "revision": "b12fc8f44af7bdf31a3c3309891acb345d3106a2",
+    "mmproj_revision": "b12fc8f44af7bdf31a3c3309891acb345d3106a2",
+    "quantization": "Q8_0",
+    "mtp": {
+      "enabled": true,
+      "type": "draft-mtp",
+      "revision": "b12fc8f44af7bdf31a3c3309891acb345d3106a2",
+      "quantization": "Q8_0",
+      "max_draft_tokens": 3,
+      "gpu_layers": "all",
+      "device": "CUDA1",
+      "key_cache_type": "q8_0",
+      "value_cache_type": "q8_0",
+      "embedded": true,
+      "artifact_target": "/weights/main.gguf"
+    },
+    "capability_profile": {
+      "name": "swift-qwen38-27b-vision-tools",
+      "text": true,
+      "streaming": true,
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "speculative": true,
+      "prompt_cache_volatile": true,
+      "prompt_cache_persistence": false
+    },
+    "aliases": [
+      "local-active",
+      "daytime-swift"
+    ]
+  }
+}

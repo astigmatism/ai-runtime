@@ -1,0 +1,40 @@
+{
+  "host": {
+    "model_root": "/models",
+    "router_state_dir": "/router",
+    "router_admin_url": "http://local-ai-ollama-router:11435",
+    "router_admin_header": "X-Admin-Token",
+    "uid": 1000,
+    "gid": 1000,
+    "gpu_ids": {
+      "daytime": [
+        "GPU-day-1",
+        "GPU-day-2"
+      ],
+      "nighttime": [
+        "GPU-night-1",
+        "GPU-night-2"
+      ]
+    },
+    "gpu_names": {
+      "daytime": [
+        "RTX 3090",
+        "RTX 4080 SUPER"
+      ],
+      "nighttime": [
+        "RTX 4080",
+        "RTX 3080 Ti"
+      ]
+    }
+  },
+  "profiles": {
+    "daytime": {
+      "compose_sha256": "98e65397cc951fa7facc2e3499fd3e0078606aab8a78b4c91950f5ef2e998b79",
+      "catalog_sha256": "0dae730beb97c28e42e7e02279c33669a3dfd789c97ae280fbb9e6ade2c3bba2"
+    },
+    "daytime-swift": {
+      "compose_sha256": "ebfc6d3aaf482ffa0ef55fe42c08da812c6957fc4f8178d0cd2d897952f31656",
+      "catalog_sha256": "e55d0d42303d2eee59578520af60705e0f6d545762cbd317e7c74587247d2009"
+    }
+  }
+}

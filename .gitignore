@@ -1,0 +1,10 @@
+.state/
+.env
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+*.tar
+*.tar.gz
+*.gguf
+*.log

@@ -1,0 +1,23 @@
+[
+  {
+    "profile": "daytime",
+    "source_compose_sha256": "91d5cabfbf32c5620aa87226e9b769a783bbd340f6d1bd02c6857a6ee1df5e6f",
+    "source_manifest_sha256": "ad49d1bad06cbb1ff76a44e5e09e9decd2caa21c9550b960654ac327d842fb84",
+    "source_qualification_sha256": "bc0347a027670fd3ea9b7b906a4efcaee2989dfa95ca26255fbac33ebbfc5f1e",
+    "import_note": "Source integrity record only; not a new performance qualification."
+  },
+  {
+    "profile": "daytime-swift",
+    "source_compose_sha256": "2a1913ecbf10499bb05a19fe7d33abe0923e8e822c0dcfdf6737681fcd2d3de0",
+    "source_manifest_sha256": "038439af508bf7800f411e1b9607b911189afe33689dc3d212075cd00955ad5a",
+    "source_qualification_sha256": "e3e2a94f5281aaba28d56e04fff4278c62931c8c4d723c8d4fbd19476e71ecc0",
+    "import_note": "Source integrity record only; not a new performance qualification."
+  },
+  {
+    "profile": "nighttime",
+    "source_compose_sha256": "2a1913ecbf10499bb05a19fe7d33abe0923e8e822c0dcfdf6737681fcd2d3de0",
+    "source_manifest_sha256": "038439af508bf7800f411e1b9607b911189afe33689dc3d212075cd00955ad5a",
+    "source_qualification_sha256": "e3e2a94f5281aaba28d56e04fff4278c62931c8c4d723c8d4fbd19476e71ecc0",
+    "import_note": "Source integrity record only; not a new performance qualification."
+  }
+]

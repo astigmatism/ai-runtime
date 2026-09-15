@@ -1,0 +1,124 @@
+{
+  "id": "nighttime",
+  "role": "everyday",
+  "display_name": "Nighttime",
+  "container_name": "qwen38-nighttime",
+  "host_port": 18081,
+  "gpu_group": "nighttime",
+  "context_tokens": 131072,
+  "argument_order": [
+    "--model",
+    "--alias",
+    "--host",
+    "--port",
+    "--ctx-size",
+    "--parallel",
+    "--kv-unified-per-slot",
+    "--no-kv-unified",
+    "--kv-offload",
+    "--cont-batching",
+    "--no-context-shift",
+    "--cache-prompt",
+    "--cache-ram",
+    "--metrics",
+    "--props",
+    "--slots",
+    "--split-mode",
+    "--fit",
+    "--n-gpu-layers",
+    "--tensor-split",
+    "--device",
+    "--load-mode",
+    "--lazy-mode",
+    "--flash-attn",
+    "--cache-type-k",
+    "--cache-type-v",
+    "--threads",
+    "--threads-batch",
+    "--batch-size",
+    "--ubatch-size",
+    "--jinja",
+    "--reasoning",
+    "--reasoning-effort",
+    "--reasoning-budget",
+    "--reasoning-preserve",
+    "--reasoning-format",
+    "--n-predict",
+    "--temp",
+    "--top-p",
+    "--top-k",
+    "--min-p",
+    "--presence-penalty",
+    "--repeat-penalty",
+    "--perf",
+    "--offline",
+    "--log-verbosity",
+    "--mmproj",
+    "--no-mmproj-offload",
+    "--mmproj-device"
+  ],
+  "arguments": {
+    "--alias": "qwen3.8-27b-abliterated-q6_k",
+    "--n-gpu-layers": "all",
+    "--device": "CUDA0,CUDA1",
+    "--threads": "4",
+    "--threads-batch": "4",
+    "--batch-size": "512",
+    "--ubatch-size": "128"
+  },
+  "artifacts": [
+    {
+      "path": "llm/windowsxp811203/Qwen3.8-27B-Abliterated-GGUF/revisions/efb07baa690a1bc7beb53ee067b4b57c7025b5e7/Qwen3.8-27B-Abliterated-Q6_K.gguf",
+      "target": "/weights/main.gguf",
+      "bytes": 22431000448,
+      "sha256": "17b864d1ff112063f4ef5f745da137eeaa9af09cb36a1f1736e24def609e96a2"
+    },
+    {
+      "path": "llm/windowsxp811203/Qwen3.8-27B-Abliterated-GGUF/revisions/efb07baa690a1bc7beb53ee067b4b57c7025b5e7/mmproj-Qwen3.8-27B-Abliterated-F16.gguf",
+      "target": "/weights/projector.gguf",
+      "bytes": 927607328,
+      "sha256": "b73b89b52c21e90468f0c61d1190cb22c3f229f9ddd2792e9eafd55302fabdd4"
+    }
+  ],
+  "container": {
+    "tmpfs": [
+      "/tmp:rw,nosuid,size=256m"
+    ],
+    "networks": {
+      "router": {
+        "aliases": [
+          "qwen38-everyday",
+          "qwen38-nighttime"
+        ]
+      }
+    },
+    "labels": {
+      "local-ai.profile": "primary",
+      "local-ai.role": "everyday"
+    }
+  },
+  "catalog": {
+    "backend_url": "http://qwen38-nighttime:8080",
+    "revision": "efb07baa690a1bc7beb53ee067b4b57c7025b5e7",
+    "quantization": "Q6_K",
+    "mtp": {
+      "enabled": false
+    },
+    "capability_profile": {
+      "name": "qwen38-27b-abliterated-vision-tools-reasoning",
+      "text": true,
+      "streaming": true,
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "speculative": false,
+      "prompt_cache_volatile": true,
+      "prompt_cache_persistence": false
+    },
+    "aliases": [
+      "nighttime"
+    ],
+    "artifact": "windowsxp811203/Qwen3.8-27B-Abliterated-GGUF Q6_K",
+    "mmproj_revision": "efb07baa690a1bc7beb53ee067b4b57c7025b5e7"
+  }
+}
