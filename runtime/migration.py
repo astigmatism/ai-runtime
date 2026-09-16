@@ -40,6 +40,14 @@ if __name__ != '__main__':
         "os.execvp('docker', ['docker', 'exec', 'local-ai-runtime', 'python3', '-m', 'runtime.compat', *args])\n"
 
 
+def legacy_deploy_guard():
+    """Retiring systemd must never re-enable the historical all-GPU launcher."""
+    return '''#!/bin/sh
+echo 'Runtime ownership moved to local-ai-runtime. Use ~/primary or the AI Runtime update control; deploy the router separately. The legacy all-GPU launcher is retired.' >&2
+exit 2
+'''
+
+
 class Migration:
     def __init__(self, root, home):
         self.root = Path(root).resolve(); self.home = Path(home).resolve()
@@ -53,6 +61,7 @@ class Migration:
             self.primary / 'profiles' / profile / name for profile in DAYTIME_PROFILES
             for name in ['compose.json', 'manifest.json', 'model-catalog.json', 'profile.json', 'qualified.json', 'artifacts.json']
         ] + [self.home / name for name in WRAPPERS] + [
+            self.home / 'apps/local-ai-ollama-stack/deploy-runtime.sh',
             self.home / '.config/systemd/user/local-ai-primary.service', self.home / 'local-ai-configs.json',
             self.home / '.local-ai-selected-profile.json']
 
@@ -140,6 +149,10 @@ class Migration:
             for name, expected in baseline['containers'].items():
                 require(json.loads(self.updater.run('docker', 'inspect', name))[0]['Id'] == expected,
                     'Migration unexpectedly recreated a backend')
+            # The old launcher's guard depends on this unit still being enabled.
+            # Replace it before disabling the unit; restore() restores its saved bytes.
+            legacy_deploy = self.home / 'apps/local-ai-ollama-stack/deploy-runtime.sh'
+            legacy_deploy.write_text(legacy_deploy_guard()); legacy_deploy.chmod(0o755)
             # The existing controller is disabled only after the new controller is healthy.
             self.updater.run('systemctl', '--user', 'disable', '--now', 'local-ai-primary.service')
             for name in WRAPPERS:

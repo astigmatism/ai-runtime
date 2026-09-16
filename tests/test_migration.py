@@ -2,12 +2,13 @@ import copy
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from runtime.config import read, render
-from runtime.migration import Migration, WRAPPERS
+from runtime.migration import Migration, WRAPPERS, legacy_deploy_guard
 from runtime.system import atomic_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,9 +46,16 @@ class MigrationTests(unittest.TestCase):
             sources = migration.tracked_sources()
             self.assertIn('daytime-27b', WRAPPERS)
             self.assertIn(migration.home / 'daytime-27b', sources)
+            self.assertIn(migration.home / 'apps/local-ai-ollama-stack/deploy-runtime.sh', sources)
             for profile in ('daytime', 'daytime-27b'):
                 self.assertIn(migration.primary / 'profiles' / profile / 'compose.json', sources)
                 self.assertIn(migration.primary / 'profiles' / profile / 'qualified.json', sources)
+
+    def test_legacy_launcher_stays_blocked_without_systemd_or_docker(self):
+        result = subprocess.run(['/bin/sh'], input=legacy_deploy_guard(), text=True,
+            capture_output=True, env={'PATH': '/nonexistent'})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('legacy all-GPU launcher is retired', result.stderr)
 
 
 if __name__ == '__main__':

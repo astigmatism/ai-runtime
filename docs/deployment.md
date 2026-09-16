@@ -40,7 +40,7 @@ The cutover:
 2. Saves private backups of the old scripts, registry, selection, and startup unit.
 3. Adopts the exact healthy pair, briefly drains accepted work for verified catalog publication, and starts the controller with a bounded health wait.
 4. Confirms both inference container IDs remain unchanged.
-5. Disables the old `local-ai-primary.service` only after the new controller is healthy.
+5. Replaces the old all-GPU deployment launcher with a refusal stub, then disables `local-ai-primary.service` only after the new controller is healthy. The old launcher previously depended on that unit's enablement for its safety guard; it must remain blocked after the unit is retired. Initial migration restoration restores its original bytes.
 6. Installs home-folder wrappers and guarded legacy entrypoints, then writes `runtime-owner.json`.
 
 The existing Service Portal server already supports the required update labels. Deploy its friendly-name mapping through its normal updater; no inference restart is involved. The controller's published HTTP port gives the portal a link, including when “Hide services without links” is enabled. The GPU containers remain hidden.
