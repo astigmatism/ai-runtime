@@ -161,8 +161,12 @@ class Updater:
                 if applied:
                     try:
                         self.candidate(image, 'rollback-release')
-                        self.compose(old_source, previous['image'], 'up', '-d', '--no-deps', '--pull', 'never',
+                        # The still-running old controller may carry an unhealthy
+                        # check from the temporary revision mismatch. Reset only
+                        # that container so Compose waits through fresh startup.
+                        self.compose(old_source, previous['image'], 'up', '-d', '--no-deps', '--force-recreate', '--pull', 'never',
                             '--wait', '--wait-timeout', '150', 'controller')
+                        self.candidate(previous['image'], 'check')
                         self.persist_image(previous['image'])
                     except BaseException as recovery:
                         raise RuntimeError(f'Update failed: {error}; recovery needs attention: {recovery}') from recovery
@@ -180,7 +184,7 @@ class Updater:
             active = read(self.state / 'active.json')
             require(active['revision'] in (job['previous'], job['target']), 'Unknown active revision; refusing recovery')
             source = self.export(active['revision'])
-            self.compose(source, active['image'], 'up', '-d', '--no-deps', '--pull', 'never',
+            self.compose(source, active['image'], 'up', '-d', '--no-deps', '--force-recreate', '--pull', 'never',
                 '--wait', '--wait-timeout', '150', 'controller')
             self.candidate(active['image'], 'check')
             self.persist_image(active['image'])

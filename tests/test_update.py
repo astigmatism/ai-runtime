@@ -18,6 +18,7 @@ class Harness:
         self.root = root; self.calls = []; self.head = A; self.remote_head = B; self.upstream_head = A
         self.branch = 'main'; self.upstream = 'origin/main'; self.remote = REMOTE
         self.dirty = ''; self.diverged = False; self.fail_build = False; self.fail_health = False
+        self.stale_old_health = False
 
     def __call__(self, args, **kw):
         args = tuple(args); self.calls.append(args)
@@ -41,6 +42,8 @@ class Harness:
             stdout = json.dumps([{'Config': {'Labels': {'org.opencontainers.image.revision': B}}}])
         elif args[:2] == ('docker', 'compose') and 'up' in args and kw['env']['RUNTIME_IMAGE'].endswith(B):
             code = int(self.fail_health)
+        elif args[:2] == ('docker', 'compose') and 'up' in args and self.stale_old_health:
+            code = int('--force-recreate' not in args)
         return SimpleNamespace(returncode=code, stdout=stdout, stderr='simulated failure' if code else '')
 
 
@@ -100,12 +103,16 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(any('down' in call or 'prune' in call or 'reset' in call for call in calls))
 
     def test_controller_health_failure_recovers_prior_release_without_rewinding_git(self):
-        self.h.fail_health = True
+        self.h.fail_health = True; self.h.stale_old_health = True
         with self.assertRaisesRegex(RuntimeError, 'compose'): self.u.update()
         self.assertIn(('candidate', 'local/ai-runtime:git-' + B, 'rollback-release'), self.h.calls)
         self.assertEqual(read(self.state / 'active.json'), self.active)
         self.assertEqual(self.h.head, A)
         self.assertEqual(read(self.state / 'update-job.json')['phase'], 'failed')
+        recovery = [x for x in self.h.calls if x[:2] == ('docker', 'compose') and '--force-recreate' in x]
+        self.assertEqual(len(recovery), 1)
+        self.assertEqual(recovery[0][-1], 'controller'); self.assertIn('--no-deps', recovery[0])
+        self.assertIn(('candidate', 'old-image', 'check'), self.h.calls)
 
     def test_no_new_revision_requires_a_healthy_runtime(self):
         self.h.remote_head = A; self.u.update()
@@ -113,6 +120,7 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(any(x[:2] == ('docker', 'build') for x in self.h.calls))
 
     def test_interrupted_controller_replacement_can_finish_without_backend_reapply(self):
+        self.h.stale_old_health = True
         atomic_json(self.state / 'active.json', {**self.active, 'revision': B, 'image': 'new-image'})
         atomic_json(self.state / 'transaction.json', {'phase': 'succeeded'})
         atomic_json(self.state / 'update-job.json', {'phase': 'controller-replacement',
@@ -121,3 +129,6 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(self.h.head, B)
         self.assertFalse(any(x[0] == 'candidate' and x[-1] == 'deploy' for x in self.h.calls))
         self.assertEqual(read(self.state / 'update-job.json')['phase'], 'succeeded')
+        recovery = next(x for x in self.h.calls if x[:2] == ('docker', 'compose') and 'up' in x)
+        self.assertIn('--force-recreate', recovery)
+        self.assertEqual(recovery[-1], 'controller')

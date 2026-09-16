@@ -62,7 +62,7 @@ cd /home/astigmatism/apps/local-ai-runtime
 scripts/recover-update.sh
 ```
 
-Recovery requires clean source and an expected revision. It reads the durable update and runtime journals, restores an interrupted runtime transaction when needed, and reconciles the controller to the recorded active image. If the candidate runtime already succeeded, it completes controller replacement and source advancement without applying the models again. If the previous runtime is restored, it keeps source changes for an explicit retry. It never discards local work.
+Recovery requires clean source and an expected revision. It reads the durable update and runtime journals, restores an interrupted runtime transaction when needed, and recreates only the controller using the recorded active image. This clears stale Docker health results from a temporary revision mismatch and applies a fresh bounded readiness wait. If the candidate runtime already succeeded, it completes controller replacement and source advancement without applying the models again. If the previous runtime is restored, it keeps source changes for an explicit retry. It never discards local work.
 
 For a runtime operation interrupted outside the portal updater:
 
