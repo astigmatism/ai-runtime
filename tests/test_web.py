@@ -38,6 +38,8 @@ class StatusTests(unittest.TestCase):
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
         self.assertEqual(dispatch(['daytime']), ['apply', '--profile', 'daytime'])
+        self.assertEqual(dispatch(['daytime-27b']), ['apply', '--profile', 'daytime-27b'])
+        self.assertEqual(dispatch(['daytime-27b', 'status']), ['status', '--profile', 'daytime-27b'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['daytime-swift'])
         self.assertEqual(dispatch(['nighttime']), ['apply'])
         self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'daytime']), ['render', '--profile', 'daytime'])

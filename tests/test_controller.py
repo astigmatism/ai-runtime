@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from runtime.config import read, render
+from runtime.config import read, render, service_engine
 from runtime.controller import Controller
 from runtime.system import atomic_json, lock, System
 
@@ -21,12 +21,15 @@ class FakeSystem:
         self.bundle = bundle; self.events = []; self.draining = False; self.reason = None
         self.active_count = 0; self.queued_count = 0; self.direct_busy = False
         self.generation_fails = False; self.fail_reconcile = False; self.serial = 0
+        self.engines = {s['engine']['tag']: s['engine'] for s in bundle['manifest']['services']}
+        shared = read(ROOT / 'config/shared.json')
+        self.engines.update({e['tag']: e for e in shared['engines'].values()})
         self.containers = {}
         for role, cfg in bundle['compose']['services'].items(): self.install(role, cfg)
 
     def install(self, role, cfg):
         self.serial += 1
-        self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.bundle['manifest']['engine']['image_id'],
+        self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.engines[cfg['image']]['image_id'],
             'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z'}, 'RestartCount': 0,
             'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'], 'User': cfg['user']},
             'HostConfig': {'ReadonlyRootfs': True, 'RestartPolicy': {'Name': 'unless-stopped'},
@@ -40,8 +43,9 @@ class FakeSystem:
     def docker(self, *args, **kwargs):
         self.events.append(('docker', args))
         if args[:2] == ('image', 'inspect'):
-            return json.dumps([{'Id': self.bundle['manifest']['engine']['image_id'],
-                'Config': {'Labels': {'org.opencontainers.image.revision': self.bundle['manifest']['engine']['revision']}}}])
+            engine = self.engines[args[2]]
+            return json.dumps([{'Id': engine['image_id'],
+                'Config': {'Labels': {'org.opencontainers.image.revision': engine['revision']}}}])
         if args[0] == 'compose' and 'up' in args:
             if self.fail_reconcile: raise RuntimeError('Simulated load failure')
             compose = read(args[args.index('-f') + 1])
@@ -89,9 +93,26 @@ class ControllerTests(unittest.TestCase):
         self.sleep = patch('runtime.controller.time.sleep'); self.sleep.start(); self.addCleanup(self.sleep.stop)
 
     def test_healthy_startup_does_not_drain_recreate_or_publish(self):
+        self.system.active_count = 1; self.system.direct_busy = True
         result = self.c.transition()
         self.assertTrue(result['already_active'])
         self.assertEqual(self.system.events, [('prepare',)])
+
+    def test_switching_engines_preserves_nighttime_and_persists_selection(self):
+        night = self.system.inspect('qwen38-nighttime')['Id']
+        result = self.c.transition('daytime-27b')
+        self.assertEqual(result['changed_roles'], ['coding'])
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+        self.assertEqual(self.c.desired()['profile'], 'daytime-27b')
+        self.assertTrue(self.c.transition()['already_active'])
+        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding'])
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+
+    def test_wrong_engine_is_detected_only_on_affected_backend(self):
+        self.system.containers['qwen38-daytime']['Image'] = service_engine(self.bundle, 'everyday')['image_id']
+        observed = self.c.observe(self.bundle)
+        self.assertIn('image', observed['coding']['differences'])
+        self.assertTrue(observed['everyday']['healthy'])
 
     def test_stale_controller_cannot_apply_old_source(self):
         self.c.revision = 'b' * 40
@@ -193,6 +214,28 @@ class ControllerTests(unittest.TestCase):
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_each_pinned_engine_is_validated_before_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); atomic_json(root / 'host.json', HOST)
+            bundle = render(ROOT / 'config', HOST, 'daytime')
+            bundle['artifacts'] = []
+            for role in ('coding', 'everyday'):
+                with self.subTest(role=role):
+                    system = FakeSystem(bundle)
+                    system.engines = copy.deepcopy(system.engines)
+                    system.engines[service_engine(bundle, role)['tag']]['image_id'] = 'wrong-image'
+                    c = Controller(ROOT / 'config', root, 'a' * 40, system)
+                    with self.assertRaisesRegex(RuntimeError, role + ': pinned inference engine'):
+                        c.validate(bundle)
+
+    def test_previous_single_engine_manifest_remains_readable_for_recovery(self):
+        bundle = render(ROOT / 'config', HOST, 'daytime-27b')
+        engine = service_engine(bundle, 'coding')
+        for service in bundle['manifest']['services']: service.pop('engine')
+        bundle['manifest'].update(schema_version=1, engine=engine)
+        self.assertEqual(service_engine(bundle, 'coding'), engine)
+        self.assertEqual(service_engine(bundle, 'everyday'), engine)
+
     def test_same_size_change_invalidates_cached_checksum(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); model = root / 'model.gguf'; model.write_bytes(b'good')

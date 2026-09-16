@@ -2,6 +2,8 @@
 
 ## Initial staging: no production service changes
 
+The current source targets Flash-Next `daytime` (128K), saved `daytime-27b` (160K), and unchanged Nighttime (128K). Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
+
 Run on Rosalina as the existing deployment user after the repository is published:
 
 ```sh
@@ -18,11 +20,13 @@ scripts/migrate.sh inspect
 
 `inspect` runs a disposable image against read-only state/model/catalog mounts. The inspection code rejects Docker or HTTP mutations. It hashes each selected model artifact, verifies engine identity and live arguments, checks both slots, and records `.state/inspection.json`. It does not generate text, drain requests, publish a catalog, or restart anything. The resulting checksum receipts can be reused if file fingerprints remain unchanged.
 
+Full hashing of Flash-Next reads all 33 weight shards plus its projector and draft. Schedule this disk-intensive verification when it will not compete with production work. Lightweight read-only inspection without `--full-hash` checks existing receipts, artifact sizes, per-service engine identities, arguments, mounts, health, and slot capacity; it cannot certify new checksums or substitute for the migration inspection gate. Importing historical hashes never creates a verification or performance-qualification receipt.
+
 The status page and portal entry start during cutover, not during staging. Never publish `.state/`, `.env`, historical rollback directories, or raw production logs.
 
 ## Cutover: requires its own production authorization
 
-Before cutover, review the inspection report, publish the Service Portal friendly-name change, and publish the router integration that respects `runtime-owner.json`. A controller image/source revision mismatch or any change to the inspected legacy files/backend identities stops the migration before cutover.
+Before cutover, review the inspection report, publish the Service Portal friendly-name change, and publish the router integration that respects `runtime-owner.json`. A controller image/source revision mismatch or any change to the inspected legacy files/backend identities stops the migration before cutover. Both saved profile directories and the `daytime-27b` wrapper are included in the migration baseline and backup. If generations must remain uninterrupted, defer cutover: it temporarily pauses new router admissions even when backend settings are unchanged.
 
 ```sh
 cd /home/astigmatism/apps/local-ai-runtime

@@ -1,16 +1,27 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "backend_project": "local-ai-primary",
   "network": "local-ai-ollama_default",
-  "engine": {
-    "image_id": "sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a",
-    "tag": "local/llama.cpp:qwen38-dual-8ea290247c87",
-    "revision": "8ea290247c87ced2ab245b056ffe96dbcf90d36c",
-    "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
-    "runtime_base_id": "sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9"
+  "engines": {
+    "qwen38-dual": {
+      "image_id": "sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a",
+      "tag": "local/llama.cpp:qwen38-dual-8ea290247c87",
+      "revision": "8ea290247c87ced2ab245b056ffe96dbcf90d36c",
+      "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
+      "runtime_base_id": "sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9"
+    },
+    "flash-next-mtp": {
+      "repository": "https://github.com/ggml-org/llama.cpp.git",
+      "revision": "d1a92352cbd417fd840b4e765c0b82f5fe3d1d89",
+      "image_id": "sha256:eef9b614dd6e715ecada157b2d1b1c4cc76cbd0a2bf4f17361294e070d1449ad",
+      "cuda_architectures": [
+        "86",
+        "89"
+      ],
+      "tag": "local/llama.cpp:flash-next-mtp-d1a92352c-86-89"
+    }
   },
   "container_defaults": {
-    "image": "local/llama.cpp:qwen38-dual-8ea290247c87",
     "pull_policy": "never",
     "entrypoint": [
       "/app/llama-server"
@@ -42,7 +53,6 @@
     }
   },
   "arguments": {
-    "--model": "/weights/main.gguf",
     "--host": "0.0.0.0",
     "--port": "8080",
     "--parallel": "1",
@@ -56,10 +66,7 @@
     "--props": true,
     "--slots": true,
     "--split-mode": "layer",
-    "--fit": "off",
-    "--tensor-split": "60,40",
     "--load-mode": "mmap",
-    "--lazy-mode": "off",
     "--flash-attn": "on",
     "--cache-type-k": "q8_0",
     "--cache-type-v": "q8_0",
@@ -79,9 +86,9 @@
     "--perf": true,
     "--offline": true,
     "--log-verbosity": "3",
-    "--mmproj": "/weights/projector.gguf",
     "--no-mmproj-offload": true,
-    "--mmproj-device": "none"
+    "--mmproj-device": "none",
+    "--fit": "off"
   },
   "catalog_defaults": {
     "profile": "primary",
@@ -156,7 +163,6 @@
         }
       }
     },
-    "deployment_warnings": [],
     "supported_think_levels": [
       "default",
       "off",

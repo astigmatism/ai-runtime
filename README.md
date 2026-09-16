@@ -6,11 +6,14 @@ Versioned startup, launch configuration, and catalog publication for Rosalina's 
 
 | Profile | Daytime model | Context | GPU pair |
 | --- | --- | --- | --- |
-| `daytime` | Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
+| `daytime` | Qwen3.8-Flash-Next AtomicChat AD-4.27bpw-Q4_K_M-M64, shared Q4_K_M MTP2 | 128K | RTX 3090 + RTX 4080 SUPER |
+| `daytime-27b` | Saved Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
 
 Both include Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule.
 
-The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and the pinned llama.cpp image. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
+The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Flash-Next uses revision `d1a92352cbd417fd840b4e765c0b82f5fe3d1d89`; Nighttime and the saved 27B profile use `8ea290247c87ced2ab245b056ffe96dbcf90d36c`. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
+
+The September 16 source refresh imports the running Flash-Next configuration exactly, including its 33 model shards, CPU/GPU tensor overrides, lazy lookup-table reads, 2048 microbatch, CPU vision projector, and MTP draft on CUDA0. It preserves the saved 27B profile and keeps Swift retired. This source refresh does not itself deploy or migrate the running host controller.
 
 ## Edit, publish, deploy
 
@@ -22,8 +25,8 @@ Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials
 
 ### Where to change settings
 
-- `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and pinned engine identity.
-- `config/profiles/*.json`: one definition each for Daytime and Nighttime. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact qualified invocation and must list each effective argument once.
+- `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and named engine identities.
+- `config/profiles/*.json`: one definition each for Daytime, the saved 27B profile, and Nighttime. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts.
 - `.state/host.json`: private host deployment settings, GPU UUIDs, model root, and router integration paths. Start with `config/host.example.json` for another machine. The migration imports Rosalina's existing settings automatically.
 
 For example, changing Daytime's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
@@ -40,7 +43,8 @@ After cutover, open `http://192.168.1.21:11436` for deployed revision, selected 
 | --- | --- |
 | `~/primary status` | Current pair, revision, and health |
 | `~/primary` | Ensure the selected pair is running |
-| `~/daytime` | Ensure original Daytime is selected; drain first and preserve Nighttime |
+| `~/daytime` | Select Flash-Next at 128K; drain first and preserve Nighttime |
+| `~/daytime-27b` | Select the saved 27B Q8 profile at 160K; preserve Nighttime |
 | `~/local-ai-config.sh list` | List supported configurations |
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |
@@ -73,6 +77,6 @@ On an ARM development machine, use `docker buildx build --platform linux/amd64 -
 
 The runtime image includes Python, Git, Docker CLI, Buildx, and Compose. Service Portal runs the updater as the checkout owner, with the Docker socket group. The controller mounts only its state, model root (read-only), router catalog directory, and Docker socket. It does not mount the host home or manage systemd during routine updates.
 
-`.state/` contains the private router credential, host settings, selected release, verified artifact receipts, generated Compose files, operation journals, prior release source, and migration backups. It is excluded from Git and the Docker build context. The pinned inference image is an existing local artifact; ordinary updates never pull/rebuild that engine or download model weights. Retain it for recovery. Driver installation and model provisioning remain host responsibilities.
+`.state/` contains the private router credential, host settings, selected release, verified artifact receipts, generated Compose files, operation journals, prior release source, and migration backups. It is excluded from Git and the Docker build context. The pinned inference images are existing local artifacts; ordinary updates never pull/rebuild those engines or download model weights. Retain both for recovery. Driver installation and model provisioning remain host responsibilities.
 
 The router owns inference APIs, request queues, client policy, and conversation archives. Runtime owns launch definitions and catalog publication. After migration, router-only deployment uses `router-maintenance-begin`, `publish`, and `router-maintenance-end` to preserve this boundary. An interrupted router deployment keeps its reservation until the router is repaired and the end command verifies readiness.

@@ -1,6 +1,7 @@
 """Compatibility with the existing home-folder commands; executed inside the image."""
 import sys
 from .__main__ import main
+from .config import DAYTIME_PROFILES
 
 
 def dispatch(argv):
@@ -15,8 +16,8 @@ def dispatch(argv):
         'render-runtime': 'render', 'active-check': 'inspect'}.get(action, action)
     if action not in ('list', 'render', 'inspect', 'validate', 'status', 'apply'):
         raise RuntimeError('Use list, status, apply, validate, plan, or active-check; historical restore commands are retired')
-    profile_args = ['--profile', profile] if profile == 'daytime' else []
-    if profile not in ('primary', 'daytime', 'nighttime', 'daytime-256', 'nighttime-256'):
+    profile_args = ['--profile', profile] if profile in DAYTIME_PROFILES else []
+    if profile not in (*DAYTIME_PROFILES, 'primary', 'nighttime', 'daytime-256', 'nighttime-256'):
         raise RuntimeError('Unknown or retired profile')
     return [action, *profile_args]
 

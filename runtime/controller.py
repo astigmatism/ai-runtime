@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 import uuid
 
-from .config import digest, read, render, require
+from .config import digest, read, render, require, service_engine
 from .system import System, atomic_json, lock, now
 
 
@@ -43,10 +43,14 @@ class Controller:
         return 'http://' + cfg['container_name'] + ':8080'
 
     def validate(self, bundle, full_hash=False):
-        engine = bundle['manifest']['engine']
-        image = json.loads(self.system.docker('image', 'inspect', engine['tag']))[0]
-        require(image['Id'] == engine['image_id'] and image['Config']['Labels'].get(
-            'org.opencontainers.image.revision') == engine['revision'], 'Pinned inference engine identity changed')
+        images = {}
+        for role, cfg in bundle['compose']['services'].items():
+            engine = service_engine(bundle, role)
+            require(cfg['image'] == engine['tag'], role + ': inference engine tag differs from manifest')
+            image = json.loads(self.system.docker('image', 'inspect', engine['tag']))[0]
+            require(image['Id'] == engine['image_id'] and (image['Config'].get('Labels') or {}).get(
+                'org.opencontainers.image.revision') == engine['revision'], role + ': pinned inference engine identity changed')
+            images[role] = image['Id']
         network = bundle['compose']['networks']['router']['name']
         self.system.docker('network', 'inspect', network)
         cache = self.load('artifact-receipts.json', {})
@@ -74,14 +78,14 @@ class Controller:
             receipts[str(path)] = {'fingerprint': fingerprint, 'sha256': artifact['sha256'], 'verified': verified}
         if not self.system.readonly:
             self.save('artifact-receipts.json', {**cache, **receipts})
-        return {'image_id': image['Id'], 'artifacts': len(receipts),
+        return {'image_ids': images, 'artifacts': len(receipts),
             'all_checksums_verified': all(x['verified'] for x in receipts.values()), 'receipts': receipts}
 
     def observe(self, bundle):
         observed = {}
-        engine = bundle['manifest']['engine']
         network = bundle['compose']['networks']['router']['name']
         for role, cfg in bundle['compose']['services'].items():
+            engine = service_engine(bundle, role)
             ci = self.system.inspect(cfg['container_name'])
             reasons = []
             result = {'container_name': cfg['container_name'], 'healthy': False,

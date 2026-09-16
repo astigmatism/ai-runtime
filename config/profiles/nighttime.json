@@ -2,6 +2,7 @@
   "id": "nighttime",
   "role": "everyday",
   "display_name": "Nighttime",
+  "engine": "qwen38-dual",
   "container_name": "qwen38-nighttime",
   "host_port": 18081,
   "gpu_group": "nighttime",
@@ -58,13 +59,17 @@
     "--mmproj-device"
   ],
   "arguments": {
+    "--model": "/weights/main.gguf",
     "--alias": "qwen3.8-27b-abliterated-q6_k",
     "--n-gpu-layers": "all",
+    "--tensor-split": "60,40",
     "--device": "CUDA0,CUDA1",
+    "--lazy-mode": "off",
     "--threads": "4",
     "--threads-batch": "4",
     "--batch-size": "512",
-    "--ubatch-size": "128"
+    "--ubatch-size": "128",
+    "--mmproj": "/weights/projector.gguf"
   },
   "artifacts": [
     {
@@ -115,6 +120,7 @@
       "prompt_cache_volatile": true,
       "prompt_cache_persistence": false
     },
+    "deployment_warnings": [],
     "aliases": [
       "nighttime"
     ],

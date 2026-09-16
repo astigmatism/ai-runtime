@@ -19,5 +19,32 @@
     "source_manifest_sha256": "038439af508bf7800f411e1b9607b911189afe33689dc3d212075cd00955ad5a",
     "source_qualification_sha256": "e3e2a94f5281aaba28d56e04fff4278c62931c8c4d723c8d4fbd19476e71ecc0",
     "import_note": "Source integrity record only; not a new performance qualification."
+  },
+  {
+    "profile": "daytime",
+    "imported_at": "2026-09-16",
+    "source_profile": "daytime",
+    "source_compose_sha256": "acd56a1ae1bdb759cfa4613cd45a5815e200170ef69b9a7158408e89f8371b16",
+    "source_manifest_sha256": "7cc7ff6ac14c5d3779529b3dc06f071bafa1fcaac547f0126ac4b6eac56d88fb",
+    "source_qualification_sha256": "4e7e935a9e146185c65582e8124877faaffa021ba23a8abff8bb488023683f19",
+    "import_note": "Read-only import of Flash-Next migration and saved 27B profile. Existing checksum and qualification fingerprints only; no model hashing or new performance qualification performed."
+  },
+  {
+    "profile": "daytime-27b",
+    "imported_at": "2026-09-16",
+    "source_profile": "daytime-27b",
+    "source_compose_sha256": "91d5cabfbf32c5620aa87226e9b769a783bbd340f6d1bd02c6857a6ee1df5e6f",
+    "source_manifest_sha256": "ad49d1bad06cbb1ff76a44e5e09e9decd2caa21c9550b960654ac327d842fb84",
+    "source_qualification_sha256": "bc0347a027670fd3ea9b7b906a4efcaee2989dfa95ca26255fbac33ebbfc5f1e",
+    "import_note": "Read-only import of Flash-Next migration and saved 27B profile. Existing checksum and qualification fingerprints only; no model hashing or new performance qualification performed."
+  },
+  {
+    "profile": "nighttime",
+    "imported_at": "2026-09-16",
+    "source_profile": "daytime",
+    "source_compose_sha256": "acd56a1ae1bdb759cfa4613cd45a5815e200170ef69b9a7158408e89f8371b16",
+    "source_manifest_sha256": "7cc7ff6ac14c5d3779529b3dc06f071bafa1fcaac547f0126ac4b6eac56d88fb",
+    "source_qualification_sha256": "4e7e935a9e146185c65582e8124877faaffa021ba23a8abff8bb488023683f19",
+    "import_note": "Read-only import of Flash-Next migration and saved 27B profile. Existing checksum and qualification fingerprints only; no model hashing or new performance qualification performed."
   }
 ]
