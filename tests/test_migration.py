@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,38 @@ HOST = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
 
 
 class MigrationTests(unittest.TestCase):
+    def test_inspection_reuses_only_verified_unchanged_checksums(self):
+        for cached in (True, False):
+            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as tmp:
+                migration = Migration(Path(tmp) / 'repo', Path(tmp) / 'home')
+                result = {'mode': 'inspection', 'revision': 'a' * 40, 'profile': 'daytime-27b',
+                    'config_sha256': 'b' * 64, 'matches_live': True, 'router_draining': False,
+                    'active_requests': 0, 'queued_requests': 0,
+                    'validation': {'all_checksums_verified': True, 'receipts': {'model': {'verified': True}}}}
+                first = copy.deepcopy(result); first['validation']['all_checksums_verified'] = cached
+                replies = [json.dumps(first)] + ([] if cached else [json.dumps(result)])
+                metadata = [{'Config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}}]
+                with patch.object(migration.updater, 'source_preflight', return_value='a' * 40), \
+                        patch.object(migration.updater, 'run', return_value=json.dumps(metadata)), \
+                        patch.object(migration.updater, 'candidate', side_effect=replies) as candidate, \
+                        patch('builtins.print'):
+                    migration.inspection()
+                self.assertEqual(candidate.call_count, 1 if cached else 2)
+                self.assertNotIn('full_hash', candidate.call_args_list[0].kwargs)
+                if not cached: self.assertTrue(candidate.call_args_list[1].kwargs['full_hash'])
+                self.assertEqual(read(migration.state / 'inspection.json'), result)
+
+    def test_inspection_drift_fails_before_hashing_or_recording_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            migration = Migration(Path(tmp) / 'repo', Path(tmp) / 'home')
+            metadata = [{'Config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}}]
+            with patch.object(migration.updater, 'source_preflight', return_value='a' * 40), \
+                    patch.object(migration.updater, 'run', return_value=json.dumps(metadata)), \
+                    patch.object(migration.updater, 'candidate', return_value='{"matches_live": false}') as candidate:
+                with self.assertRaisesRegex(RuntimeError, 'resolve drift'): migration.inspection()
+            self.assertEqual(candidate.call_count, 1)
+            self.assertFalse((migration.state / 'inspection.json').exists())
+
     def test_changed_saved_profile_blocks_preparation_before_private_state_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve() / 'home'; root = home / 'apps/local-ai-runtime'

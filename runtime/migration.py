@@ -114,7 +114,10 @@ class Migration:
         metadata = json.loads(self.updater.run('docker', 'image', 'inspect', image))[0]
         require(metadata['Config']['Labels'].get('org.opencontainers.image.revision') == revision,
             'Inspection image does not match the published source')
-        result = json.loads(self.updater.candidate(image, 'inspect', full_hash=True, capture=True))
+        result = json.loads(self.updater.candidate(image, 'inspect', capture=True))
+        require(result['matches_live'], 'Live runtime comparison failed; resolve drift before checksum verification')
+        if not result['validation']['all_checksums_verified']:
+            result = json.loads(self.updater.candidate(image, 'inspect', full_hash=True, capture=True))
         require(result['matches_live'] and result['validation']['all_checksums_verified'],
             'Live runtime comparison or model checksum verification failed')
         atomic_json(self.state / 'inspection.json', result)
