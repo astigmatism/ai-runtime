@@ -12,7 +12,14 @@ import tarfile
 from .config import read, require
 from .system import atomic_json, lock, now
 
-REMOTE = 'https://github.com/astigmatism/local-ai-runtime.git'
+REMOTE = 'https://github.com/astigmatism/ai-runtime.git'
+# Older deployed updaters still use the former URL. Accept both checkout
+# identities during the rename, while fetching only from the canonical remote.
+LEGACY_REMOTE = 'https://github.com/astigmatism/local-ai-runtime.git'
+ACCEPTED_REMOTES = (
+    REMOTE, REMOTE[:-4], 'git@github.com:astigmatism/ai-runtime.git',
+    LEGACY_REMOTE, LEGACY_REMOTE[:-4], 'git@github.com:astigmatism/local-ai-runtime.git',
+)
 
 
 class Updater:
@@ -39,8 +46,8 @@ class Updater:
             'Refusing detached HEAD or non-main branch')
         require(self.git('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}', check=False) == 'origin/main',
             'Refusing unexpected upstream')
-        require(self.git('remote', 'get-url', 'origin') in (REMOTE, REMOTE[:-4],
-            'git@github.com:astigmatism/local-ai-runtime.git'), 'Refusing unexpected source repository')
+        require(self.git('remote', 'get-url', 'origin') in ACCEPTED_REMOTES,
+            'Refusing unexpected source repository')
         require(not self.git('status', '--porcelain', '--untracked-files=normal'),
             'Refusing a dirty checkout; local changes have been preserved')
         return self.git('rev-parse', 'HEAD')

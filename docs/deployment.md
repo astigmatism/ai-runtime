@@ -1,5 +1,7 @@
 # Deployment and recovery
 
+The source repository is now `ai-runtime`. Existing production paths and the `local-ai-runtime` container/Compose project remain intentional compatibility names. Read [rename compatibility](renaming.md) before changing an existing Git remote; the first update must use the remote accepted by the deployed updater.
+
 ## Initial staging: no production service changes
 
 The current source targets Flash-Next `daytime` (128K), saved `daytime-27b` (160K), and unchanged Nighttime (128K). Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
@@ -7,7 +9,7 @@ The current source targets Flash-Next `daytime` (128K), saved `daytime-27b` (160
 Run on Rosalina as the existing deployment user after the repository is published:
 
 ```sh
-git clone https://github.com/astigmatism/local-ai-runtime.git /home/astigmatism/apps/local-ai-runtime
+git clone https://github.com/astigmatism/ai-runtime.git /home/astigmatism/apps/local-ai-runtime
 cd /home/astigmatism/apps/local-ai-runtime
 scripts/migrate.sh prepare
 revision=$(git rev-parse HEAD)

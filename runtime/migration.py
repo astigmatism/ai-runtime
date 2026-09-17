@@ -164,7 +164,7 @@ class Migration:
                 path = self.primary / name; path.write_text(legacy_bridge(name)); path.chmod(0o755)
             (self.primary / 'manager.sh').write_text(shell_wrapper('local-ai-config.sh'))
             (self.primary / 'manager.sh').chmod(0o755)
-            atomic_json(self.primary / 'runtime-owner.json', {'repository': 'https://github.com/astigmatism/local-ai-runtime',
+            atomic_json(self.primary / 'runtime-owner.json', {'repository': 'https://github.com/astigmatism/ai-runtime',
                 'container': 'local-ai-runtime', 'state_dir': str(self.state), 'installed_at': now()})
             atomic_json(self.state / 'migration-result.json', {'status': 'succeeded', 'revision': revision,
                 'backend_ids_unchanged': baseline['containers'], 'completed_at': now()})

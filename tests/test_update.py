@@ -69,12 +69,36 @@ class UpdateTests(unittest.TestCase):
 
     def test_rejects_dirty_branch_upstream_and_remote_before_fetch_or_docker(self):
         for attribute, value in [('dirty', ' M config/shared.json'), ('branch', ''), ('branch', 'feature'),
-                ('upstream', 'elsewhere/main'), ('remote', 'https://example.com/other.git')]:
+                ('upstream', 'elsewhere/main'), ('remote', 'https://example.com/other.git'),
+                ('remote', 'https://github.com/another-owner/ai-runtime.git'),
+                ('remote', 'https://github.com/astigmatism/ai-runtime-other.git')]:
             with self.subTest(attribute=attribute, value=value):
                 original = getattr(self.h, attribute); setattr(self.h, attribute, value); self.h.calls.clear()
                 with self.assertRaises(RuntimeError): self.u.update()
                 self.assertFalse(any(x[0] == 'docker' or x[:2] == ('git', 'fetch') for x in self.h.calls))
                 setattr(self.h, attribute, original)
+
+    def test_current_and_legacy_checkout_origins_fetch_the_canonical_repository(self):
+        for slug in ('ai-runtime', 'local-ai-runtime'):
+            for remote in (f'https://github.com/astigmatism/{slug}.git',
+                    f'https://github.com/astigmatism/{slug}',
+                    f'git@github.com:astigmatism/{slug}.git'):
+                with self.subTest(remote=remote):
+                    self.h.remote = remote
+                    self.h.calls.clear()
+                    before = self.u.source_preflight()
+                    self.assertEqual(self.u.fetch(before), B)
+                    self.assertIn(('git', 'fetch', '--no-tags',
+                        'https://github.com/astigmatism/ai-runtime.git', 'refs/heads/main'), self.h.calls)
+
+    def test_legacy_checkout_update_preserves_the_existing_controller_project(self):
+        self.h.remote = 'https://github.com/astigmatism/local-ai-runtime.git'
+        self.u.update()
+        replacements = [call for call in self.h.calls if call[:2] == ('docker', 'compose') and 'up' in call]
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual(replacements[0][replacements[0].index('-p') + 1], 'local-ai-runtime')
+        self.assertEqual(replacements[0][-1], 'controller')
+        self.assertEqual(self.h.head, B)
 
     def test_rewritten_history_fails_before_build(self):
         self.h.diverged = True

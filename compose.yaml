@@ -1,3 +1,5 @@
+# Existing deployment identity: preserve controller ownership and CLI consumers.
+# The source repository is ai-runtime; see docs/renaming.md before changing this.
 name: local-ai-runtime
 services:
   controller:

@@ -2,6 +2,15 @@
 
 Versioned startup, launch configuration, and catalog publication for Rosalina's two resident llama.cpp services. The controller has a read-only status page and integrates with Service Portal's **Update and restart** action.
 
+The repository is **`ai-runtime`**, formerly `local-ai-runtime`. The application name remains **AI Runtime**. See [repository rename and compatibility](docs/renaming.md) for existing installations.
+
+```sh
+git clone https://github.com/astigmatism/ai-runtime.git
+cd ai-runtime
+```
+
+This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a read-only status page/API and a container CLI for administration.
+
 ## Current profiles
 
 | Profile | Daytime model | Context | GPU pair |
