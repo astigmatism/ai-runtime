@@ -33,6 +33,6 @@ For a replacement-disk restore, use the remote accepted by the exact source revi
 
 ## Deployment identity verified on 2026-09-16
 
-On `192.168.1.4`, the healthy `local-ai-runtime` container used image `local/ai-runtime:git-ddd2c84d257c6834ae7795440bbcb6ff0660986f`. The OCI title was already `AI Runtime`; its source label pointed to the former repository URL. All 18 runtime/config files present in the image matched that Git revision by SHA-256. The host checkout was clean at the same revision on `main`.
+On the former host address `192.168.1.21`, the healthy `local-ai-runtime` container used image `local/ai-runtime:git-ddd2c84d257c6834ae7795440bbcb6ff0660986f`. The OCI title was already `AI Runtime`; its source label pointed to the former repository URL. All 18 runtime/config files present in the image matched that Git revision by SHA-256. The host checkout was clean at the same revision on `main`. This dated observation predates the rebuild at `192.168.1.4`.
 
 This repository rename was prepared without changing or restarting the production deployment.
