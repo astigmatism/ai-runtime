@@ -102,3 +102,7 @@ It requires the initial revision/profile and healthy matching backends. It stops
 Docker owns controller/model restart supervision after cutover. The controller serves diagnostic status while waiting for Docker, backend health, the existing network, and the router. Its startup operation is idempotent. It refuses stale revisions, interrupted runtime transactions, and unfinished router maintenance.
 
 During an agreed reboot window, verify that the selected profile remains unchanged, both GPUs per backend are assigned correctly, both services pass health checks, router discovery reports the correct aliases/context, the controller becomes healthy, and DSH/Open WebUI can still reach the router. The existing network is preserved; no boot command destroys or recreates it. This test is not performed by staging or by a normal update.
+
+## Optional vision GPU
+
+See [shared vision GPU configuration](shared-vision.md) for a separately selected encoder device, CUDA ordering, memory qualification, and rollback. CPU projector placement remains the default.

@@ -28,6 +28,40 @@ def service_engine(bundle, role):
     return service.get('engine') or manifest['engine']
 
 
+def vision_devices(host, group, options):
+    """A shared encoder GPU is never a member of either exclusive text pair."""
+    vision = host.get('vision_gpu_id')
+    if vision is None:
+        return None
+    require(isinstance(vision, str) and re.fullmatch(
+        r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', vision),
+        'vision_gpu_id must be a full GPU UUID')
+    pairs = host['gpu_ids']
+    require(vision not in [gpu for pair in pairs.values() for gpu in pair],
+        'Shared vision GPU must be distinct from all text GPUs')
+    order = host.get('cuda_order', {}).get(group)
+    require(isinstance(order, list) and len(order) == 2 and len(set(order)) == 2
+        and set(order) == set(pairs[group]),
+        'cuda_order must explicitly order the two text GPU UUIDs for each group')
+    require(set(options.get('--device', '').split(',')) == {'CUDA0', 'CUDA1'},
+        'Language-model devices must remain CUDA0 and CUDA1')
+    require(len(options.get('--tensor-split', '').split(',')) == 2,
+        'Language-model tensor split must contain exactly two text GPUs')
+    if '--main-gpu' in options:
+        require(options['--main-gpu'] in ('0', '1'), 'Main GPU must remain on a text GPU')
+    if '--spec-draft-device' in options:
+        require(options['--spec-draft-device'] in ('CUDA0', 'CUDA1'),
+            'Draft model must remain on a text GPU')
+    overrides = options.get('--override-tensor', [])
+    if isinstance(overrides, str):
+        overrides = [overrides]
+    require(all(re.fullmatch(r'.+=(CPU|CUDA[01])', item) for item in overrides),
+        'Tensor overrides must target CPU or a text GPU, never the vision GPU')
+    require(options.get('--no-mmproj-offload') is True and options.get('--mmproj-device') == 'none',
+        'Profiles must retain their CPU vision defaults; configure GPU vision in host.json')
+    return [*order, vision]
+
+
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
     require(profile in DAYTIME_PROFILES, 'Unknown or retired daytime profile')
@@ -46,7 +80,13 @@ def render(config_dir, host, profile):
         require(type(ctx) is int and 0 < ctx <= 163840, 'Context must be within the current router contract: 1–163840 tokens')
         options = {**shared['arguments'], **definition['arguments'],
             '--ctx-size': str(ctx), '--kv-unified-per-slot': str(ctx)}
-        order = definition['argument_order']
+        order = list(definition['argument_order'])
+        cuda_order = vision_devices(host, definition['gpu_group'], options)
+        if cuda_order:
+            options.pop('--no-mmproj-offload')
+            options['--mmproj-offload'] = True
+            options['--mmproj-device'] = 'CUDA2'
+            order[order.index('--no-mmproj-offload')] = '--mmproj-offload'
         require(len(order) == len(set(order)) and set(order) == set(options),
             name + ': argument_order must contain every effective argument exactly once')
         for key, expected in {'--n-predict': '-1', '--reasoning-budget': '-1',
@@ -70,6 +110,8 @@ def render(config_dir, host, profile):
         require(len(devices) == 2 and all(x.startswith('GPU-') and 'REPLACE' not in x for x in devices),
             'Configure two real GPU UUIDs per group in host.json')
         gpu_ids.extend(devices)
+        text_devices = list(devices)
+        devices = [*devices, host['vision_gpu_id']] if cuda_order else devices
         mounts, targets = [], {}
         for artifact in definition['artifacts']:
             relative = Path(artifact['path'])
@@ -89,6 +131,9 @@ def render(config_dir, host, profile):
             ports=[f"127.0.0.1:{definition['host_port']}:8080"],
             deploy={'resources': {'reservations': {'devices': [{
                 'driver': 'nvidia', 'device_ids': devices, 'capabilities': ['gpu']}]}}})
+        if cuda_order:
+            cfg['environment'] = {**cfg.get('environment', {}),
+                'CUDA_VISIBLE_DEVICES': ','.join(cuda_order)}
         require(options['--model'] in targets and options['--mmproj'] in targets,
             'Model and projector arguments must reference declared artifact mounts')
         split_model = re.fullmatch(r'(.+)-(\d{5})-of-(\d{5})\.gguf', options['--model'])
@@ -107,6 +152,10 @@ def render(config_dir, host, profile):
             kv_cache={'unified': False, 'key_type': options['--cache-type-k'], 'value_type': options['--cache-type-v']},
             display_name=f"{definition['display_name']} ({ctx // 1024}K)",
             source='local-ai-runtime', updated_at=None)
+        if cuda_order:
+            entry.update(mmproj_offload='gpu', text_gpu_uuids=text_devices,
+                vision_gpu_uuid=host['vision_gpu_id'], vision_device='CUDA2',
+                vision_gpu_shared=True, cuda_visible_devices=cuda_order)
         if entry['mtp'].get('enabled'):
             target = entry['mtp'].pop('artifact_target')
             require(target == options['--spec-draft-model'] and target in targets,

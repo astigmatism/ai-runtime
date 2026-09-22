@@ -21,7 +21,7 @@ async function refresh() {
       top.append(node('h2', service.name), node('span', service.healthy ? 'Healthy' : 'Unavailable', 'indicator'));
       card.append(top, node('p', service.model, 'model-id'));
       const facts = node('dl', '');
-      for (const [label, value] of [['Context', `${(service.context_tokens / 1024).toLocaleString()}K tokens`], ['GPUs', service.gpu_names?.join(' + ') || service.gpu_ids.join(' + ')], ['Container', service.container_name], ['Running since', service.started_at ? new Date(service.started_at).toLocaleString() : '—']]) facts.append(node('dt', label), node('dd', value));
+      for (const [label, value] of [['Context', `${(service.context_tokens / 1024).toLocaleString()}K tokens`], ['Text GPUs', service.gpu_names?.join(' + ') || service.gpu_ids.join(' + ')], ['Vision', service.vision_gpu_id ? `${service.vision_gpu_name || service.vision_gpu_id} · ${service.vision_device}${service.vision_gpu_shared ? ' · shared' : ''}` : 'CPU'], ['Container', service.container_name], ['Running since', service.started_at ? new Date(service.started_at).toLocaleString() : '—']]) facts.append(node('dt', label), node('dd', value));
       card.append(facts);
       if (service.differences.length) card.append(node('p', 'Configuration differences: ' + service.differences.join(', '), 'warning'));
       el('services').append(card);

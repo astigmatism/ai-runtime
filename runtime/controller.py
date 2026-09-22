@@ -111,6 +111,13 @@ class Controller:
             expected_ids = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
             if len(requests) != 1 or requests[0]['DeviceIDs'] != expected_ids:
                 reasons.append('GPU assignment')
+            expected_cuda = cfg.get('environment', {}).get('CUDA_VISIBLE_DEVICES')
+            live_env = dict(item.split('=', 1) for item in ci['Config'].get('Env', []) if '=' in item)
+            if live_env.get('CUDA_VISIBLE_DEVICES') != expected_cuda:
+                reasons.append('CUDA device order')
+            if expected_cuda and (len(requests) != 1 or requests[0].get('Driver') != 'nvidia'
+                    or requests[0].get('Count') != 0 or requests[0].get('Capabilities') != [['gpu']]):
+                reasons.append('GPU reservation contract')
             mounts = {(x['Source'], x['Destination'], x['RW']) for x in ci['Mounts'] if x['Type'] == 'bind'}
             if mounts != {(x['source'], x['target'], False) for x in cfg['volumes']}:
                 reasons.append('model mounts')
@@ -404,7 +411,12 @@ class Controller:
             for model, service in zip(bundle['catalog']['models'], bundle['manifest']['services']):
                 live = observed[service['role']]
                 result['services'].append({'name': model['display_name'], 'model': model['model'],
-                    'context_tokens': model['context_length'], 'gpu_ids': model['gpu_uuids'],
+                    'context_tokens': model['context_length'],
+                    'gpu_ids': model.get('text_gpu_uuids', model['gpu_uuids']),
+                    'vision_gpu_id': model.get('vision_gpu_uuid'),
+                    'vision_gpu_name': self.host.get('vision_gpu_name') if model.get('vision_gpu_uuid') else None,
+                    'vision_device': model.get('vision_device', 'CPU'),
+                    'vision_gpu_shared': model.get('vision_gpu_shared', False),
                     'gpu_names': self.host.get('gpu_names', {}).get('daytime' if service['role'] == 'coding' else 'nighttime', []),
                     **live})
             router = self.admin('runtime-state')

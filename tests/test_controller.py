@@ -31,9 +31,9 @@ class FakeSystem:
         self.serial += 1
         self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.engines[cfg['image']]['image_id'],
             'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z'}, 'RestartCount': 0,
-            'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'], 'User': cfg['user']},
+            'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'], 'User': cfg['user'], 'Env': [k + '=' + v for k, v in cfg.get('environment', {}).items()]},
             'HostConfig': {'ReadonlyRootfs': True, 'RestartPolicy': {'Name': 'unless-stopped'},
-                'Init': True, 'DeviceRequests': [{'DeviceIDs': cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']}],
+                'Init': True, 'DeviceRequests': [{'Driver': 'nvidia', 'Count': 0, 'Capabilities': [['gpu']], 'DeviceIDs': cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']}],
                 'PortBindings': {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': cfg['ports'][0].split(':')[1]}]}},
             'Mounts': [{'Type': 'bind', 'Source': v['source'], 'Destination': v['target'], 'RW': False} for v in cfg['volumes']],
             'NetworkSettings': {'Networks': {'local-ai-ollama_default': {'Aliases': cfg['networks']['router']['aliases']}}}}
