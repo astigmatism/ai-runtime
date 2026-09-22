@@ -46,7 +46,7 @@ Integrity checks prove that the launch configuration, engine, and model artifact
 
 ## Status and commands
 
-After cutover, open `http://192.168.1.21:11436` for deployed revision, selected profile, model/context details, GPU assignments, readiness, request counts, and the latest deployment result. The page polls same-origin status; it never receives router credentials.
+After cutover, open `http://192.168.1.4:11436` for deployed revision, selected profile, model/context details, GPU assignments, readiness, request counts, and the latest deployment result. The page polls same-origin status; it never receives router credentials.
 
 | Command | Behavior |
 | --- | --- |

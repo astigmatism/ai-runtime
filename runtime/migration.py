@@ -96,7 +96,7 @@ class Migration:
         image = 'local/ai-runtime:git-' + revision
         env = {'RUNTIME_IMAGE': image, 'RUNTIME_STATE_DIR': str(self.state),
             'RUNTIME_USER': f"{host['uid']}:{host['gid']}", 'DOCKER_GID': str(os.stat('/var/run/docker.sock').st_gid),
-            'RUNTIME_BIND_IP': '192.168.1.21', 'MODEL_ROOT': host['model_root'], 'ROUTER_STATE_DIR': host['router_state_dir']}
+            'RUNTIME_BIND_IP': '192.168.1.4', 'MODEL_ROOT': host['model_root'], 'ROUTER_STATE_DIR': host['router_state_dir']}
         (self.root / '.env').write_text(''.join(key + '=' + shlex.quote(value) + '\n' for key, value in env.items()))
         (self.root / '.env').chmod(0o600)
         baseline = {'revision': revision, 'profile': selected, 'prepared_at': now(),
@@ -140,7 +140,7 @@ class Migration:
                 require(json.loads(self.updater.run('docker', 'inspect', name))[0]['Id'] == expected,
                     'A backend changed since inspection; re-inspect before cutover')
             with socket.socket() as probe:
-                probe.bind(('192.168.1.21', 11436))
+                probe.bind(('192.168.1.4', 11436))
             backup = self.state / 'migration-backup'
             require(not backup.exists(), 'A migration backup already exists; review recovery before retrying')
             for relative in baseline['files']:
@@ -168,7 +168,7 @@ class Migration:
                 'container': 'local-ai-runtime', 'state_dir': str(self.state), 'installed_at': now()})
             atomic_json(self.state / 'migration-result.json', {'status': 'succeeded', 'revision': revision,
                 'backend_ids_unchanged': baseline['containers'], 'completed_at': now()})
-            print('Cutover complete; backend container identities are unchanged. Status: http://192.168.1.21:11436')
+            print('Cutover complete; backend container identities are unchanged. Status: http://192.168.1.4:11436')
 
     def restore(self):
         """Undo only the initial migration while the original backend configuration still matches."""

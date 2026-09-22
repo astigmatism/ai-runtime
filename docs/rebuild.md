@@ -71,7 +71,7 @@ PY
 python3 -m runtime.recovery install-wrappers --home /home/astigmatism
 ```
 
-9. Check `http://192.168.1.21:11436/healthz`, profile/context/GPU identities, router catalog, both direct backends and a bounded request through the router. Confirm Service Portal discovers AI Runtime and its update action. Test a reboot in a maintenance window before declaring the machine recovery-tested.
+9. Check `http://192.168.1.4:11436/healthz`, profile/context/GPU identities, router catalog, both direct backends and a bounded request through the router. Confirm Service Portal discovers AI Runtime and its update action. Test a reboot in a maintenance window before declaring the machine recovery-tested.
 
 The Docker socket grants the controller and update runner host-level Docker control. Containerization makes software ownership and packaging clearer; it does not remove the need to protect that socket or back up private application data.
 
