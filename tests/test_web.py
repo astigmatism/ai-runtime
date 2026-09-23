@@ -35,6 +35,17 @@ class StatusTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + '/') as response:
             self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
             self.assertIn(b'AI Runtime', response.read())
+        with urllib.request.urlopen(self.base + '/') as response:
+            page = response.read().decode()
+        self.assertIn('id="configurations"', page)  # The available-configurations listing is served, not injected.
+        self.assertIn('id="config-list"', page)
+        self.assertNotIn('innerHTML', urllib.request.urlopen(self.base + '/app.js').read().decode())
+
+    def test_status_passes_the_configuration_registry_through_unchanged(self):
+        self.state['status']['configurations'] = {'active': 'daytime', 'selectable':
+            [{'profile': 'daytime'}, {'profile': 'daytime-27b'}], 'always_included': [{'profile': 'nighttime'}]}
+        with urllib.request.urlopen(self.base + '/api/status') as response:
+            self.assertEqual(json.load(response)['configurations'], self.state['status']['configurations'])
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
         self.assertEqual(dispatch(['daytime']), ['apply', '--profile', 'daytime'])

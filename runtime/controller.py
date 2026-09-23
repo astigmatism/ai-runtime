@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 import uuid
 
-from .config import digest, read, render, require, service_engine
+from .config import available_profiles, digest, read, render, require, service_engine
 from .system import System, atomic_json, lock, now
 
 
@@ -401,6 +401,13 @@ class Controller:
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
             'last_deployment': self.load('last-deployment.json'), 'updated_at': now()}
+        # Read-only presentation of the profile registry. It is reported before the live
+        # checks below so an unreadable definition never hides the health of the pair.
+        try:
+            result['configurations'] = {'active': bundle['profile'], **available_profiles(self.config_dir, self.host)}
+        except Exception as error:
+            result['configurations'] = {'active': bundle['profile'], 'selectable': [],
+                'always_included': [], 'error': str(error)}
         update = self.load('update-job.json')
         if update and (update.get('finished_at') or update['started_at']) > (
                 (result['last_deployment'] or {}).get('finished_at') or ''):

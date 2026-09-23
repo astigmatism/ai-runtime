@@ -37,28 +37,27 @@ Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials
 ### Where to change settings
 
 - `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and named engine identities.
-- `config/profiles/*.json`: one definition each for Daytime, the saved 27B profile, and Nighttime. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts.
+- `config/profiles/*.json`: one definition each for Daytime, the saved 27B profile, and Nighttime. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts. A profile is selectable only when its id is listed in `DAYTIME_PROFILES` (`runtime/config.py`); the status page, `~/local-ai-config.sh list`, `~/local-ai-config.sh names`, and `--profile` all read that one registry.
 - `.state/host.json`: private host deployment settings, GPU UUIDs, model root, and router integration paths. Start with `config/host.example.json` for another machine. The migration imports Rosalina's existing settings automatically.
 
 All three profiles support a shared vision GPU through Runtime's [versioned renderer and host configuration](docs/shared-vision.md). The source defines projector offload, CUDA ordering, placement validation, and catalog metadata; the host supplies hardware UUIDs. Rosalina uses the RTX 3080 as CUDA2 for vision in both backends. CPU vision remains the default when the optional setting is absent. Start with [the shared-vision host example](config/host.shared-vision.example.json) when configuring another such host; its UUIDs are synthetic placeholders, not live hardware.
 
 For example, changing Daytime's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
 
-The initial implementation preserves the existing single-slot and unrestricted generation contracts. Context is limited to 163840 tokens by the current router contract. Changes outside those contracts require a coordinated router/runtime release. The status page does not select models or edit configuration. Existing SSH profile commands remain available.
+The initial implementation preserves the existing single-slot and unrestricted generation contracts. Context is limited to 163840 tokens by the current router contract. Changes outside those contracts require a coordinated router/runtime release. The status page lists every configuration the deployed revision can apply and marks the active one; it does not select models or edit configuration. Existing SSH profile commands remain available.
 
 Integrity checks prove that the launch configuration, engine, and model artifacts agree. The short post-change generation check establishes basic operation. Neither is a new throughput benchmark, full-context qualification, or VRAM soak test. `docs/import-provenance.json` records the original import without fabricating new qualification receipts.
 
 ## Status and commands
 
-After cutover, open `http://192.168.1.4:11436` for deployed revision, selected profile, model/context details, GPU assignments, readiness, request counts, and the latest deployment result. The page polls same-origin status; it never receives router credentials.
-
+After cutover, open `http://192.168.1.4:11436` for deployed revision, selected profile, model/context details, GPU assignments, readiness, request counts, and the latest deployment result. The page also lists every configuration the deployed revision can apply — the active one plus the others, each with its model, context, pinned backend, and GPU pair — and names the host command that switches to it. The page polls same-origin status; it never receives router credentials or model paths.
 | Command | Behavior |
 | --- | --- |
 | `~/primary status` | Current pair, revision, and health |
 | `~/primary` | Ensure the selected pair is running |
 | `~/daytime` | Select Flash-Next at 128K; drain first and preserve Nighttime |
 | `~/daytime-27b` | Select the saved 27B Q8 profile at 160K; preserve Nighttime |
-| `~/local-ai-config.sh list` | List supported configurations |
+| `~/local-ai-config.sh list` | List the supported configurations, generated from the profile registry |
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |
 | `docker exec local-ai-runtime python3 -m runtime publish` | Verify and republish the selected catalog |
@@ -68,7 +67,7 @@ After cutover, open `http://192.168.1.4:11436` for deployed revision, selected p
 
 ### HTTP interface
 
-- `GET /api/status`: current revision, deployed revision, selected profile, per-service identities/readiness, maintenance counts, and deployment result.
+- `GET /api/status`: current revision, deployed revision, selected profile, per-service identities/readiness, maintenance counts, deployment result, and the profile registry (`configurations`: the active profile plus every selectable configuration and its always-paired Nighttime backend, without host paths or artifact checksums).
 - `GET /healthz`: `200 {"ready": true}` only after startup reconciliation and verification; otherwise `503`.
 - `GET /`, `/app.js`, `/style.css`: read-only status UI.
 - Mutating HTTP methods return 405. Runtime administration is available only through the container CLI and the existing Service Portal runner.

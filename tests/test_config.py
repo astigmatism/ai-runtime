@@ -5,7 +5,8 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import digest, read, render, service_engine
+from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, available_profiles, digest, read,
+    render, service_engine)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -110,3 +111,89 @@ class ConfigurationTests(unittest.TestCase):
             path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError, 'missing a declared shard'):
                 render(config, BASELINE['host'], 'daytime')
+
+
+class RegistryTests(unittest.TestCase):
+    def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
+        registry = available_profiles(ROOT / 'config', BASELINE['host'])
+        self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
+        self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
+        night = registry['always_included'][0]
+        for name in DAYTIME_PROFILES:
+            with self.subTest(profile=name):
+                entry = next(x for x in registry['selectable'] if x['profile'] == name)
+                rendered = render(ROOT / 'config', BASELINE['host'], name)
+                model = next(m for m in rendered['catalog']['models'] if m['model'] == entry['model'])
+                engine = service_engine(rendered, 'coding')
+                self.assertEqual(entry['display_name'], model['display_name'])
+                self.assertEqual(entry['context_tokens'], model['context_length'])
+                self.assertEqual(entry['engine_tag'], engine['tag'])
+                self.assertEqual(entry['backend_revision'], engine['revision'])
+                # The paired backend is identical whichever Daytime configuration is selected.
+                everyday = service_engine(rendered, 'everyday')
+                night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == night['model'])
+                self.assertEqual(night['engine_tag'], everyday['tag'])
+                self.assertEqual(night['backend_revision'], everyday['revision'])
+                self.assertEqual(night['context_tokens'], night_entry['context_length'])
+                self.assertEqual(night['display_name'], night_entry['display_name'])
+
+    def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
+        definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}
+        self.assertEqual(sorted(k for k, v in definitions.items() if v['role'] == 'coding'),
+            sorted(DAYTIME_PROFILES))  # A new profile file must be registered in DAYTIME_PROFILES.
+        selectable = [x['profile'] for x in available_profiles(ROOT / 'config')['selectable']]
+        for retired in ('daytime-swift', 'daytime-256', 'nighttime-256', 'nighttime', 'primary'):
+            self.assertNotIn(retired, selectable)
+        self.assertEqual(available_profiles(ROOT / 'config')['selectable'][0]['gpu_names'], [])
+        listed = available_profiles(ROOT / 'config', BASELINE['host'])
+        self.assertEqual(listed['selectable'][0]['gpu_names'], BASELINE['host']['gpu_names']['daytime'])
+        self.assertEqual(listed['always_included'][0]['gpu_names'], BASELINE['host']['gpu_names']['nighttime'])
+
+    def test_registry_publishes_no_host_paths_artifacts_or_checksums(self):
+        registry = available_profiles(ROOT / 'config', BASELINE['host'])
+        def check(value):
+            if isinstance(value, dict):
+                self.assertTrue({'model_path', 'mmproj_path', 'source', 'sources', 'artifacts',
+                    'mounts', 'sha256', 'bytes', 'arguments'}.isdisjoint(value))
+                for child in value.values(): check(child)
+            elif isinstance(value, list):
+                for child in value: check(child)
+            elif isinstance(value, str):
+                self.assertFalse(value.startswith('/'), value)
+        check(registry)
+        self.assertNotIn(BASELINE['host']['model_root'], json.dumps(registry))
+
+    def test_cli_list_is_generated_from_the_same_registry(self):
+        from runtime.__main__ import listed
+        lines = listed(ROOT / 'config').splitlines()
+        self.assertEqual([line.split(':')[0] for line in lines],
+            ['primary', *DAYTIME_PROFILES, NIGHTTIME_PROFILE])
+        registry = available_profiles(ROOT / 'config')
+        self.assertIn(registry['always_included'][0]['display_name'], lines[0])
+        for entry in registry['selectable'] + registry['always_included']:
+            row = next(line for line in lines if line.startswith(entry['profile'] + ':'))
+            self.assertIn(entry['display_name'], row)
+            self.assertIn(entry['model'], row)
+
+    def registry_with(self, name, mutate):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles' / (name + '.json')
+            definition = read(path)
+            if mutate is None:
+                path.write_text('{')
+            else:
+                mutate(definition); path.write_text(json.dumps(definition))
+            return available_profiles(config)
+
+    def test_registry_reports_an_unreadable_or_invalid_profile_instead_of_guessing(self):
+        with self.subTest(case='unreadable file'):
+            with self.assertRaises(json.JSONDecodeError):
+                self.registry_with('daytime-27b', None)
+        for name, mutate, expected in [
+                ('daytime', lambda definition: definition.update(engine='no-such-engine'), 'unknown engine'),
+                ('nighttime', lambda definition: definition.update(id='renamed'), 'differs from its filename'),
+                ('daytime', lambda definition: definition.update(context_tokens=262144), 'router contract')]:
+            with self.subTest(profile=name):
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    self.registry_with(name, mutate)

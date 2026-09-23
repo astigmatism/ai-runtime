@@ -1,11 +1,27 @@
 import argparse
 import json
+import os
 import signal
 import sys
 
 from .controller import Controller
 from .system import System
-from .config import DAYTIME_PROFILES
+from .config import DAYTIME_PROFILES, available_profiles
+
+
+def describe(entry, note=''):
+    return f"{entry['profile']}: {entry['display_name']} - {entry['model']}{note}"
+
+
+def listed(config_dir):
+    """The supported configurations straight from the profile registry, so the CLI, the
+    container CLI consumers, and the status page can never disagree."""
+    registry = available_profiles(config_dir)
+    night = registry['always_included'][0]
+    rows = [f"primary: the selected Daytime configuration + {night['display_name']}"]
+    rows += [describe(entry) for entry in registry['selectable']]
+    rows += [describe(entry, ' (paired with every Daytime configuration)') for entry in registry['always_included']]
+    return '\n'.join(rows)
 
 
 def main():
@@ -17,8 +33,7 @@ def main():
     parser.add_argument('--full-hash', action='store_true')
     args = parser.parse_args()
     if args.action == 'list':
-        print('primary: selected Daytime + Nighttime (128K)\n'
-            'daytime: Flash-Next (128K)\ndaytime-27b: original 27B Q8 (160K)')
+        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check')
     controller = Controller(system=System(readonly=readonly))

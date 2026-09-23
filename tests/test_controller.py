@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from runtime.config import read, render, service_engine
+from runtime.config import DAYTIME_PROFILES, read, render, service_engine
 from runtime.controller import Controller
 from runtime.system import atomic_json, lock, System
 
@@ -196,6 +196,33 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(status['ready'])
         self.assertNotIn('synthetic-token', json.dumps(status))
         self.assertNotIn('router-token', json.dumps(status))
+
+    def test_status_lists_every_configuration_and_marks_the_live_one(self):
+        configs = self.c.status()['configurations']
+        self.assertEqual(configs['active'], 'daytime')
+        self.assertEqual([x['profile'] for x in configs['selectable']], ['daytime', 'daytime-27b'])
+        self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
+        self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
+        self.assertEqual(configs['always_included'][0]['gpu_names'], HOST['gpu_names']['nighttime'])
+        self.assertNotIn('synthetic-token', json.dumps(configs))
+        self.assertNotIn(HOST['model_root'], json.dumps(configs))
+        self.c.transition('daytime-27b')
+        self.assertEqual(self.c.status()['configurations']['active'], 'daytime-27b')
+        (self.state / 'active.json').unlink()  # Before adoption nothing is live, but the registry is still listable.
+        pre_migration = self.c.status()
+        self.assertFalse(pre_migration['ready'])
+        self.assertEqual(pre_migration['configurations']['active'], 'daytime')
+        self.assertEqual(len(pre_migration['configurations']['selectable']), len(DAYTIME_PROFILES))
+
+    def test_unreadable_registry_never_hides_the_health_of_the_pair(self):
+        with patch('runtime.controller.available_profiles', side_effect=RuntimeError('registry exploded')):
+            status = self.c.status()
+        self.assertTrue(status['ready'])
+        self.assertEqual(status['configurations']['active'], 'daytime')
+        self.assertEqual(status['configurations']['selectable'], [])
+        self.assertEqual(status['configurations']['always_included'], [])
+        self.assertIn('registry exploded', status['configurations']['error'])
+        self.assertTrue(all(s['healthy'] for s in status['services']))
 
     def test_router_reservation_blocks_profile_changes_until_verified_completion(self):
         self.c.router_maintenance(True)

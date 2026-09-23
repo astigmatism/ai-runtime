@@ -6,10 +6,20 @@ import re
 from pathlib import Path
 
 DAYTIME_PROFILES = ('daytime', 'daytime-27b')
+NIGHTTIME_PROFILE = 'nighttime'
 
 
 def read(path):
     return json.loads(Path(path).read_text())
+
+
+def context_label(tokens):
+    return f'{tokens // 1024}K'
+
+
+def display_name(definition):
+    """The published display identity; the launch catalog and the status listing share it."""
+    return f"{definition['display_name']} ({context_label(definition['context_tokens'])})"
 
 
 def digest(value):
@@ -62,6 +72,38 @@ def vision_devices(host, group, options):
     return [*order, vision]
 
 
+def profile_summary(config_dir, name, shared, gpu_names=None):
+    """Public facts about one profile, derived without Docker, network, or artifact I/O.
+
+    Host paths, mount targets, and artifact checksums are deliberately absent: this is
+    published on the read-only status page for every configuration, including ones that
+    are not running.
+    """
+    definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
+    require(definition.get('id') == name, name + ': profile file id differs from its filename')
+    require(definition['engine'] in shared['engines'], name + ': unknown engine ' + str(definition['engine']))
+    tokens = definition['context_tokens']
+    require(type(tokens) is int and 0 < tokens <= 163840, 'Context must be within the current router contract: 1–163840 tokens')
+    options = {**shared['arguments'], **definition['arguments']}
+    engine = shared['engines'][definition['engine']]
+    return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
+        'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
+        'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
+        'gpu_group': definition['gpu_group'], 'gpu_names': list((gpu_names or {}).get(definition['gpu_group'], []))}
+
+
+def available_profiles(config_dir, host=None):
+    """Every configuration this revision can apply: the selectable Daytime set plus the paired Nighttime backend."""
+    config_dir = Path(config_dir)
+    shared = read(config_dir / 'shared.json')
+    require(shared['schema_version'] == 2, 'Unsupported configuration version')
+    gpu_names = (host or {}).get('gpu_names') or {}
+    def describe(name):
+        return profile_summary(config_dir, name, shared, gpu_names)
+    return {'selectable': [describe(name) for name in DAYTIME_PROFILES],
+        'always_included': [describe(NIGHTTIME_PROFILE)]}
+
+
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
     require(profile in DAYTIME_PROFILES, 'Unknown or retired daytime profile')
@@ -72,7 +114,7 @@ def render(config_dir, host, profile):
     compose = {'name': shared['backend_project'], 'services': {}, 'networks': {
         'router': {'external': True, 'name': shared['network']}}}
     models, artifacts, manifests, gpu_ids = [], {}, [], []
-    for name in (profile, 'nighttime'):
+    for name in (profile, NIGHTTIME_PROFILE):
         definition = read(config_dir / 'profiles' / (name + '.json'))
         role = definition['role']
         engine = shared['engines'][definition['engine']]
@@ -150,7 +192,7 @@ def render(config_dir, host, profile):
             backend_revision=engine['revision'], fit_target=options['--fit'],
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
             kv_cache={'unified': False, 'key_type': options['--cache-type-k'], 'value_type': options['--cache-type-v']},
-            display_name=f"{definition['display_name']} ({ctx // 1024}K)",
+            display_name=display_name(definition),
             source='local-ai-runtime', updated_at=None)
         if cuda_order:
             entry.update(mmproj_offload='gpu', text_gpu_uuids=text_devices,
