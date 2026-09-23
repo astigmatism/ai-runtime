@@ -255,7 +255,11 @@ class Controller:
         self.wait_idle([old, transaction['target']['bundle']])
         observed = self.observe(old)
         roles = [role for role, s in observed.items() if not s['healthy']]
-        self.reconcile(old, roles)
+        protected = transaction.get('protected_services', {})
+        require(not set(roles).intersection(protected), 'Recovery would replace a protected backend; operator attention required')
+        after = self.reconcile(old, roles)
+        require(all(after[r].get('id') == cid for r, cid in protected.items()),
+            'A protected backend changed during recovery')
         self.acceptance(old, roles)
         self.publish(old)
         self.save('active.json', previous)
@@ -265,67 +269,81 @@ class Controller:
     def transition(self, profile=None, deploy=False, adopt=False):
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
         with lock(self.state / 'runtime.lock'):
-            require(not self.load('router-maintenance.json', {}).get('reserved'),
-                'A router release reserves the runtime; finish or recover it first')
-            pending = self.load('transaction.json', {})
-            require(pending.get('phase') not in ('prepared', 'draining', 'applying', 'verifying', 'needs-attention'),
-                'An interrupted deployment needs explicit runtime recover before another operation')
-            previous = self.load('active.json')
-            require(previous is not None or adopt, 'Runtime is not adopted; use the reviewed migration procedure')
-            require(not previous or previous['revision'] == self.revision or deploy,
-                'This controller has been superseded; it cannot reapply an older release')
-            bundle = self.desired(profile)
-            self.prepare(bundle)
-            observed = self.observe(bundle)
-            roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
-                previous['bundle']['compose']['services'][role] != bundle['compose']['services'][role])]
-            require(not adopt or not roles, 'Adoption requires an exact match to healthy existing backends')
-            state = self.admin('runtime-state')['runtime']
-            require(not state['draining'], 'Another operation owns the router drain')
-            if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles:
-                return {'already_active': True, 'profile': bundle['profile']}
-            unchanged = {role: s['id'] for role, s in observed.items() if role not in roles}
-            target = {'revision': self.revision, 'image': self.image, 'bundle': bundle, 'applied_at': now()}
-            # Adoption's prior runtime is already known healthy and can be restored by this image.
-            if adopt:
-                previous = copy.deepcopy(target)
-            tx = {'id': str(uuid.uuid4()), 'started_at': now(), 'phase': 'prepared', 'previous': previous,
-                'target': target, 'changed_roles': roles, 'revision': self.revision,
-                'config_sha256': bundle['config_sha256']}
+            return self._transition_locked(profile, deploy=deploy, adopt=adopt)
+
+    def _transition_locked(self, profile=None, deploy=False, adopt=False, *, operation_id=None,
+                           progress=lambda phase: None, daytime_only=False):
+        """Caller must hold runtime.lock for the entire transaction, including recovery."""
+        require(not self.system.readonly, 'Mutation forbidden in inspection mode')
+        require(not self.load('router-maintenance.json', {}).get('reserved'),
+            'A router release reserves the runtime; finish or recover it first')
+        pending = self.load('transaction.json', {})
+        require(pending.get('phase') not in ('prepared', 'draining', 'applying', 'verifying', 'needs-attention'),
+            'An interrupted deployment needs explicit runtime recover before another operation')
+        previous = self.load('active.json')
+        require(previous is not None or adopt, 'Runtime is not adopted; use the reviewed migration procedure')
+        require(not previous or previous['revision'] == self.revision or deploy,
+            'This controller has been superseded; it cannot reapply an older release')
+        progress('checking')
+        bundle = self.desired(profile)
+        self.prepare(bundle)
+        observed = self.observe(bundle)
+        roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
+            previous['bundle']['compose']['services'][role] != bundle['compose']['services'][role])]
+        require(not adopt or not roles, 'Adoption requires an exact match to healthy existing backends')
+        require(not daytime_only or 'everyday' not in roles, 'Profile switch would replace Nighttime; operator attention required')
+        state = self.admin('runtime-state')['runtime']
+        require(not state['draining'], 'Another operation owns the router drain')
+        if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles:
+            return {'already_active': True, 'profile': bundle['profile']}
+        unchanged = {role: s['id'] for role, s in observed.items() if role not in roles}
+        target = {'revision': self.revision, 'image': self.image, 'bundle': bundle, 'applied_at': now()}
+        # Adoption's prior runtime is already known healthy and can be restored by this image.
+        if adopt:
+            previous = copy.deepcopy(target)
+        tx = {'id': operation_id or str(uuid.uuid4()), 'started_at': now(), 'phase': 'prepared', 'previous': previous,
+            'target': target, 'changed_roles': roles, 'revision': self.revision,
+            'config_sha256': bundle['config_sha256']}
+        if daytime_only:
+            tx['protected_services'] = {'everyday': observed['everyday']['id']}
+        self.save('transaction.json', tx)
+        changed = False
+        try:
+            self.set_drain(True, tx)
+            tx['phase'] = 'draining'
             self.save('transaction.json', tx)
-            changed = False
-            try:
-                self.set_drain(True, tx)
-                tx['phase'] = 'draining'
-                self.save('transaction.json', tx)
-                self.wait_idle([bundle, previous['bundle'] if previous else None])
-                tx['phase'] = 'applying'
-                self.save('transaction.json', tx)
-                changed = True
-                after = self.reconcile(bundle, roles)
-                require(all(after[r]['id'] == cid for r, cid in unchanged.items()), 'An unchanged backend was unexpectedly recreated')
-                self.acceptance(bundle, roles)
-                tx['phase'] = 'verifying'
-                self.save('transaction.json', tx)
-                self.publish(bundle)
-                self.save('previous.json', previous)
-                self.save('active.json', target)
-                self.set_drain(False, tx)
-                self.finish(tx, 'succeeded')
-                return {'profile': bundle['profile'], 'changed_roles': roles, 'revision': self.revision}
-            except BaseException as error:
-                tx['error'] = str(error)
-                if changed:
-                    try:
-                        self.recover_locked(tx)
-                    except BaseException as recovery:
-                        self.finish(tx, 'needs-attention', f'Update failed: {error}; recovery failed: {recovery}')
-                        raise RuntimeError('Deployment failed; router remains drained and recovery needs attention') from recovery
-                else:
-                    if self.owns_drain(tx):
-                        self.set_drain(False, tx)
-                    self.finish(tx, 'failed', str(error))
-                raise RuntimeError('Deployment failed: ' + str(error)) from error
+            progress('draining')
+            self.wait_idle([bundle, previous['bundle'] if previous else None])
+            tx['phase'] = 'applying'
+            self.save('transaction.json', tx)
+            progress('loading')
+            changed = True
+            after = self.reconcile(bundle, roles)
+            require(all(after[r]['id'] == cid for r, cid in unchanged.items()), 'An unchanged backend was unexpectedly recreated')
+            tx['phase'] = 'verifying'
+            self.save('transaction.json', tx)
+            progress('verifying')
+            self.acceptance(bundle, roles)
+            self.publish(bundle)
+            self.save('previous.json', previous)
+            self.save('active.json', target)
+            self.set_drain(False, tx)
+            self.finish(tx, 'succeeded')
+            return {'profile': bundle['profile'], 'changed_roles': roles, 'revision': self.revision}
+        except BaseException as error:
+            tx['error'] = str(error)
+            if changed:
+                try:
+                    progress('restoring')
+                    self.recover_locked(tx)
+                except BaseException as recovery:
+                    self.finish(tx, 'needs-attention', f'Update failed: {error}; recovery failed: {recovery}')
+                    raise RuntimeError('Deployment failed; router remains drained and recovery needs attention') from recovery
+            else:
+                if self.owns_drain(tx):
+                    self.set_drain(False, tx)
+                self.finish(tx, 'failed', str(error))
+            raise RuntimeError('Deployment failed: ' + str(error)) from error
 
     def recover(self):
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
@@ -409,6 +427,8 @@ class Controller:
             result['configurations'] = {'active': bundle['profile'], 'selectable': [],
                 'always_included': [], 'error': str(error)}
         update = self.load('update-job.json')
+        result['source_deployment'] = {k: update.get(k) for k in
+            ('phase', 'started_at', 'finished_at', 'error', 'revision')} if update else None
         if update and (update.get('finished_at') or update['started_at']) > (
                 (result['last_deployment'] or {}).get('finished_at') or ''):
             result['last_deployment'] = {k: update.get(k) for k in
@@ -417,7 +437,7 @@ class Controller:
             observed = self.observe(bundle)
             for model, service in zip(bundle['catalog']['models'], bundle['manifest']['services']):
                 live = observed[service['role']]
-                result['services'].append({'name': model['display_name'], 'model': model['model'],
+                result['services'].append({'role': service['role'], 'name': model['display_name'], 'model': model['model'],
                     'context_tokens': model['context_length'],
                     'gpu_ids': model.get('text_gpu_uuids', model['gpu_uuids']),
                     'vision_gpu_id': model.get('vision_gpu_uuid'),

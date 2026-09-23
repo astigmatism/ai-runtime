@@ -57,6 +57,14 @@ New router admissions pause during maintenance. Existing active, queued, and dir
 
 After publication, the new controller is recreated with a 150-second health bound. The updater records image/commit/configuration identity and advances the checkout by fast-forward. No command performs Compose `down`, Git reset/stash, global pruning, or volume removal. A controller-only release retains the existing inference containers.
 
+## Browser profile changes
+
+The runtime page can select `daytime` or `daytime-27b` without a source release. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. Source deployments and existing CLI administration retain their existing behavior.
+
+A controller-only release of the GPU overview and switching UI does not change rendered model definitions. Verify its revision, health, assignments, profile choices, and disabled controls during other maintenance using read-only requests after deployment. Test an actual production profile switch only in an agreed maintenance window; this pauses new admissions for both models and loads the alternative Daytime backend.
+
+Operation receipts survive page refresh and controller restart. If a switch reports `needs-attention`, inspect the private journals and follow **runtime recover** below. Do not clear journals or edit selected-release receipts to make the controls available. No browser action cancels an in-progress transition or forces a backend restart. After recovery, the controller reconciles the operation result on its next status cycle.
+
 ## Recover an interrupted update
 
 ```sh

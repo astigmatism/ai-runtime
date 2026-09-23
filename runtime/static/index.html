@@ -1,3 +1,42 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Runtime · Rosalina</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
-<body><main><header><div><p class="eyebrow">ROSALINA / INFERENCE</p><h1>AI Runtime</h1><p class="intro">Resident models and runtime health</p></div><span id="health" class="badge">Connecting</span></header><section class="summary"><div><span>Active configuration</span><strong id="profile">—</strong></div><div><span>Deployed revision</span><strong id="revision">—</strong></div><div><span>Requests</span><strong id="requests">—</strong></div></section><section id="configurations" aria-label="Available configurations"><div class="section-top"><p class="eyebrow">Available configurations</p><p class="hint">Switch to a listed configuration with <code>~/&lt;profile&gt;</code> over SSH; an edited configuration file deploys with <strong>Update and restart</strong>. Compatibility commands (<code>~/primary</code>, <code>~/nighttime</code>, <code>~/daytime-256</code>) ensure the current pair and never select one.</p></div><ul id="config-list"></ul><p id="config-error" class="warning" hidden></p></section><div id="error" role="alert" hidden></div><section id="services" aria-label="Model servers"></section><section class="deployment"><p class="eyebrow">LATEST DEPLOYMENT</p><h2 id="deploy-state">No deployment recorded</h2><p id="deploy-detail"></p></section><footer><p>Configuration lives in source control. Deploy changes with <strong>Update and restart</strong> in Service Portal.</p><span id="updated"></span></footer></main></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI Runtime · Rosalina</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <div><p class="eyebrow">ROSALINA / INFERENCE</p><h1>AI Runtime</h1><p class="intro">Resident models and runtime health</p></div>
+    <span id="health" class="badge">Connecting</span>
+  </header>
+  <div id="error" class="notice" role="alert" hidden></div>
+  <section class="running" aria-labelledby="running-title">
+    <div class="section-heading"><h2 id="running-title">Running now</h2><span id="requests" class="secondary">Requests unavailable</span></div>
+    <div id="topology" class="topology" aria-label="Model and GPU assignments"><p>Loading runtime assignments…</p></div>
+    <p class="diagram-key"><span class="key-line"></span> Text model <span class="key-line vision"></span> Vision <span class="secondary">Health refers to model services</span></p>
+  </section>
+  <section id="configurations" class="switch-section" aria-labelledby="switch-title">
+    <h2 id="switch-title">Switch Daytime configuration</h2>
+    <form id="switch-form">
+      <fieldset id="profile-options" disabled><legend class="sr-only">Daytime configuration</legend><div id="config-list"></div></fieldset>
+      <p class="impact">Existing requests finish first. New requests pause for both models.<br>Nighttime stays loaded.</p>
+      <button id="apply" type="submit" disabled>Connecting…</button>
+      <p id="switch-reason" class="secondary"></p>
+    </form>
+    <section id="operation" class="operation" aria-labelledby="operation-title" hidden>
+      <div class="section-heading"><h3 id="operation-title"></h3><span id="elapsed" class="secondary"></span></div>
+      <ol id="steps" class="steps" aria-label="Switch progress"></ol>
+      <p id="operation-message" role="status" aria-live="polite" aria-atomic="true"></p>
+      <p id="admissions" class="secondary"></p>
+    </section>
+  </section>
+  <details class="runtime-details"><summary>Runtime details</summary><div id="services"></div><p class="revision">Deployed revision <code id="revision">—</code></p></details>
+  <details class="deployment-details"><summary>Deployment details</summary><h3 id="deploy-state">No source deployment recorded</h3><p id="deploy-detail" class="secondary"></p><p class="secondary">Deploy source changes with <strong>Update and restart</strong> in Service Portal.</p></details>
+  <footer><span id="updated">Waiting for status</span><span>AI Runtime · Rosalina</span></footer>
+</main>
+</body>
+</html>

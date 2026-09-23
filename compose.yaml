@@ -18,6 +18,7 @@ services:
     environment:
       RUNTIME_STATE_DIR: "${RUNTIME_STATE_DIR:?Set the absolute state directory}"
       RUNTIME_IMAGE: "${RUNTIME_IMAGE}"
+      RUNTIME_ALLOWED_HOSTS: "${RUNTIME_ALLOWED_HOSTS:-${RUNTIME_BIND_IP:-192.168.1.4},localhost,127.0.0.1,::1}"
     ports:
       - "${RUNTIME_BIND_IP:-192.168.1.4}:11436:8080"
     networks:

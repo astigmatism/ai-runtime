@@ -1,6 +1,6 @@
 # AI Runtime
 
-Versioned startup, launch configuration, and catalog publication for Rosalina's two resident llama.cpp services. The controller has a read-only status page and integrates with Service Portal's **Update and restart** action.
+Versioned startup, launch configuration, and catalog publication for Rosalina's two resident llama.cpp services. The controller shows GPU assignments, switches the registered Daytime profiles, and integrates with Service Portal's **Update and restart** action.
 
 The repository is **`ai-runtime`**, formerly `local-ai-runtime`. The application name remains **AI Runtime**. See [repository rename and compatibility](docs/renaming.md) for existing installations.
 
@@ -9,7 +9,7 @@ git clone https://github.com/astigmatism/ai-runtime.git
 cd ai-runtime
 ```
 
-This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a read-only status page/API and a container CLI for administration.
+This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and profile-switching UI/API, with a container CLI for recovery and administration.
 
 ## Current profiles
 
@@ -44,13 +44,14 @@ All three profiles support a shared vision GPU through Runtime's [versioned rend
 
 For example, changing Daytime's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
 
-The initial implementation preserves the existing single-slot and unrestricted generation contracts. Context is limited to 163840 tokens by the current router contract. Changes outside those contracts require a coordinated router/runtime release. The status page lists every configuration the deployed revision can apply and marks the active one; it does not select models or edit configuration. Existing SSH profile commands remain available.
+The initial implementation preserves the existing single-slot and unrestricted generation contracts. Context is limited to 163840 tokens by the current router contract. Changes outside those contracts require a coordinated router/runtime release. The page shows the active GPU assignments and switches between registered Daytime profiles; it cannot edit configuration. Existing SSH profile commands remain available.
 
 Integrity checks prove that the launch configuration, engine, and model artifacts agree. The short post-change generation check establishes basic operation. Neither is a new throughput benchmark, full-context qualification, or VRAM soak test. `docs/import-provenance.json` records the original import without fabricating new qualification receipts.
 
 ## Status and commands
 
-After cutover, open `http://192.168.1.4:11436` for deployed revision, selected profile, model/context details, GPU assignments, readiness, request counts, and the latest deployment result. The page also lists every configuration the deployed revision can apply — the active one plus the others, each with its model, context, pinned backend, and GPU pair — and names the host command that switches to it. The page polls same-origin status; it never receives router credentials or model paths.
+Open `http://192.168.1.4:11436` for the GPU overview, active model/context details, readiness, request counts, and source-deployment results. Select a Daytime profile and press **Switch to…** to apply it. Existing requests finish first; new requests pause for both models while Nighttime stays loaded. Progress survives page refreshes and disconnections. The GPU rail shows assignments and model-service health, not hardware telemetry. The page polls same-origin status and never receives router credentials or model paths.
+
 | Command | Behavior |
 | --- | --- |
 | `~/primary status` | Current pair, revision, and health |
@@ -67,10 +68,15 @@ After cutover, open `http://192.168.1.4:11436` for deployed revision, selected p
 
 ### HTTP interface
 
-- `GET /api/status`: current revision, deployed revision, selected profile, per-service identities/readiness, maintenance counts, deployment result, and the profile registry (`configurations`: the active profile plus every selectable configuration and its always-paired Nighttime backend, without host paths or artifact checksums).
-- `GET /healthz`: `200 {"ready": true}` only after startup reconciliation and verification; otherwise `503`.
-- `GET /`, `/app.js`, `/style.css`: read-only status UI.
-- Mutating HTTP methods return 405. Runtime administration is available only through the container CLI and the existing Service Portal runner.
+- `GET /api/status`: revision, active profile, configuration registry, GPU assignments, model readiness, request counts, source deployment, latest browser operation, switching availability, and a process-scoped CSRF token.
+- `POST /api/profile-switch`: JSON `{profile, request_id, expected_profile, expected_revision}`. `request_id` is a lowercase UUID; the expected values come from status. Send the same-origin `Origin` and `X-Runtime-CSRF` headers. Returns `202 {operation_id, operation}` immediately; repeated identical IDs return `200` and the existing receipt. Reusing an ID for different parameters, stale selection, or maintenance conflicts returns `409`. Invalid bodies return `400`, cross-origin/token failures `403`, and non-JSON requests `415`.
+- `GET /api/operations/<id>`: a sanitized durable receipt, or `404`. Status is `running`, `succeeded`, `failed`, `recovered`, or `needs-attention`; live phases are `checking`, `draining`, `loading`, `verifying`, and `restoring`.
+- `GET /healthz`: `200 {"ready": true}` only after startup reconciliation and verification and outside an active browser switch; otherwise `503`.
+- `GET /`, `/app.js`, `/style.css`: runtime UI. Other mutation endpoints/methods return `405`.
+
+This is a trusted-LAN administration surface without a login: anyone who can reach it can switch profiles. The current bind address is preserved. JSON, same-origin checks, a CSRF token, and a Host allowlist protect browser requests; they are not user authentication. `RUNTIME_ALLOWED_HOSTS` in the existing Git-excluded `.env` accepts comma-separated hostnames/IPs without ports. It defaults to `RUNTIME_BIND_IP` and loopback addresses. Add any hostname used to open the page to this setting; unrecognized hosts return `421`. The direct HTTP listener does not trust forwarded origin headers.
+
+The runtime and updater locks cover admission through completion, including validation and recovery. No switch is queued. Operation receipts live in `.state/operations/` and contain private diagnostic errors; HTTP responses expose only safe status messages. A restarted controller reconciles receipts against the existing runtime transaction and never automatically retries an interrupted switch. Full failure diagnostics remain in the private transaction/operation journals and the CLI. Source-deployment results come from the Portal updater journal and are displayed separately from profile-switch results.
 
 ## Development
 

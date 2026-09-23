@@ -76,7 +76,7 @@ def profile_summary(config_dir, name, shared, gpu_names=None):
     """Public facts about one profile, derived without Docker, network, or artifact I/O.
 
     Host paths, mount targets, and artifact checksums are deliberately absent: this is
-    published on the read-only status page for every configuration, including ones that
+    published by the status API for every configuration, including ones that
     are not running.
     """
     definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
