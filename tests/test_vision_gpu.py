@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import read, render
+from runtime.config import DAYTIME_PROFILES, read, render
 from runtime.controller import Controller
 from runtime.system import atomic_json
 from tests.test_controller import FakeSystem
@@ -25,9 +25,11 @@ def vision_host():
 class VisionTests(unittest.TestCase):
     def test_all_profiles_only_change_encoder_and_visibility(self):
         host = vision_host()
-        for profile in ('daytime', 'daytime-27b'):
+        gpu_night = render(ROOT / 'config', host, 'daytime')['compose']['services']['everyday']
+        for profile in DAYTIME_PROFILES:
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
+            self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)
             for role, cfg in gpu['compose']['services'].items():
                 prior = cpu['compose']['services'][role]
                 group = 'daytime' if role == 'coding' else 'nighttime'
@@ -48,8 +50,6 @@ class VisionTests(unittest.TestCase):
                 self.assertEqual(len(m['text_gpu_uuids']), 2)
                 self.assertNotIn(VISION, m['text_gpu_uuids'])
             self.assertEqual(cpu['artifacts'], gpu['artifacts'])
-        self.assertEqual(render(ROOT / 'config', host, 'daytime')['compose']['services']['everyday'],
-            render(ROOT / 'config', host, 'daytime-27b')['compose']['services']['everyday'])
 
     def test_overlap_invalid_uuid_and_ambiguous_cuda_order_are_rejected(self):
         bad = []

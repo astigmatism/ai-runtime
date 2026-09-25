@@ -6,7 +6,7 @@ const node = (tag, text = '', cls = '') => {
   if (cls) element.className = cls;
   return element;
 };
-const profileName = profile => ({daytime: 'Daytime', 'daytime-27b': 'Daytime-27B', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
+const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
 const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
 const phaseNames = {checking: 'Check', draining: 'Drain', loading: 'Load', verifying: 'Verify'};

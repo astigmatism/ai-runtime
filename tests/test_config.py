@@ -74,6 +74,9 @@ class ConfigurationTests(unittest.TestCase):
     def test_flash_next_keeps_shards_tensor_placement_and_independent_engines(self):
         result = render(ROOT / 'config', BASELINE['host'], 'daytime')
         argv = result['compose']['services']['coding']['command']
+        for flag, value in [('--cache-type-k', 'q8_0'), ('--cache-type-v', 'q8_0'),
+                ('--ubatch-size', '2048')]:
+            self.assertEqual(argv[argv.index(flag) + 1], value)
         overrides = [argv[i + 1] for i, x in enumerate(argv) if x == '--override-tensor']
         self.assertEqual(len(overrides), 33)
         self.assertEqual(overrides[0], r'blk\.15\.ffn_down.*=CUDA0')
@@ -85,6 +88,51 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(model['backend_revision'], service_engine(result, role)['revision'])
         self.assertEqual(result['catalog']['mtp']['device'], 'CUDA0')
         self.assertEqual(result['catalog']['mtp']['max_draft_tokens'], 2)
+
+    def test_flash_f16_candidate_changes_only_main_cache_and_microbatch_launch_settings(self):
+        baseline = read(ROOT / 'config/profiles/daytime.json')
+        candidate = read(ROOT / 'config/profiles/daytime-flash-f16.json')
+        shared = read(ROOT / 'config/shared.json')
+        self.assertEqual(candidate['id'], 'daytime-flash-f16')
+        self.assertEqual(candidate['engine'], 'flash-next-mtp')
+        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        baseline_args = {**shared['arguments'], **baseline['arguments']}
+        candidate_args = {**shared['arguments'], **candidate['arguments']}
+        self.assertEqual({key for key in candidate_args if candidate_args[key] != baseline_args[key]},
+            {'--cache-type-k', '--cache-type-v', '--ubatch-size'})
+        for flag, value in [('--cache-type-k', 'f16'), ('--cache-type-v', 'f16'),
+                ('--ubatch-size', '1024')]:
+            self.assertEqual(candidate_args[flag], value)
+        self.assertEqual(candidate_args['--spec-draft-type-k'], 'q8_0')
+        self.assertEqual(candidate_args['--spec-draft-type-v'], 'q8_0')
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-flash-f16')
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        for flag in ('--cache-type-k', '--cache-type-v', '--ubatch-size'):
+            old_command = original_cfg['command']
+            new_command = variant_cfg['command']
+            new_command[new_command.index(flag) + 1] = old_command[old_command.index(flag) + 1]
+        self.assertEqual(variant_cfg, original_cfg)
+        self.assertEqual(variant['compose']['services']['everyday'],
+            original['compose']['services']['everyday'])
+        self.assertEqual(variant['artifacts'], original['artifacts'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(variant['catalog']['model'], original['catalog']['model'])
+        self.assertEqual(variant['catalog']['aliases'], original['catalog']['aliases'])
+        self.assertEqual(variant['catalog']['context_length'], 131072)
+        self.assertEqual(variant['catalog']['mtp'], original['catalog']['mtp'])
+        self.assertEqual(variant['catalog']['kv_cache'],
+            {'unified': False, 'key_type': 'f16', 'value_type': 'f16'})
+        self.assertNotEqual(variant['catalog']['capability_profile']['name'],
+            original['catalog']['capability_profile']['name'])
+        warning = ' '.join(variant['catalog']['deployment_warnings']).lower()
+        self.assertIn('not been qualified', warning)
+        self.assertIn('vram', warning)
+        self.assertIn('throughput', warning)
 
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
@@ -116,9 +164,12 @@ class ConfigurationTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
+        self.assertEqual(DAYTIME_PROFILES,
+            ('daytime', 'daytime-27b', 'daytime-flash-f16'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
+        baseline_night = render(ROOT / 'config', BASELINE['host'], 'daytime')['compose']['services']['everyday']
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 entry = next(x for x in registry['selectable'] if x['profile'] == name)
@@ -136,6 +187,7 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(night['backend_revision'], everyday['revision'])
                 self.assertEqual(night['context_tokens'], night_entry['context_length'])
                 self.assertEqual(night['display_name'], night_entry['display_name'])
+                self.assertEqual(rendered['compose']['services']['everyday'], baseline_night)
 
     def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
         definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}

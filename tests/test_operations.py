@@ -55,6 +55,25 @@ class OperationTests(OperationFixture, unittest.TestCase):
             self.assertFalse(self.system.draining)
         self.assertTrue(result['already_active'])
 
+    def test_flash_f16_browser_switch_and_failed_load_restore_original(self):
+        night = self.system.inspect('qwen38-nighttime')['Id']
+        original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        result = self.run_switch(self.request('daytime-flash-f16'))
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-f16')
+        self.assertEqual(self.web_state['status']['profile'], 'daytime-flash-f16')
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+        self.assertEqual(self.run_switch(self.request('daytime'))['status'], 'succeeded')
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+
+        self.system.fail_reconcile = True
+        failure = self.run_switch(self.request('daytime-flash-f16'))
+        self.assertEqual(failure['status'], 'recovered')
+        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+        self.assertFalse(self.system.draining)
+
     def test_stages_wrap_real_work_and_verification(self):
         seen = []
         original = self.ops.save

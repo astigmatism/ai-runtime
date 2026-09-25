@@ -108,6 +108,21 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding'])
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
 
+    def test_switching_to_flash_f16_and_back_changes_only_daytime(self):
+        night = self.system.inspect('qwen38-nighttime')['Id']
+        original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        result = self.c.transition('daytime-flash-f16')
+        self.assertEqual(result['changed_roles'], ['coding'])
+        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-f16')
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+        candidate = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        for flag in ('--cache-type-k', '--cache-type-v'):
+            self.assertEqual(candidate[candidate.index(flag) + 1], 'f16')
+        self.assertEqual(candidate[candidate.index('--ubatch-size') + 1], '1024')
+        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding'])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+
     def test_wrong_engine_is_detected_only_on_affected_backend(self):
         self.system.containers['qwen38-daytime']['Image'] = service_engine(self.bundle, 'everyday')['image_id']
         observed = self.c.observe(self.bundle)
@@ -200,7 +215,9 @@ class ControllerTests(unittest.TestCase):
     def test_status_lists_every_configuration_and_marks_the_live_one(self):
         configs = self.c.status()['configurations']
         self.assertEqual(configs['active'], 'daytime')
-        self.assertEqual([x['profile'] for x in configs['selectable']], ['daytime', 'daytime-27b'])
+        self.assertEqual([x['profile'] for x in configs['selectable']],
+            ['daytime', 'daytime-27b', 'daytime-flash-f16'])
+        self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])
         self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
         self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
         self.assertEqual(configs['always_included'][0]['gpu_names'], HOST['gpu_names']['nighttime'])

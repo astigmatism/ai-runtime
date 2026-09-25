@@ -10,11 +10,12 @@ import socket
 import subprocess
 import sys
 
-from .config import DAYTIME_PROFILES, read, render, require
+from .config import read, render, require
 from .system import atomic_json, lock, now
 from .update import Updater
 
 WRAPPERS = ['primary', 'daytime', 'daytime-27b', 'nighttime', 'daytime-256', 'nighttime-256', 'local-ai-config.sh']
+LEGACY_DAYTIME_PROFILES = ('daytime', 'daytime-27b')
 
 
 def sha(path):
@@ -58,7 +59,7 @@ class Migration:
         return [self.primary / name for name in ['primary.py', 'daytime-profile.py', 'manager.sh',
             'compose.json', 'manifest.json', 'model-catalog.json', 'profiles/selected.json',
             'evidence/qualified.json', 'evidence/artifacts.json']] + [
-            self.primary / 'profiles' / profile / name for profile in DAYTIME_PROFILES
+            self.primary / 'profiles' / profile / name for profile in LEGACY_DAYTIME_PROFILES
             for name in ['compose.json', 'manifest.json', 'model-catalog.json', 'profile.json', 'qualified.json', 'artifacts.json']
         ] + [self.home / name for name in WRAPPERS] + [
             self.home / 'apps/local-ai-ollama-stack/deploy-runtime.sh',
@@ -86,7 +87,7 @@ class Migration:
             'gpu_names': {'daytime': ['RTX 3090', 'RTX 4080 SUPER'], 'nighttime': ['RTX 4080', 'RTX 3080 Ti']}}
         desired = render(self.root / 'config', host, selected)
         require(desired['compose'] == compose, 'Published configuration differs from the live source; merge changes before migration')
-        for profile in DAYTIME_PROFILES:
+        for profile in LEGACY_DAYTIME_PROFILES:
             require(render(self.root / 'config', host, profile)['compose'] ==
                 read(self.primary / 'profiles' / profile / 'compose.json'),
                 profile + ': saved profile differs from published source; merge changes before migration')

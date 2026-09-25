@@ -83,6 +83,7 @@ class MigrationTests(unittest.TestCase):
             for profile in ('daytime', 'daytime-27b'):
                 self.assertIn(migration.primary / 'profiles' / profile / 'compose.json', sources)
                 self.assertIn(migration.primary / 'profiles' / profile / 'qualified.json', sources)
+            self.assertFalse(any('daytime-flash-f16' in str(path) for path in sources))
 
     def test_legacy_launcher_stays_blocked_without_systemd_or_docker(self):
         result = subprocess.run(['/bin/sh'], input=legacy_deploy_guard(), text=True,

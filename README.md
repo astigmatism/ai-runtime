@@ -16,9 +16,10 @@ This is the model lifecycle controller. Inference requests go through [LLM Route
 | Profile | Daytime model | Context | GPU pair |
 | --- | --- | --- | --- |
 | `daytime` | Qwen3.8-Flash-Next AtomicChat AD-4.27bpw-Q4_K_M-M64, shared Q4_K_M MTP2 | 128K | RTX 3090 + RTX 4080 SUPER |
+| `daytime-flash-f16` | Same Flash-Next model and MTP draft with F16 main-model KV cache and 1024 microbatch | 128K | RTX 3090 + RTX 4080 SUPER |
 | `daytime-27b` | Saved Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
 
-Both include Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule.
+All three Daytime choices include Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule. `daytime-flash-f16` is an experiment on the existing Flash-Next engine; its VRAM fit and throughput on the production GPUs have not been qualified. It does not include newer sparse-attention code.
 
 The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Flash-Next uses revision `d1a92352cbd417fd840b4e765c0b82f5fe3d1d89`; Nighttime and the saved 27B profile use `8ea290247c87ced2ab245b056ffe96dbcf90d36c`. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
 
@@ -37,10 +38,10 @@ Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials
 ### Where to change settings
 
 - `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and named engine identities.
-- `config/profiles/*.json`: one definition each for Daytime, the saved 27B profile, and Nighttime. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts. A profile is selectable only when its id is listed in `DAYTIME_PROFILES` (`runtime/config.py`); the status page, `~/local-ai-config.sh list`, `~/local-ai-config.sh names`, and `--profile` all read that one registry.
+- `config/profiles/*.json`: one definition for each of the three Daytime choices and Nighttime. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts. A profile is selectable only when its id is listed in `DAYTIME_PROFILES` (`runtime/config.py`); the status page, `~/local-ai-config.sh list`, `~/local-ai-config.sh names`, and `--profile` all read that one registry.
 - `.state/host.json`: private host deployment settings, GPU UUIDs, model root, and router integration paths. Start with `config/host.example.json` for another machine. The migration imports Rosalina's existing settings automatically.
 
-All three profiles support a shared vision GPU through Runtime's [versioned renderer and host configuration](docs/shared-vision.md). The source defines projector offload, CUDA ordering, placement validation, and catalog metadata; the host supplies hardware UUIDs. Rosalina uses the RTX 3080 as CUDA2 for vision in both backends. CPU vision remains the default when the optional setting is absent. Start with [the shared-vision host example](config/host.shared-vision.example.json) when configuring another such host; its UUIDs are synthetic placeholders, not live hardware.
+All profiles support a shared vision GPU through Runtime's [versioned renderer and host configuration](docs/shared-vision.md). The source defines projector offload, CUDA ordering, placement validation, and catalog metadata; the host supplies hardware UUIDs. Rosalina uses the RTX 3080 as CUDA2 for vision in both backends. CPU vision remains the default when the optional setting is absent. Start with [the shared-vision host example](config/host.shared-vision.example.json) when configuring another such host; its UUIDs are synthetic placeholders, not live hardware.
 
 For example, changing Daytime's `context_tokens` to `98304` publishes 96K consistently and recreates only Daytime after drain. Model files are referenced by path relative to the model root and SHA-256; they are never included in Git or the image. A changed file invalidates the checksum cache even when its size stays the same.
 
@@ -57,6 +58,7 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | `~/primary status` | Current pair, revision, and health |
 | `~/primary` | Ensure the selected pair is running |
 | `~/daytime` | Select Flash-Next at 128K; drain first and preserve Nighttime |
+| `~/local-ai-config.sh apply daytime-flash-f16` | Select the experimental F16 KV Flash-Next profile; drain first and preserve Nighttime |
 | `~/daytime-27b` | Select the saved 27B Q8 profile at 160K; preserve Nighttime |
 | `~/local-ai-config.sh list` | List the supported configurations, generated from the profile registry |
 | `~/local-ai-config.sh gpus` | Host GPU status |
