@@ -74,18 +74,11 @@
     "--threads": "18",
     "--threads-batch": "18",
     "--batch-size": "2048",
-    "--ubatch-size": "1024",
+    "--ubatch-size": "2048",
     "--mmproj": "/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     "--n-gpu-layers": "49",
-    "--tensor-split": "18,31",
+    "--tensor-split": "16,33",
     "--override-tensor": [
-      "blk\\.21\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.22\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.23\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.24\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.25\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.26\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
-      "blk\\.27\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
       "blk\\.28\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
       "blk\\.29\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
       "blk\\.30\\.ffn_(up|down|gate_up|gate)_(ch|)exps=CPU",
@@ -191,7 +184,7 @@
     },
     "deployment_warnings": [
       "This configuration has not been qualified. It carries no throughput, full-context, or VRAM soak evidence; the imported Flash-Next daytime profile remains the qualified Daytime configuration.",
-      "Tensor placement is budgeted per device, not globally. An earlier revision of this profile kept the daytime profile's 2048 microbatch and 16,33 split while moving the CPU expert boundary to block 28; it failed to start because the 3.86 GiB prompt-processing buffer could not be allocated on CUDA0, the 16 GiB card that the 16,33 split loads most heavily. The 1024 microbatch halves that buffer and the 18,31 split moves layers onto the 24 GiB card, leaving margins on both devices wider than the qualified profile's. Re-derive all three settings together, per device, before moving the boundary again.",
+      "Tensor placement is a starting point, not a measured result. --n-gpu-layers and --tensor-split are inherited from the qualified daytime profile, and the CPU expert boundary was moved from block 18 to block 28 to reflect a resident footprint of 47.0 GB instead of about 56 GB. Retune --override-tensor and --tensor-split against measured VRAM headroom at full context.",
       "128K is the total prompt, history, reasoning, and output capacity. Shard 2 is the 28.8 GB n-gram lookup table and is read sparsely through --load-mode mmap with --lazy-mode on; it is not expected to be resident."
     ],
     "aliases": [
