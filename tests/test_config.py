@@ -144,40 +144,6 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(recovery['catalog']['mtp']['device'], 'CUDA1')
         self.assertNotIn('qwen3.8-27b-q8_0', current['catalog']['aliases'])
 
-    def test_gsqrco_bench_profile_reuses_the_engine_and_claims_no_qualification(self):
-        bench = render(ROOT / 'config', BASELINE['host'], 'daytime-gsqrco')
-        current = render(ROOT / 'config', BASELINE['host'], 'daytime')
-        # A bench configuration reuses the pinned engine and leaves the paired backend untouched.
-        self.assertEqual(service_engine(bench, 'coding'), service_engine(current, 'coding'))
-        self.assertEqual(bench['compose']['services']['everyday'], current['compose']['services']['everyday'])
-        self.assertEqual(bench['catalog']['context_length'], 131072)
-        self.assertEqual(bench['catalog']['model'], 'qwen3.8-flash-next-gsqrco-iq3xxs')
-        self.assertEqual(bench['catalog']['aliases'], current['catalog']['aliases'])
-        self.assertNotEqual(bench['catalog']['capability_profile']['name'],
-            current['catalog']['capability_profile']['name'])
-        self.assertNotIn('qualified', bench['catalog']['capability_profile']['name'])
-        warning = ' '.join(bench['catalog']['deployment_warnings']).lower()
-        for expected in ('not been qualified', 'vram', 'throughput'):
-            self.assertIn(expected, warning)
-        # Unlike the F16 KV variant, this profile changes the weights, so the inventory grows.
-        self.assertNotEqual(bench['artifacts'], current['artifacts'])
-        # Both shards of the two-part quant are mounted, the draft is the file already on disk,
-        # and the bundle adds the two unchanged Nighttime artifacts.
-        self.assertEqual(len(bench['artifacts']), 6)
-        targets = [m['target'] for m in bench['compose']['services']['coding']['volumes']]
-        self.assertEqual(len(targets), 4)
-        self.assertEqual(sum('-of-00002.gguf' in name for name in targets), 2)
-        self.assertIn('/weights/mtp.gguf', targets)
-        draft = next(a for a in bench['artifacts'] if a['target'] == '/weights/mtp.gguf')
-        self.assertEqual(draft['sha256'], next(a for a in current['artifacts']
-            if a['target'] == '/weights/mtp.gguf')['sha256'])
-        # The smaller quant pushes fewer expert blocks to CPU than the 4.27bpw import needs.
-        argv = bench['compose']['services']['coding']['command']
-        overrides = [argv[i + 1] for i, x in enumerate(argv) if x == '--override-tensor']
-        self.assertTrue(overrides and all(item.endswith('=CPU') for item in overrides))
-        self.assertLess(len(overrides), sum(1 for x in current['compose']['services']['coding']['command']
-            if x == '--override-tensor'))
-
     def test_invalid_repeated_arguments_or_missing_model_mount_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
@@ -199,7 +165,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-gsqrco'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

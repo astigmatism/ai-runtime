@@ -240,28 +240,6 @@
       "bytes": 927607328,
       "sha256": "b73b89b52c21e90468f0c61d1190cb22c3f229f9ddd2792e9eafd55302fabdd4",
       "download_url": "https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-GGUF/resolve/efb07baa690a1bc7beb53ee067b4b57c7025b5e7/mmproj-Qwen3.8-27B-Abliterated-F16.gguf"
-    },
-    {
-      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-      "bytes": 47039860096,
-      "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
-      "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
-    },
-    {
-      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
-      "bytes": 28800138432,
-      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
-      "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
-    },
-    {
-      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
-      "bytes": 907543008,
-      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
-      "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf"
     }
-  ],
-  "notes": [
-    "The GSQ-RCO IQ3_XXS second shard is the 28.8 GB per-layer n-gram lookup table and is byte-identical across the Q2_0, IQ2_XS, IQ3_XXS, and IQ3_S variants. A later variant can hard-link it instead of downloading it again; a symlink must resolve inside the model root, because artifact validation rejects a link that escapes it.",
-    "Only the first GSQ-RCO shard needs to be resident. Keep the second shard on SSD and launch with --load-mode mmap and --lazy-mode on."
   ]
 }
