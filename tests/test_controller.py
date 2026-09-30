@@ -216,7 +216,7 @@ class ControllerTests(unittest.TestCase):
         configs = self.c.status()['configurations']
         self.assertEqual(configs['active'], 'daytime')
         self.assertEqual([x['profile'] for x in configs['selectable']],
-            ['daytime', 'daytime-27b', 'daytime-flash-f16'])
+            list(DAYTIME_PROFILES))
         self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])
         self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
         self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
