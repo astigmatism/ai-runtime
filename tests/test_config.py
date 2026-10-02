@@ -134,53 +134,22 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('vram', warning)
         self.assertIn('throughput', warning)
 
-    def test_ram64_experiment_changes_only_the_ram_prompt_cache_cap(self):
-        baseline = read(ROOT / 'config/profiles/daytime-27b.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-ram64.json')
+    def test_ram_prompt_cache_is_a_uniform_shared_default_with_no_profile_overrides(self):
         shared = read(ROOT / 'config/shared.json')
-        self.assertEqual(candidate['id'], 'daytime-27b-ram64')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B RAM64')
-        self.assertEqual(candidate['engine'], baseline['engine'])
-        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        baseline_args = {**shared['arguments'], **baseline['arguments']}
-        candidate_args = {**shared['arguments'], **candidate['arguments']}
-        self.assertEqual({key for key in candidate_args if candidate_args[key] != baseline_args[key]},
-            {'--cache-ram'})
-        self.assertEqual(baseline_args['--cache-ram'], '8192')
-        self.assertEqual(candidate_args['--cache-ram'], '65536')
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-ram64')
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        old_command = original_cfg['command']
-        new_command = variant_cfg['command']
-        new_command[new_command.index('--cache-ram') + 1] = old_command[old_command.index('--cache-ram') + 1]
-        self.assertEqual(variant_cfg, original_cfg)
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(variant['artifacts'], original['artifacts'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
-        self.assertEqual(variant['catalog']['model'], original['catalog']['model'])
-        self.assertEqual(variant['catalog']['aliases'], original['catalog']['aliases'])
-        self.assertEqual(variant['catalog']['context_length'], 163840)
-        self.assertEqual(variant['catalog']['mtp'], original['catalog']['mtp'])
-        # The catalog cache cap follows the argument override: 65536 for the experiment,
-        # 8192 for daytime-27b and for the paired nighttime backend.
-        self.assertEqual(variant['catalog']['global_ram_prompt_cache_mib'], 65536)
-        self.assertEqual(original['catalog']['global_ram_prompt_cache_mib'], 8192)
-        self.assertEqual(variant['catalog']['models'][1]['global_ram_prompt_cache_mib'], 8192)
-        self.assertEqual(variant['catalog']['display_name'], 'Daytime-27B RAM64 (160K)')
-        self.assertNotEqual(variant['catalog']['capability_profile']['name'],
-            original['catalog']['capability_profile']['name'])
-        self.assertEqual(variant['catalog']['capability_profile']['name'],
-            'qwen38-27b-golden-vision-tools-ram64')
-        self.assertEqual(original['catalog']['deployment_warnings'], [])
-        self.assertEqual(variant['catalog']['deployment_warnings'],
-            ['Experiment variant of daytime-27b: RAM prompt cache cap 65536 MiB vs shared 8192 MiB; '
-             'all other arguments identical.'])
+        self.assertEqual(shared['arguments']['--cache-ram'], '32768')
+        # No profile may override the shared RAM prompt cache cap: every backend inherits the
+        # same 32 GiB lazy LRU limit (zero idle cost), so the worst-case combined host-RAM
+        # pressure of the daytime + nighttime pair stays bounded at 64 GiB.
+        for name in [*DAYTIME_PROFILES, NIGHTTIME_PROFILE]:
+            with self.subTest(profile=name):
+                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                self.assertNotIn('--cache-ram', definition['arguments'])
+        for name in DAYTIME_PROFILES:
+            with self.subTest(profile=name):
+                rendered = render(ROOT / 'config', BASELINE['host'], name)
+                self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 32768)
+                for model in rendered['catalog']['models']:
+                    self.assertEqual(model['global_ram_prompt_cache_mib'], 32768)
 
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
@@ -213,7 +182,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-ram64'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
