@@ -57,6 +57,8 @@ New router admissions pause during maintenance. Existing active, queued, and dir
 
 After publication, the new controller is recreated with a 150-second health bound. The updater records image/commit/configuration identity and advances the checkout by fast-forward. No command performs Compose `down`, Git reset/stash, global pruning, or volume removal. A controller-only release retains the existing inference containers.
 
+If a new revision retires the profile currently active on a host, the updater refuses before building the candidate and names the retired profile and the profiles selectable in that revision. Switch the active profile to one of them on the deployed revision (runtime page validated transition), then re-run the update. The deployed runtime keeps serving meanwhile; no manual state editing is required.
+
 ## Browser profile changes
 
 The runtime page can select `daytime`, `daytime-flash-f16`, or `daytime-27b` without another source release once this profile is published. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. Source deployments and existing CLI administration retain their existing behavior.

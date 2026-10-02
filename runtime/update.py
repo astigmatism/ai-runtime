@@ -1,5 +1,6 @@
 """Portal-compatible public-Git updater; production applies immutable image content."""
 import argparse
+import ast
 import io
 import json
 import os
@@ -80,6 +81,20 @@ class Updater:
             tar.extractall(source, filter='data')
         return source
 
+    def target_profiles(self, target):
+        """Daytime profiles selectable by the target revision, from its published source."""
+        code = self.git('show', target + ':runtime/config.py', check=False)
+        require(code, 'Cannot read runtime/config.py from the target revision')
+        for node in ast.walk(ast.parse(code)):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
+                    isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'DAYTIME_PROFILES':
+                profiles = ast.literal_eval(node.value)
+                require(isinstance(profiles, tuple) and len(profiles) > 0 and
+                    all(isinstance(name, str) for name in profiles),
+                    'Target revision defines an invalid DAYTIME_PROFILES')
+                return profiles
+        raise RuntimeError('Target revision does not define DAYTIME_PROFILES')
+
     def candidate(self, image, action, full_hash=False, capture=False):
         host = read(self.state / 'host.json')
         gid = str(os.stat('/var/run/docker.sock').st_gid)
@@ -131,6 +146,13 @@ class Updater:
                 print('Published revision is already deployed; checking runtime health.', flush=True)
                 self.candidate(previous['image'], 'check')
                 return
+            active_profile = previous.get('bundle', {}).get('profile')
+            if active_profile:
+                selectable = self.target_profiles(target)
+                require(active_profile in selectable,
+                    f"Active profile '{active_profile}' is retired in target revision {target}; on the deployed "
+                    f"revision, switch to a profile selectable there ({', '.join(selectable)}) before "
+                    f're-running the update')
             source = self.export(target)
             image = 'local/ai-runtime:git-' + target
             print('Building published revision ' + target, flush=True)

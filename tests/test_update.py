@@ -19,6 +19,7 @@ class Harness:
         self.branch = 'main'; self.upstream = 'origin/main'; self.remote = REMOTE
         self.dirty = ''; self.diverged = False; self.fail_build = False; self.fail_health = False
         self.stale_old_health = False
+        self.target_config = 'DAYTIME_PROFILES = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
 
     def __call__(self, args, **kw):
         args = tuple(args); self.calls.append(args)
@@ -34,6 +35,8 @@ class Harness:
             ('git', 'rev-parse', 'FETCH_HEAD'): self.remote_head,
         }
         if args in values: stdout = values[args]
+        elif args[:2] == ('git', 'show') and len(args) == 3 and args[2].endswith(':runtime/config.py'):
+            stdout = self.target_config
         elif args[:3] == ('git', 'merge-base', '--is-ancestor'): code = int(self.diverged)
         elif args[:3] == ('git', 'merge', '--ff-only'): self.head = args[-1]
         elif args[:3] == ('git', 'update-ref', 'refs/remotes/origin/main'): self.upstream_head = args[-2]
@@ -105,6 +108,21 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'merge-base'): self.u.update()
         self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
         self.assertEqual(self.h.upstream_head, A)
+
+    def test_retired_active_profile_refuses_before_build_with_actionable_error(self):
+        self.active = {'revision': A, 'image': 'old-image', 'bundle': {'profile': 'daytime-27b-ram64'}}
+        atomic_json(self.state / 'active.json', self.active)
+        self.h.target_config = 'DAYTIME_PROFILES = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
+        with self.assertRaises(RuntimeError) as raised:
+            self.u.update()
+        message = str(raised.exception)
+        self.assertIn("Active profile 'daytime-27b-ram64' is retired in target revision " + B, message)
+        self.assertIn('daytime, daytime-27b, daytime-flash-f16', message)
+        self.assertIn('switch to a profile selectable there', message)
+        self.assertFalse(any(x[:2] == ('docker', 'build') for x in self.h.calls))
+        self.assertFalse(any(x[0] == 'candidate' for x in self.h.calls))
+        self.assertEqual(read(self.state / 'active.json'), self.active)
+        self.assertEqual(self.h.head, A)
 
     def test_build_failure_leaves_deployed_runtime_and_source_unchanged(self):
         self.h.fail_build = True
