@@ -61,7 +61,7 @@
     "--cont-batching": true,
     "--no-context-shift": true,
     "--cache-prompt": true,
-    "--cache-ram": "32768",
+    "--cache-ram": "49152",
     "--metrics": true,
     "--props": true,
     "--slots": true,

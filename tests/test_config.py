@@ -136,10 +136,10 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_ram_prompt_cache_is_a_uniform_shared_default_with_no_profile_overrides(self):
         shared = read(ROOT / 'config/shared.json')
-        self.assertEqual(shared['arguments']['--cache-ram'], '32768')
+        self.assertEqual(shared['arguments']['--cache-ram'], '49152')
         # No profile may override the shared RAM prompt cache cap: every backend inherits the
-        # same 32 GiB lazy LRU limit (zero idle cost), so the worst-case combined host-RAM
-        # pressure of the daytime + nighttime pair stays bounded at 64 GiB.
+        # same 48 GiB lazy LRU limit (zero idle cost), so the worst-case combined host-RAM
+        # pressure of the daytime + nighttime pair stays bounded at 96 GiB.
         for name in [*DAYTIME_PROFILES, NIGHTTIME_PROFILE]:
             with self.subTest(profile=name):
                 definition = read(ROOT / 'config/profiles' / (name + '.json'))
@@ -147,9 +147,9 @@ class ConfigurationTests(unittest.TestCase):
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 rendered = render(ROOT / 'config', BASELINE['host'], name)
-                self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 32768)
+                self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
                 for model in rendered['catalog']['models']:
-                    self.assertEqual(model['global_ram_prompt_cache_mib'], 32768)
+                    self.assertEqual(model['global_ram_prompt_cache_mib'], 49152)
 
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')

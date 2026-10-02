@@ -65,6 +65,8 @@ The runtime page can select `daytime`, `daytime-flash-f16`, or `daytime-27b` wit
 
 `daytime-flash-f16` uses the same pinned Flash-Next inference image, model weights, 128K context, and Q8 MTP draft as `daytime`. Only the main model's K/V cache is F16 and its microbatch is 1024. Its VRAM fit and throughput have not been qualified on the production GPUs. The original `daytime` profile remains available for direct comparison and recovery.
 
+Every profile, including Nighttime, inherits the uniform RAM prompt-cache cap from `config/shared.json` (`--cache-ram` 49152 MiB = 48 GiB per backend); profiles do not override it. The cap is a lazy LRU limit allocated on demand, never reserved.
+
 A controller-only release of the GPU overview and switching UI does not change rendered model definitions. Verify its revision, health, assignments, profile choices, and disabled controls during other maintenance using read-only requests after deployment. Test an actual production profile switch only in an agreed maintenance window; this pauses new admissions for both models and loads the alternative Daytime backend.
 
 Operation receipts survive page refresh and controller restart. If a switch reports `needs-attention`, inspect the private journals and follow **runtime recover** below. Do not clear journals or edit selected-release receipts to make the controls available. No browser action cancels an in-progress transition or forces a backend restart. After recovery, the controller reconciles the operation result on its next status cycle.
