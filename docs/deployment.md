@@ -4,7 +4,7 @@ The source repository is now `ai-runtime`. Existing production paths and the `lo
 
 ## Initial staging: no production service changes
 
-The current source offers Flash-Next `daytime` (128K), experimental `daytime-flash-f16` (128K), saved `daytime-27b` (160K), experimental `daytime-27b-mtpq5k` (160K), and unchanged Nighttime (128K). Initial migration compares only the two historical Daytime profiles with legacy saved profiles; the new F16 choice has no legacy counterpart. Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
+The current source offers Flash-Next `daytime` (128K), experimental `daytime-flash-f16` (128K), saved `daytime-27b` (160K), and unchanged Nighttime (128K). Initial migration compares only the two historical Daytime profiles with legacy saved profiles; the new F16 choice has no legacy counterpart. Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
 
 Run on Rosalina as the existing deployment user after the repository is published:
 
@@ -61,11 +61,9 @@ If a new revision retires the profile currently active on a host, the updater re
 
 ## Browser profile changes
 
-The runtime page can select `daytime`, `daytime-flash-f16`, `daytime-27b`, or `daytime-27b-mtpq5k` without another source release once this profile is published. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. Source deployments and existing CLI administration retain their existing behavior.
+The runtime page can select `daytime`, `daytime-flash-f16`, or `daytime-27b` without another source release once this profile is published. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. Source deployments and existing CLI administration retain their existing behavior.
 
 `daytime-flash-f16` uses the same pinned Flash-Next inference image, model weights, 128K context, and Q8 MTP draft as `daytime`. Only the main model's K/V cache is F16 and its microbatch is 1024. Its VRAM fit and throughput have not been qualified on the production GPUs. The original `daytime` profile remains available for direct comparison and recovery.
-
-`daytime-27b-mtpq5k` is identical to `daytime-27b`, including its engine, arguments, placement, and main and projector artifacts. Only the MTP draft mounted at `/weights/mtp.gguf` differs: a locally built Q5_K draft (2,232,597,440 bytes) instead of the published Q4_0 draft (1,369,590,656 bytes). The draft is larger and stays on CUDA1. VRAM headroom and throughput have not been qualified. The first switch fully hashes any artifact without a matching receipt. The draft has no public download. Its rebuild inputs are listed in `model-downloads.json`. `daytime-27b` remains available for comparison and rollback.
 
 Every profile, including Nighttime, inherits the uniform RAM prompt-cache cap from `config/shared.json` (`--cache-ram` 49152 MiB = 48 GiB per backend); profiles do not override it. The cap is a lazy LRU limit allocated on demand, never reserved.
 

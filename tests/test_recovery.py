@@ -97,8 +97,8 @@ class RecoveryTests(unittest.TestCase):
 
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
-        self.assertEqual(len(artifacts), 41)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 154272040160)
+        self.assertEqual(len(artifacts), 40)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 152039442720)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():
@@ -124,9 +124,7 @@ class RecoveryTests(unittest.TestCase):
                         if source.get('path') in downloads:
                             self.assertEqual(downloads[source['path']]['sha256'], source['sha256'])
                             self.assertEqual(downloads[source['path']]['bytes'], source['bytes'])
-            self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry],
-                ['llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/'
-                 'mtp-Qwen3.8-27B-Q5_K.gguf'])
+            self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry], [])
 
 
 if __name__ == '__main__':
