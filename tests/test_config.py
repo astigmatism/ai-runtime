@@ -257,6 +257,66 @@ class ConfigurationTests(unittest.TestCase):
             **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q4k'})
         self.assertEqual(variant['catalog']['models'][1], original['catalog']['models'][1])
 
+    def test_q4k_3090_experiment_changes_only_context_and_placement(self):
+        baseline = read(ROOT / 'config/profiles/daytime-27b-q4k.json')
+        candidate = read(ROOT / 'config/profiles/daytime-27b-q4k-3090.json')
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(candidate['id'], 'daytime-27b-q4k-3090')
+        self.assertEqual(candidate['display_name'], 'Daytime-27B Q4_K 3090')
+        self.assertEqual(candidate['context_tokens'], 131072)
+        # Engine, artifacts (same UD-Q4_K_M weights, Q4_0 MTP draft, projector), argument order,
+        # GPU group, and container are inherited unchanged.
+        for key in baseline.keys() - {'id', 'display_name', 'context_tokens', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Every layer goes to the first listed device (CUDA1, the RTX 3090); the alias keeps
+        # single-GPU results apart from the two-GPU profile that shares these weights.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
+            '--alias': 'qwen3.8-27b-ud-q4_k_m-3090', '--tensor-split': '100,0'})
+        for key, expected in {'--device': 'CUDA1,CUDA0', '--spec-draft-device': 'CUDA1',
+                '--n-gpu-layers': '66', '--spec-draft-ngl': 'all'}.items():
+            with self.subTest(argument=key):
+                self.assertEqual(candidate['arguments'][key], expected)
+        warnings = ['Single-RTX 3090 placement: VRAM headroom at full 128K context and throughput have '
+            'not been qualified on the production GPUs.',
+            '128K is the total prompt, history, reasoning, and output capacity.']
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q4k-3090'
+        expected_catalog['deployment_warnings'] = warnings
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q4k')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q4k-3090')
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        argv = variant_cfg['command']
+        original_argv = original_cfg['command']
+        for flag, value in {'--alias': 'qwen3.8-27b-ud-q4_k_m-3090', '--ctx-size': '131072',
+                '--kv-unified-per-slot': '131072', '--tensor-split': '100,0'}.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
+        self.assertEqual(variant_cfg, original_cfg)  # identical devices, mounts, ports, and other argv
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        self.assertEqual(variant['artifacts'], original['artifacts'])
+        catalog = variant['catalog']
+        self.assertEqual(catalog['model'], 'qwen3.8-27b-ud-q4_k_m-3090')
+        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
+        self.assertEqual(catalog['quantization'], 'UD-Q4_K_M')
+        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
+        self.assertEqual(catalog['context_length'], 131072)
+        self.assertEqual(catalog['total_context_length'], 131072)
+        self.assertEqual(catalog['gpu_uuids'], original['catalog']['gpu_uuids'])
+        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
+        self.assertEqual(catalog['display_name'], 'Daytime-27B Q4_K 3090 (128K)')
+        self.assertEqual(catalog['capability_profile'], {
+            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q4k-3090'})
+        self.assertEqual(catalog['deployment_warnings'], warnings)
+        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
+
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
         recovery = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
@@ -288,7 +348,8 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k',
+             'daytime-27b-q4k-3090'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

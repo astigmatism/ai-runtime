@@ -6,8 +6,8 @@ const node = (tag, text = '', cls = '') => {
   if (cls) element.className = cls;
   return element;
 };
-const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', 'daytime-27b-q6k': 'Daytime-27B Q6_K', 'daytime-27b-q4k': 'Daytime-27B Q4_K', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
-const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-ud-q6_k_xl': '27B UD-Q6_K_XL', 'qwen3.8-27b-ud-q4_k_m': '27B UD-Q4_K_M', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
+const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', 'daytime-27b-q6k': 'Daytime-27B Q6_K', 'daytime-27b-q4k': 'Daytime-27B Q4_K', 'daytime-27b-q4k-3090': 'Daytime-27B Q4_K 3090', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
+const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-ud-q6_k_xl': '27B UD-Q6_K_XL', 'qwen3.8-27b-ud-q4_k_m': '27B UD-Q4_K_M', 'qwen3.8-27b-ud-q4_k_m-3090': '27B UD-Q4_K_M · 3090', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
 const phaseNames = {checking: 'Check', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
 const phases = Object.keys(phaseNames);
