@@ -317,6 +317,82 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
+    def test_q4k_256k_experiment_changes_only_the_context(self):
+        baseline = read(ROOT / 'config/profiles/daytime-27b-q4k.json')
+        candidate = read(ROOT / 'config/profiles/daytime-27b-q4k-256k.json')
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(candidate['id'], 'daytime-27b-q4k-256k')
+        self.assertEqual(candidate['context_tokens'], 262144)  # the model's native window
+        # Engine, artifacts (same UD-Q4_K_M weights, Q4_0 MTP draft, projector), argument order,
+        # GPU group, container, and display name are inherited unchanged.
+        for key in baseline.keys() - {'id', 'context_tokens', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Placement, cache types, and batch sizes are untouched; only the alias names the experiment.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
+            '--alias': 'qwen3.8-27b-ud-q4_k_m-256k'})
+        warnings = ['256K context: VRAM headroom at full context and long-context throughput have not '
+            'been qualified on the production GPUs.',
+            '256K is the total prompt, history, reasoning, and output capacity.']
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q4k-256k'
+        expected_catalog['deployment_warnings'] = warnings
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q4k')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q4k-256k')
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        argv = variant_cfg['command']
+        original_argv = original_cfg['command']
+        for flag, value in {'--alias': 'qwen3.8-27b-ud-q4_k_m-256k', '--ctx-size': '262144',
+                '--kv-unified-per-slot': '262144'}.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
+        self.assertEqual(variant_cfg, original_cfg)  # identical devices, split, KV types, mounts, and other argv
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        self.assertEqual(variant['artifacts'], original['artifacts'])
+        catalog = variant['catalog']
+        self.assertEqual(catalog['model'], 'qwen3.8-27b-ud-q4_k_m-256k')
+        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
+        self.assertEqual(catalog['quantization'], 'UD-Q4_K_M')
+        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
+        self.assertEqual(catalog['context_length'], 262144)
+        self.assertEqual(catalog['total_context_length'], 262144)
+        self.assertEqual(variant['manifest']['services'][0]['context_tokens'], 262144)
+        self.assertEqual(catalog['gpu_uuids'], original['catalog']['gpu_uuids'])
+        self.assertEqual(catalog['kv_cache'], {'unified': False, 'key_type': 'q8_0', 'value_type': 'q8_0'})
+        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(catalog['global_ram_prompt_cache_mib'], original['catalog']['global_ram_prompt_cache_mib'])
+        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
+        self.assertEqual(catalog['display_name'], 'Daytime-27B Q4_K (256K)')
+        self.assertEqual(catalog['capability_profile'], {
+            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q4k-256k'})
+        self.assertEqual(catalog['deployment_warnings'], warnings)
+        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
+
+    def test_context_ceiling_is_the_router_contract_native_window(self):
+        from runtime.config import ROUTER_CONTEXT_LIMIT
+        self.assertEqual(ROUTER_CONTEXT_LIMIT, 262144)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles/daytime-27b-q4k.json'
+            definition = read(path)
+            for tokens in (262145, 0, '262144'):
+                with self.subTest(tokens=tokens):
+                    definition['context_tokens'] = tokens
+                    path.write_text(json.dumps(definition))
+                    with self.assertRaisesRegex(RuntimeError, 'router contract: 1–262144 tokens'):
+                        render(config, BASELINE['host'], 'daytime-27b-q4k')
+                    with self.assertRaisesRegex(RuntimeError, 'router contract'):
+                        available_profiles(config)
+            definition['context_tokens'] = 262144
+            path.write_text(json.dumps(definition))
+            self.assertEqual(render(config, BASELINE['host'], 'daytime-27b-q4k')['catalog']['context_length'], 262144)
+
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
         recovery = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
@@ -349,7 +425,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k',
-             'daytime-27b-q4k-3090'))
+             'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
@@ -429,7 +505,7 @@ class RegistryTests(unittest.TestCase):
         for name, mutate, expected in [
                 ('daytime', lambda definition: definition.update(engine='no-such-engine'), 'unknown engine'),
                 ('nighttime', lambda definition: definition.update(id='renamed'), 'differs from its filename'),
-                ('daytime', lambda definition: definition.update(context_tokens=262144), 'router contract')]:
+                ('daytime', lambda definition: definition.update(context_tokens=262145), 'router contract')]:
             with self.subTest(profile=name):
                 with self.assertRaisesRegex(RuntimeError, expected):
                     self.registry_with(name, mutate)

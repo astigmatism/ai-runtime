@@ -6,8 +6,16 @@ import re
 from pathlib import Path
 
 DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k',
-    'daytime-27b-q4k-3090')
+    'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k')
 NIGHTTIME_PROFILE = 'nighttime'
+# LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
+# native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
+ROUTER_CONTEXT_LIMIT = 262144
+
+
+def require_router_context(tokens):
+    require(type(tokens) is int and 0 < tokens <= ROUTER_CONTEXT_LIMIT,
+        f'Context must be within the current router contract: 1–{ROUTER_CONTEXT_LIMIT} tokens')
 
 
 def read(path):
@@ -84,7 +92,7 @@ def profile_summary(config_dir, name, shared, gpu_names=None):
     require(definition.get('id') == name, name + ': profile file id differs from its filename')
     require(definition['engine'] in shared['engines'], name + ': unknown engine ' + str(definition['engine']))
     tokens = definition['context_tokens']
-    require(type(tokens) is int and 0 < tokens <= 163840, 'Context must be within the current router contract: 1–163840 tokens')
+    require_router_context(tokens)
     options = {**shared['arguments'], **definition['arguments']}
     engine = shared['engines'][definition['engine']]
     return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
@@ -120,7 +128,7 @@ def render(config_dir, host, profile):
         role = definition['role']
         engine = shared['engines'][definition['engine']]
         ctx = definition['context_tokens']
-        require(type(ctx) is int and 0 < ctx <= 163840, 'Context must be within the current router contract: 1–163840 tokens')
+        require_router_context(ctx)
         options = {**shared['arguments'], **definition['arguments'],
             '--ctx-size': str(ctx), '--kv-unified-per-slot': str(ctx)}
         order = list(definition['argument_order'])
