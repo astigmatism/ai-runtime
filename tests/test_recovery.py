@@ -97,8 +97,8 @@ class RecoveryTests(unittest.TestCase):
 
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
-        self.assertEqual(len(artifacts), 40)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 152039442720)
+        self.assertEqual(len(artifacts), 41)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 177338504384)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

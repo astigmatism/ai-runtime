@@ -14,7 +14,7 @@ Containerization makes the application replaceable. It does not back up model we
 | Router conversation data, Open WebUI data, other application volumes | Separate consistent application backups |
 | OS, LAN address, user IDs, NVIDIA driver/toolkit, Docker/Compose | Host provisioning; record installed versions in the private recovery inventory |
 
-The current model definitions require 40 files (152,039,442,720 bytes) for every profile, or five files (54,702,891,968 bytes) for `daytime-27b` plus Nighttime. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
+The current model definitions require 41 files (177,338,504,384 bytes) for every profile, or five files (54,702,891,968 bytes) for `daytime-27b` plus Nighttime. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
 
 The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
 
