@@ -204,6 +204,59 @@ class ConfigurationTests(unittest.TestCase):
             **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q6k'})
         self.assertEqual(variant['catalog']['models'][1], original['catalog']['models'][1])
 
+    def test_q4k_experiment_changes_only_the_main_weights(self):
+        baseline = read(ROOT / 'config/profiles/daytime-27b.json')
+        candidate = read(ROOT / 'config/profiles/daytime-27b-q4k.json')
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(candidate['id'], 'daytime-27b-q4k')
+        self.assertEqual(candidate['display_name'], 'Daytime-27B Q4_K')
+        # Engine, placement, argument order, and container are inherited unchanged.
+        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'artifacts', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Only the alias changes, because it names the weight quantization.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': 'qwen3.8-27b-ud-q4_k_m'})
+        main_path = ('llm/Qwen3.8-27B-GGUF/fallbacks/4ca720788d1e01f1bff70c033e0d0028fd02e502/'
+            'Qwen3.8-27B-UD-Q4_K_M.gguf')
+        self.assertEqual(candidate['artifacts'][0], {'path': main_path, 'target': '/weights/main.gguf',
+            'bytes': 16464440224, 'sha256': '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482'})
+        self.assertEqual(baseline['artifacts'][0]['target'], '/weights/main.gguf')
+        self.assertEqual(candidate['artifacts'][1:], baseline['artifacts'][1:])  # Q4_0 MTP draft and projector
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['quantization'] = 'UD-Q4_K_M'
+        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q4k'
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q4k')
+        main_source = str(Path(BASELINE['host']['model_root']) / main_path)
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        mount = next(m for m in variant_cfg['volumes'] if m['target'] == '/weights/main.gguf')
+        self.assertEqual(mount['source'], main_source)
+        mount['source'] = next(m['source'] for m in original_cfg['volumes'] if m['target'] == '/weights/main.gguf')
+        argv = variant_cfg['command']
+        self.assertEqual(argv[argv.index('--alias') + 1], 'qwen3.8-27b-ud-q4_k_m')
+        argv[argv.index('--alias') + 1] = 'qwen3.8-27b-q8_0'
+        self.assertEqual(variant_cfg, original_cfg)  # identical devices, ports, other mounts, and other argv
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        changed = [a for a in variant['artifacts'] if a not in original['artifacts']]
+        self.assertEqual([a['source'] for a in changed], [main_source])
+        self.assertEqual(len(variant['artifacts']), len(original['artifacts']))
+        self.assertEqual(variant['catalog']['model'], 'qwen3.8-27b-ud-q4_k_m')
+        self.assertEqual(variant['catalog']['model_path'], main_source)
+        self.assertEqual(variant['catalog']['quantization'], 'UD-Q4_K_M')
+        self.assertEqual(variant['catalog']['aliases'], original['catalog']['aliases'])
+        self.assertEqual(variant['catalog']['context_length'], 163840)
+        self.assertEqual(variant['catalog']['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(variant['catalog']['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
+        self.assertEqual(variant['catalog']['display_name'], 'Daytime-27B Q4_K (160K)')
+        self.assertEqual(variant['catalog']['capability_profile'], {
+            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q4k'})
+        self.assertEqual(variant['catalog']['models'][1], original['catalog']['models'][1])
+
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
         recovery = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
@@ -235,7 +288,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
