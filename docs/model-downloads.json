@@ -14,6 +14,28 @@
       "download_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/mtp-Qwen3.8-27B-Q4_0.gguf"
     },
     {
+      "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/mtp-Qwen3.8-27B-Q5_K.gguf",
+      "bytes": 2232597440,
+      "sha256": "1c82ba53aa28717ed65aa0747bd792f755c1507ed3148b36d5cd4806f9ee46ef",
+      "derivation": {
+        "note": "Locally built on Rosalina for the daytime-27b-mtpq5k experiment (2026-10-02); there is no public download. Rebuild from the inputs, then validate bytes and SHA-256. Builder report: two independent quantize passes were byte-identical.",
+        "method": "Dequantize the main Q8_0 to BF16 and re-quantize the 18 MTP draft tensors (blk.64.*, output, output_norm, token_embd) with the Q5_K_M type mix: output, attn_v, and ffn_down Q6_K; seven tensors Q5_K; eight F32 norms. The imatrix has no entries for these draft tensors.",
+        "inputs": [
+          {
+            "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-Q8_0.gguf",
+            "bytes": 29047086048,
+            "sha256": "a680f44a06920e5d689774823782006aa3acc8db95750323373b24139b67e348",
+            "download_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-Q8_0.gguf"
+          },
+          {
+            "bytes": 13642656,
+            "sha256": "0ee5b10bd0c2fa2127c6f4b43dbfe1efd71e383b63217af9dade1de36599f1c1",
+            "download_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/imatrix_unsloth.gguf"
+          }
+        ]
+      }
+    },
+    {
       "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/mmproj-F16.gguf",
       "bytes": 927607488,
       "sha256": "cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e",

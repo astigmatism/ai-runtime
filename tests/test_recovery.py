@@ -97,17 +97,36 @@ class RecoveryTests(unittest.TestCase):
 
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
-        self.assertEqual(len(artifacts), 40)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 152039442720)
+        self.assertEqual(len(artifacts), 41)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 154272040160)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():
             downloads = {x['path']: x for x in read(sources)['artifacts']}
             for artifact in artifacts:
-                entry = downloads[artifact['path']]
-                self.assertEqual(entry['sha256'], artifact['sha256'])
-                self.assertEqual(entry['bytes'], artifact['bytes'])
-                self.assertTrue(entry['download_url'].startswith('https://huggingface.co/'))
+                with self.subTest(path=artifact['path']):
+                    entry = downloads[artifact['path']]
+                    self.assertEqual(entry['sha256'], artifact['sha256'])
+                    self.assertEqual(entry['bytes'], artifact['bytes'])
+                    # A locally built artifact has no public download. It must instead name
+                    # checksum-pinned public inputs so it can be rebuilt and re-verified.
+                    self.assertEqual(('download_url' in entry) + ('derivation' in entry), 1)
+                    if 'derivation' in entry:
+                        self.assertTrue(entry['derivation']['method'])
+                        inputs = entry['derivation']['inputs']
+                        self.assertTrue(inputs)
+                    else:
+                        inputs = [entry]
+                    for source in inputs:
+                        self.assertTrue(source['download_url'].startswith('https://huggingface.co/'))
+                        self.assertRegex(source['sha256'], '^[0-9a-f]{64}$')
+                        self.assertIs(type(source['bytes']), int)
+                        if source.get('path') in downloads:
+                            self.assertEqual(downloads[source['path']]['sha256'], source['sha256'])
+                            self.assertEqual(downloads[source['path']]['bytes'], source['bytes'])
+            self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry],
+                ['llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/'
+                 'mtp-Qwen3.8-27B-Q5_K.gguf'])
 
 
 if __name__ == '__main__':

@@ -18,8 +18,9 @@ This is the model lifecycle controller. Inference requests go through [LLM Route
 | `daytime` | Qwen3.8-Flash-Next AtomicChat AD-4.27bpw-Q4_K_M-M64, shared Q4_K_M MTP2 | 128K | RTX 3090 + RTX 4080 SUPER |
 | `daytime-flash-f16` | Same Flash-Next model and MTP draft with F16 main-model KV cache and 1024 microbatch | 128K | RTX 3090 + RTX 4080 SUPER |
 | `daytime-27b` | Saved Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
+| `daytime-27b-mtpq5k` | Experiment: `daytime-27b` with a locally built Q5_K MTP3 draft; nothing else changes | 160K | RTX 3090 + RTX 4080 SUPER |
 
-All three Daytime choices include Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule. `daytime-flash-f16` is an experiment on the existing Flash-Next engine; its VRAM fit and throughput on the production GPUs have not been qualified. It does not include newer sparse-attention code.
+Every Daytime choice includes Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule. `daytime-flash-f16` is an experiment on the existing Flash-Next engine; its VRAM fit and throughput on the production GPUs have not been qualified. It does not include newer sparse-attention code. `daytime-27b-mtpq5k` is a draft-precision A/B candidate; its VRAM fit and throughput have not been qualified either.
 
 The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Flash-Next uses revision `d1a92352cbd417fd840b4e765c0b82f5fe3d1d89`; Nighttime and the saved 27B profile use `8ea290247c87ced2ab245b056ffe96dbcf90d36c`. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
 

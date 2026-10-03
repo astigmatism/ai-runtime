@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16')
+DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-mtpq5k')
 NIGHTTIME_PROFILE = 'nighttime'
 
 

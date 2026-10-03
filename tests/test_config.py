@@ -151,6 +151,57 @@ class ConfigurationTests(unittest.TestCase):
                 for model in rendered['catalog']['models']:
                     self.assertEqual(model['global_ram_prompt_cache_mib'], 49152)
 
+    def test_mtpq5k_experiment_changes_only_the_mtp_draft_artifact(self):
+        baseline = read(ROOT / 'config/profiles/daytime-27b.json')
+        candidate = read(ROOT / 'config/profiles/daytime-27b-mtpq5k.json')
+        self.assertEqual(candidate['id'], 'daytime-27b-mtpq5k')
+        self.assertEqual(candidate['display_name'], 'Daytime-27B MTP-Q5_K')
+        # Launch arguments, engine, placement, and container are inherited unchanged.
+        for key in baseline.keys() - {'id', 'display_name', 'artifacts', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        draft_path = ('llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/'
+            'mtp-Qwen3.8-27B-Q5_K.gguf')
+        self.assertEqual(candidate['artifacts'][1], {'path': draft_path, 'target': '/weights/mtp.gguf',
+            'bytes': 2232597440, 'sha256': '1c82ba53aa28717ed65aa0747bd792f755c1507ed3148b36d5cd4806f9ee46ef'})
+        self.assertEqual(baseline['artifacts'][1]['target'], '/weights/mtp.gguf')
+        self.assertEqual(candidate['artifacts'][0], baseline['artifacts'][0])  # main Q8_0
+        self.assertEqual(candidate['artifacts'][2], baseline['artifacts'][2])  # projector
+        self.assertEqual(len(candidate['artifacts']), len(baseline['artifacts']))
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['mtp']['quantization'] = 'Q5_K'
+        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-mtpq5k'
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-mtpq5k')
+        draft_source = str(Path(BASELINE['host']['model_root']) / draft_path)
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        mount = next(m for m in variant_cfg['volumes'] if m['target'] == '/weights/mtp.gguf')
+        self.assertEqual(mount['source'], draft_source)
+        mount['source'] = next(m['source'] for m in original_cfg['volumes'] if m['target'] == '/weights/mtp.gguf')
+        self.assertEqual(variant_cfg, original_cfg)  # identical argv, devices, ports, and other mounts
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        changed = [a for a in variant['artifacts'] if a not in original['artifacts']]
+        self.assertEqual([a['source'] for a in changed], [draft_source])
+        self.assertEqual(len(variant['artifacts']), len(original['artifacts']))
+        self.assertEqual(variant['catalog']['model'], original['catalog']['model'])
+        self.assertEqual(variant['catalog']['aliases'], original['catalog']['aliases'])
+        self.assertEqual(variant['catalog']['context_length'], 163840)
+        self.assertEqual(variant['catalog']['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(variant['catalog']['mtp'], {**original['catalog']['mtp'],
+            'quantization': 'Q5_K', 'model_path': draft_source})
+        self.assertEqual(variant['catalog']['mtp']['max_draft_tokens'], 3)
+        self.assertEqual(variant['catalog']['mtp']['device'], 'CUDA1')
+        self.assertEqual(original['catalog']['mtp']['quantization'], 'Q4_0')
+        self.assertEqual(variant['catalog']['display_name'], 'Daytime-27B MTP-Q5_K (160K)')
+        self.assertEqual(variant['catalog']['capability_profile'], {
+            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-mtpq5k'})
+        self.assertEqual(variant['catalog']['models'][1], original['catalog']['models'][1])
+
     def test_recovery_profile_preserves_nighttime_and_original_identity(self):
         current = render(ROOT / 'config', BASELINE['host'], 'daytime')
         recovery = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
@@ -182,7 +233,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-mtpq5k'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
