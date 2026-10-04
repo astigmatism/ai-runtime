@@ -65,6 +65,7 @@
     "--tensor-split": "60,40",
     "--device": "CUDA0,CUDA1",
     "--lazy-mode": "off",
+    "--cache-ram": "24576",
     "--threads": "4",
     "--threads-batch": "4",
     "--batch-size": "512",

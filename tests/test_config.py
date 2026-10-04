@@ -134,22 +134,30 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('vram', warning)
         self.assertIn('throughput', warning)
 
-    def test_ram_prompt_cache_is_a_uniform_shared_default_with_no_profile_overrides(self):
+    def test_ram_prompt_cache_is_shared_for_daytime_and_lowered_only_for_nighttime(self):
         shared = read(ROOT / 'config/shared.json')
         self.assertEqual(shared['arguments']['--cache-ram'], '49152')
-        # No profile may override the shared RAM prompt cache cap: every backend inherits the
-        # same 48 GiB lazy LRU limit (zero idle cost), so the worst-case combined host-RAM
-        # pressure of the daytime + nighttime pair stays bounded at 96 GiB.
-        for name in [*DAYTIME_PROFILES, NIGHTTIME_PROFILE]:
+        # Every Daytime profile inherits the shared 48 GiB lazy LRU cap. Nighttime alone overrides
+        # it to 24 GiB: on the 123 GiB host its cache had grown to ~50 GB with ~8 GB swapped and
+        # swap exhausted, so the worst-case combined pair is bounded at 72 GiB instead of 96 GiB.
+        for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 definition = read(ROOT / 'config/profiles' / (name + '.json'))
                 self.assertNotIn('--cache-ram', definition['arguments'])
+        night = read(ROOT / 'config/profiles' / (NIGHTTIME_PROFILE + '.json'))
+        self.assertEqual(night['arguments']['--cache-ram'], '24576')
+        self.assertIn('--cache-ram', night['argument_order'])
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 rendered = render(ROOT / 'config', BASELINE['host'], name)
                 self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
-                for model in rendered['catalog']['models']:
-                    self.assertEqual(model['global_ram_prompt_cache_mib'], 49152)
+                coding, everyday = rendered['catalog']['models']
+                self.assertEqual(coding['global_ram_prompt_cache_mib'], 49152)
+                self.assertEqual(everyday['global_ram_prompt_cache_mib'], 24576)
+                for role, expected in (('coding', '49152'), ('everyday', '24576')):
+                    argv = rendered['compose']['services'][role]['command']
+                    self.assertEqual(argv.count('--cache-ram'), 1)
+                    self.assertEqual(argv[argv.index('--cache-ram') + 1], expected)
 
     def test_q6k_experiment_changes_only_the_main_weights(self):
         baseline = read(ROOT / 'config/profiles/daytime-27b.json')
@@ -374,59 +382,6 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
-    def test_q6k_draft4_experiment_changes_only_the_draft_length(self):
-        baseline = read(ROOT / 'config/profiles/daytime-27b-q6k.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-q6k-draft4.json')
-        self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(candidate['id'], 'daytime-27b-q6k-draft4')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B Q6_K Draft4')
-        # Engine, artifacts (same UD-Q6_K_XL weights, Q4_0 MTP draft, projector), argument order,
-        # context, GPU group, and container are inherited unchanged.
-        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        # Only the MTP draft length changes; the alias keeps four-token results apart.
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
-            '--alias': 'qwen3.8-27b-ud-q6_k_xl-draft4', '--spec-draft-n-max': '4'})
-        warnings = ['Four-token MTP draft: throughput and VRAM headroom have not been qualified on the '
-            'production GPUs.',
-            '160K is the total prompt, history, reasoning, and output capacity.']
-        expected_catalog = copy.deepcopy(baseline['catalog'])
-        expected_catalog['mtp']['max_draft_tokens'] = 4
-        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q6k-draft4'
-        expected_catalog['deployment_warnings'] = warnings
-        self.assertEqual(candidate['catalog'], expected_catalog)
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k-draft4')
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        argv = variant_cfg['command']
-        original_argv = original_cfg['command']
-        for flag, value in {'--alias': 'qwen3.8-27b-ud-q6_k_xl-draft4', '--spec-draft-n-max': '4'}.items():
-            with self.subTest(flag=flag):
-                self.assertEqual(argv[argv.index(flag) + 1], value)
-                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
-        self.assertEqual(variant_cfg, original_cfg)  # identical devices, split, KV types, mounts, and other argv
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
-        self.assertEqual(variant['artifacts'], original['artifacts'])
-        catalog = variant['catalog']
-        self.assertEqual(catalog['model'], 'qwen3.8-27b-ud-q6_k_xl-draft4')
-        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
-        self.assertEqual(catalog['quantization'], 'UD-Q6_K_XL')
-        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
-        self.assertEqual(catalog['context_length'], 163840)
-        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
-        self.assertEqual(catalog['global_ram_prompt_cache_mib'], original['catalog']['global_ram_prompt_cache_mib'])
-        self.assertEqual(catalog['mtp'], {**original['catalog']['mtp'], 'max_draft_tokens': 4})
-        self.assertEqual(catalog['display_name'], 'Daytime-27B Q6_K Draft4 (160K)')
-        self.assertEqual(catalog['capability_profile'], {
-            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q6k-draft4'})
-        self.assertEqual(catalog['deployment_warnings'], warnings)
-        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
-
     def test_tensor_experiment_changes_only_the_split_mode_and_proportions(self):
         baseline = read(ROOT / 'config/profiles/daytime-27b.json')
         candidate = read(ROOT / 'config/profiles/daytime-27b-tensor.json')
@@ -543,8 +498,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k',
-             'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k', 'daytime-27b-q6k-draft4',
-             'daytime-27b-tensor'))
+             'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k', 'daytime-27b-tensor'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
