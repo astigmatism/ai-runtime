@@ -134,6 +134,71 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('vram', warning)
         self.assertIn('throughput', warning)
 
+    def test_flash_next_engine_candidate_changes_only_engine_alias_and_mtp_head(self):
+        baseline = read(ROOT / 'config/profiles/daytime.json')
+        candidate = read(ROOT / 'config/profiles/daytime-flash-next.json')
+        engines = read(ROOT / 'config/shared.json')['engines']
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(candidate['id'], 'daytime-flash-next')
+        self.assertEqual(candidate['display_name'], 'FlashNext Next Engine')
+        self.assertEqual(candidate['engine'], 'qwen38-dual-836d571')
+        for key in baseline.keys() - {'id', 'display_name', 'engine', 'arguments', 'artifacts', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Same layer-split placement, overrides, batch sizes, and draft settings as daytime. Tensor
+        # mode is deliberately not used: 31 of 48 expert blocks live on the CPU, and the meta device
+        # used by --split-mode tensor cannot offload CPU-resident expert weights for prompt batches.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-next'})
+        self.assertNotIn('--split-mode', candidate['arguments'])
+        # Upstream qwen4exp MTP cannot borrow the target's tensors, so the shared-Q4_K_M head is
+        # replaced by the mainline-converted, self-contained ggml-org Q4_0 head.
+        head = {'path': 'llm/ggml-org/Qwen3.8-Flash-Next-GGUF/revisions/052beeaca7bec4a303e59cc7bc630c4f3a1b845d/'
+                'mtp-Qwen3.8-Flash-Next-Q4_0.gguf', 'target': '/weights/mtp.gguf',
+                'bytes': 2199652640, 'sha256': 'd484e6e541a36b714976f72f7d1a86ae2cc450cff110b81e3656512784abd1c6'}
+        self.assertEqual(candidate['artifacts'][:-1], baseline['artifacts'][:-1])  # 33 shards and projector
+        self.assertEqual(baseline['artifacts'][-1]['target'], '/weights/mtp.gguf')
+        self.assertEqual(candidate['artifacts'][-1], head)
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['mtp'].update(revision='052beeaca7bec4a303e59cc7bc630c4f3a1b845d', quantization='Q4_0')
+        expected_catalog['capability_profile']['name'] = 'qwen38-flash-next-ad427-next-engine-128k'
+        expected_catalog['deployment_warnings'] = [
+            'Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with the mainline '
+            'ggml-org Q4_0 MTP head: load, VRAM headroom at full 128K context, and throughput have not been '
+            'qualified on the production GPUs.',
+            '128K is the total prompt, history, reasoning, and output capacity.']
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-flash-next')
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        self.assertEqual(variant_cfg['image'], engines['qwen38-dual-836d571']['tag'])
+        variant_cfg['image'] = original_cfg['image']
+        argv, original_argv = variant_cfg['command'], original_cfg['command']
+        self.assertEqual(argv[argv.index('--split-mode') + 1], 'layer')
+        self.assertEqual(argv[argv.index('--alias') + 1], 'qwen3.8-flash-next-ad4.27-next')
+        argv[argv.index('--alias') + 1] = original_argv[original_argv.index('--alias') + 1]
+        head_source = str(Path(BASELINE['host']['model_root']) / head['path'])
+        mount = next(m for m in variant_cfg['volumes'] if m['target'] == '/weights/mtp.gguf')
+        self.assertEqual(mount['source'], head_source)
+        mount['source'] = next(m['source'] for m in original_cfg['volumes'] if m['target'] == '/weights/mtp.gguf')
+        self.assertEqual(variant_cfg, original_cfg)  # same devices, overrides, draft on CUDA0, KV types, other argv
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), engines['qwen38-dual-836d571'])
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        catalog = variant['catalog']
+        self.assertEqual(catalog['model'], 'qwen3.8-flash-next-ad4.27-next')
+        self.assertEqual(catalog['backend_revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
+        self.assertEqual(catalog['context_length'], 131072)
+        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
+        self.assertEqual(catalog['display_name'], 'FlashNext Next Engine (128K)')
+        self.assertEqual(catalog['mtp'], {**original['catalog']['mtp'], 'model_path': head_source,
+            'revision': '052beeaca7bec4a303e59cc7bc630c4f3a1b845d', 'quantization': 'Q4_0'})
+        self.assertEqual((catalog['mtp']['device'], catalog['mtp']['max_draft_tokens']), ('CUDA0', 2))
+        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
+        self.assertEqual(len(variant['artifacts']), 37)
+
     def test_ram_prompt_cache_is_shared_for_daytime_and_lowered_only_for_nighttime(self):
         shared = read(ROOT / 'config/shared.json')
         self.assertEqual(shared['arguments']['--cache-ram'], '49152')
@@ -161,7 +226,8 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_every_qwen_backend_uses_the_single_pinned_engine(self):
         engines = read(ROOT / 'config/shared.json')['engines']
-        # The original qwen38-dual (8ea2902) engine is retired; Flash-Next keeps its own engine.
+        # The original qwen38-dual (8ea2902) engine is retired; Flash-Next keeps its own engine, and the
+        # daytime-flash-next experiment runs the same Flash-Next weights on the 836d571 engine.
         self.assertEqual(set(engines), {'qwen38-dual-836d571', 'flash-next-mtp'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
@@ -169,7 +235,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
         expected = {'daytime': 'flash-next-mtp', 'daytime-flash-f16': 'flash-next-mtp',
             'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
-            'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
+            'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', 'daytime-flash-next': 'qwen38-dual-836d571',
+            NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
+        self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
             with self.subTest(profile=name):
                 self.assertEqual(read(ROOT / 'config/profiles' / (name + '.json'))['engine'], engine_name)
@@ -319,7 +387,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next'))
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

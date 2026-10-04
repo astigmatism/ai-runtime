@@ -230,6 +230,12 @@
       "download_url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/38bb39ee97821de2c9009abb7e93950eec396e66/MTP/mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf"
     },
     {
+      "path": "llm/ggml-org/Qwen3.8-Flash-Next-GGUF/revisions/052beeaca7bec4a303e59cc7bc630c4f3a1b845d/mtp-Qwen3.8-Flash-Next-Q4_0.gguf",
+      "bytes": 2199652640,
+      "sha256": "d484e6e541a36b714976f72f7d1a86ae2cc450cff110b81e3656512784abd1c6",
+      "download_url": "https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF/resolve/052beeaca7bec4a303e59cc7bc630c4f3a1b845d/mtp-Qwen3.8-Flash-Next-Q4_0.gguf"
+    },
+    {
       "path": "llm/windowsxp811203/Qwen3.8-27B-Abliterated-GGUF/revisions/efb07baa690a1bc7beb53ee067b4b57c7025b5e7/Qwen3.8-27B-Abliterated-Q6_K.gguf",
       "bytes": 22431000448,
       "sha256": "17b864d1ff112063f4ef5f745da137eeaa9af09cb36a1f1736e24def609e96a2",

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-    'daytime-27b-q6k-tensor-next')
+    'daytime-27b-q6k-tensor-next', 'daytime-flash-next')
 NIGHTTIME_PROFILE = 'nighttime'
 # LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
 # native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
