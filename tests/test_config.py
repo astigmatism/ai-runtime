@@ -374,6 +374,59 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
+    def test_q6k_draft4_experiment_changes_only_the_draft_length(self):
+        baseline = read(ROOT / 'config/profiles/daytime-27b-q6k.json')
+        candidate = read(ROOT / 'config/profiles/daytime-27b-q6k-draft4.json')
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(candidate['id'], 'daytime-27b-q6k-draft4')
+        self.assertEqual(candidate['display_name'], 'Daytime-27B Q6_K Draft4')
+        # Engine, artifacts (same UD-Q6_K_XL weights, Q4_0 MTP draft, projector), argument order,
+        # context, GPU group, and container are inherited unchanged.
+        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Only the MTP draft length changes; the alias keeps four-token results apart.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
+            '--alias': 'qwen3.8-27b-ud-q6_k_xl-draft4', '--spec-draft-n-max': '4'})
+        warnings = ['Four-token MTP draft: throughput and VRAM headroom have not been qualified on the '
+            'production GPUs.',
+            '160K is the total prompt, history, reasoning, and output capacity.']
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['mtp']['max_draft_tokens'] = 4
+        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q6k-draft4'
+        expected_catalog['deployment_warnings'] = warnings
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k')
+        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k-draft4')
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        argv = variant_cfg['command']
+        original_argv = original_cfg['command']
+        for flag, value in {'--alias': 'qwen3.8-27b-ud-q6_k_xl-draft4', '--spec-draft-n-max': '4'}.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
+        self.assertEqual(variant_cfg, original_cfg)  # identical devices, split, KV types, mounts, and other argv
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        self.assertEqual(variant['artifacts'], original['artifacts'])
+        catalog = variant['catalog']
+        self.assertEqual(catalog['model'], 'qwen3.8-27b-ud-q6_k_xl-draft4')
+        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
+        self.assertEqual(catalog['quantization'], 'UD-Q6_K_XL')
+        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
+        self.assertEqual(catalog['context_length'], 163840)
+        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(catalog['global_ram_prompt_cache_mib'], original['catalog']['global_ram_prompt_cache_mib'])
+        self.assertEqual(catalog['mtp'], {**original['catalog']['mtp'], 'max_draft_tokens': 4})
+        self.assertEqual(catalog['display_name'], 'Daytime-27B Q6_K Draft4 (160K)')
+        self.assertEqual(catalog['capability_profile'], {
+            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q6k-draft4'})
+        self.assertEqual(catalog['deployment_warnings'], warnings)
+        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
+
     def test_context_ceiling_is_the_router_contract_native_window(self):
         from runtime.config import ROUTER_CONTEXT_LIMIT
         self.assertEqual(ROUTER_CONTEXT_LIMIT, 262144)
@@ -425,7 +478,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-q4k',
-             'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k'))
+             'daytime-27b-q4k-3090', 'daytime-27b-q4k-256k', 'daytime-27b-q6k-draft4'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
