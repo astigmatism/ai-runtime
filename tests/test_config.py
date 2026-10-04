@@ -180,6 +180,23 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertEqual(bundle['compose']['services'][role]['image'], engine['tag'])
                     self.assertEqual(service_engine(bundle, role), engine)
 
+    def test_nighttime_uses_tensor_parallel_placement_across_its_pair(self):
+        night = read(ROOT / 'config/profiles' / (NIGHTTIME_PROFILE + '.json'))
+        self.assertEqual(night['arguments']['--split-mode'], 'tensor')
+        self.assertIn('--split-mode', night['argument_order'])
+        for flag, value in {'--tensor-split': '60,40', '--device': 'CUDA0,CUDA1', '--n-gpu-layers': 'all',
+                '--cache-ram': '24576'}.items():
+            with self.subTest(argument=flag):
+                self.assertEqual(night['arguments'][flag], value)
+        self.assertNotIn('--spec-type', night['arguments'])  # Nighttime has no MTP draft
+        for name in DAYTIME_PROFILES:
+            with self.subTest(profile=name):
+                argv = render(ROOT / 'config', BASELINE['host'], name)['compose']['services']['everyday']['command']
+                self.assertEqual(argv.count('--split-mode'), 1)
+                self.assertEqual(argv[argv.index('--split-mode') + 1], 'tensor')
+                self.assertEqual(argv[argv.index('--flash-attn') + 1], 'on')  # required by tensor mode
+                self.assertEqual(argv[argv.index('--fit') + 1], 'off')  # fitting is not implemented for tensor mode
+
     def assert_tensor_profile(self, candidate_id, display, alias, capability, quant, main=None):
         baseline = read(ROOT / 'config/profiles/daytime-27b.json')
         candidate = read(ROOT / 'config/profiles' / (candidate_id + '.json'))

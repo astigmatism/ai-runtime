@@ -63,6 +63,7 @@
     "--alias": "qwen3.8-27b-abliterated-q6_k",
     "--n-gpu-layers": "all",
     "--tensor-split": "60,40",
+    "--split-mode": "tensor",
     "--device": "CUDA0,CUDA1",
     "--lazy-mode": "off",
     "--cache-ram": "24576",
