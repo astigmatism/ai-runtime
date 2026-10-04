@@ -16,7 +16,7 @@ Containerization makes the application replaceable. It does not back up model we
 
 The current model definitions require 41 files (177,338,504,384 bytes) for every profile, or five files (54,702,891,968 bytes) for `daytime-27b` plus Nighttime. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
 
-The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
+The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. `qwen38-dual-836d571` was built on the host from upstream llama.cpp `836d57176dc699a726c55418e4f96b8ca628e1bf` with its unmodified `.devops/cuda.Dockerfile` (`--target full`, `CUDA_VERSION=12.8.1`, `CUDA_DOCKER_ARCH=86;89`); see `docs/deployment.md` for the exact command. The private export saves it with the other pinned engines, which adds about 10 GB to `images.tar`. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
 
 ## Make a private export
 

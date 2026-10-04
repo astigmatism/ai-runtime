@@ -329,6 +329,88 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
+    def assert_next_engine_variant(self, baseline_id, candidate_id, display, alias, capability, quant):
+        shared = read(ROOT / 'config/shared.json')
+        new, old = shared['engines']['qwen38-dual-836d571'], shared['engines']['qwen38-dual']
+        baseline = read(ROOT / 'config/profiles' / (baseline_id + '.json'))
+        candidate = read(ROOT / 'config/profiles' / (candidate_id + '.json'))
+        self.assertEqual(candidate.keys(), baseline.keys())
+        self.assertEqual(baseline['engine'], 'qwen38-dual')
+        self.assertEqual(candidate['engine'], 'qwen38-dual-836d571')
+        self.assertEqual(candidate['id'], candidate_id)
+        self.assertEqual(candidate['display_name'], display)
+        # Only the engine differs: artifacts, argument order, context, GPU group, and container are inherited.
+        for key in baseline.keys() - {'id', 'display_name', 'engine', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': alias})
+        warnings = ['Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with ' + quant
+            + ' tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not '
+            'been qualified on the production GPUs.',
+            '160K is the total prompt, history, reasoning, and output capacity.']
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['capability_profile']['name'] = capability
+        expected_catalog['deployment_warnings'] = warnings
+        self.assertEqual(candidate['catalog'], expected_catalog)
+
+        original = render(ROOT / 'config', BASELINE['host'], baseline_id)
+        variant = render(ROOT / 'config', BASELINE['host'], candidate_id)
+        original_cfg = original['compose']['services']['coding']
+        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
+        self.assertEqual(original_cfg['image'], old['tag'])
+        self.assertEqual(variant_cfg['image'], new['tag'])
+        variant_cfg['image'] = original_cfg['image']
+        argv = variant_cfg['command']
+        self.assertEqual(argv[argv.index('--alias') + 1], alias)
+        argv[argv.index('--alias') + 1] = original_cfg['command'][original_cfg['command'].index('--alias') + 1]
+        self.assertEqual(variant_cfg, original_cfg)  # identical argv, devices, split, draft, KV, mounts
+        # Nighttime keeps the original engine and service byte for byte.
+        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
+        self.assertEqual(service_engine(variant, 'coding'), new)
+        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
+        self.assertEqual(service_engine(original, 'coding'), old)
+        self.assertEqual(variant['artifacts'], original['artifacts'])
+        catalog = variant['catalog']
+        self.assertEqual(catalog['model'], alias)
+        self.assertEqual(catalog['backend_revision'], new['revision'])
+        self.assertEqual(original['catalog']['backend_revision'], old['revision'])
+        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
+        self.assertEqual(catalog['context_length'], 163840)
+        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
+        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])
+        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
+        self.assertEqual(catalog['display_name'], display + ' (160K)')
+        self.assertEqual(catalog['deployment_warnings'], warnings)
+        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
+
+    def test_tensor_next_runs_daytime_27b_tensor_on_the_newer_engine_only(self):
+        self.assert_next_engine_variant('daytime-27b-tensor', 'daytime-27b-tensor-next',
+            'Daytime-27B Q8 Tensor Next', 'qwen3.8-27b-q8_0-tensor-next',
+            'qwen38-27b-golden-vision-tools-tensor-next', 'Q8_0')
+
+    def test_q6k_tensor_next_runs_daytime_27b_q6k_tensor_on_the_newer_engine_only(self):
+        self.assert_next_engine_variant('daytime-27b-q6k-tensor', 'daytime-27b-q6k-tensor-next',
+            'Daytime-27B Q6_K Tensor Next', 'qwen3.8-27b-ud-q6_k_xl-tensor-next',
+            'qwen38-27b-golden-vision-tools-q6k-tensor-next', 'UD-Q6_K_XL')
+
+    def test_newer_engine_is_additive_and_keeps_existing_pins(self):
+        engines = read(ROOT / 'config/shared.json')['engines']
+        self.assertEqual(engines['qwen38-dual'], {
+            'image_id': 'sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a',
+            'tag': 'local/llama.cpp:qwen38-dual-8ea290247c87',
+            'revision': '8ea290247c87ced2ab245b056ffe96dbcf90d36c',
+            'build_base_digest': 'sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66',
+            'runtime_base_id': 'sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9'})
+        new = engines['qwen38-dual-836d571']
+        self.assertEqual(new['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
+        self.assertEqual(new['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
+        self.assertRegex(new['image_id'], r'^sha256:[0-9a-f]{64}$')
+        self.assertNotEqual(new['image_id'], engines['qwen38-dual']['image_id'])
+        users = {name for name in DAYTIME_PROFILES
+                 if read(ROOT / 'config/profiles' / (name + '.json'))['engine'] == 'qwen38-dual-836d571'}
+        self.assertEqual(users, {'daytime-27b-tensor-next', 'daytime-27b-q6k-tensor-next'})
+        self.assertEqual(read(ROOT / 'config/profiles' / (NIGHTTIME_PROFILE + '.json'))['engine'], 'qwen38-dual')
+
     def test_context_ceiling_is_the_router_contract_native_window(self):
         from runtime.config import ROUTER_CONTEXT_LIMIT
         self.assertEqual(ROUTER_CONTEXT_LIMIT, 262144)
@@ -380,7 +462,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-tensor',
-             'daytime-27b-q6k-tensor'))
+             'daytime-27b-q6k-tensor', 'daytime-27b-tensor-next', 'daytime-27b-q6k-tensor-next'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
