@@ -69,7 +69,7 @@
     "--model": "/weights/main.gguf",
     "--alias": "qwen3.8-27b-q8_0-tensor",
     "--n-gpu-layers": "66",
-    "--tensor-split": "60,40",
+    "--tensor-split": "55,45",
     "--device": "CUDA1,CUDA0",
     "--lazy-mode": "off",
     "--threads": "18",

@@ -427,7 +427,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
-    def test_tensor_experiment_changes_only_the_split_mode(self):
+    def test_tensor_experiment_changes_only_the_split_mode_and_proportions(self):
         baseline = read(ROOT / 'config/profiles/daytime-27b.json')
         candidate = read(ROOT / 'config/profiles/daytime-27b-tensor.json')
         self.assertEqual(candidate.keys(), baseline.keys())
@@ -438,10 +438,13 @@ class ConfigurationTests(unittest.TestCase):
         for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
             with self.subTest(field=key):
                 self.assertEqual(candidate[key], baseline[key])
-        # Only the split mode changes (overriding the shared 'layer'); the 60,40 proportions now
-        # divide each tensor instead of the layer stack. The alias keeps tensor results apart.
+        # The split mode changes (overriding the shared 'layer') and the proportions move from 60,40 to
+        # 55,45: in tensor mode both cards read their shares concurrently, so the split balances memory
+        # bandwidth (RTX 3090 936 GB/s, RTX 4080 SUPER 736 GB/s) instead of VRAM capacity. The alias
+        # keeps tensor results apart.
+        self.assertEqual(baseline['arguments']['--tensor-split'], '60,40')
         self.assertEqual(candidate['arguments'], {**baseline['arguments'],
-            '--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor'})
+            '--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor', '--tensor-split': '55,45'})
         self.assertIn('--split-mode', candidate['argument_order'])
         warnings = ['Tensor-parallel placement (--split-mode tensor): load, VRAM headroom at full 160K '
             'context, and throughput over PCIe have not been qualified on the production GPUs.',
@@ -459,13 +462,14 @@ class ConfigurationTests(unittest.TestCase):
         original_argv = original_cfg['command']
         self.assertEqual(argv.count('--split-mode'), 1)
         self.assertEqual(original_argv[original_argv.index('--split-mode') + 1], 'layer')
-        for flag, value in {'--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor'}.items():
+        for flag, value in {'--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor',
+                '--tensor-split': '55,45'}.items():
             with self.subTest(flag=flag):
                 self.assertEqual(argv[argv.index(flag) + 1], value)
                 argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
-        # identical devices, tensor-split proportions, draft placement, KV types, mounts, and other argv
+        # identical devices, draft placement, KV types, mounts, and other argv
         self.assertEqual(variant_cfg, original_cfg)
-        for flag, value in {'--tensor-split': '60,40', '--device': 'CUDA1,CUDA0', '--fit': 'off',
+        for flag, value in {'--device': 'CUDA1,CUDA0', '--fit': 'off',
                 '--flash-attn': 'on', '--spec-draft-device': 'CUDA1'}.items():
             with self.subTest(argument=flag):
                 self.assertEqual(argv[argv.index(flag) + 1], value)
