@@ -2,7 +2,7 @@
   "id": "daytime-27b",
   "role": "coding",
   "display_name": "Daytime",
-  "engine": "qwen38-dual",
+  "engine": "qwen38-dual-836d571",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
   "gpu_group": "daytime",

@@ -159,191 +159,46 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertEqual(argv.count('--cache-ram'), 1)
                     self.assertEqual(argv[argv.index('--cache-ram') + 1], expected)
 
-    def test_q6k_experiment_changes_only_the_main_weights(self):
+    def test_every_qwen_backend_uses_the_single_pinned_engine(self):
+        engines = read(ROOT / 'config/shared.json')['engines']
+        # The original qwen38-dual (8ea2902) engine is retired; Flash-Next keeps its own engine.
+        self.assertEqual(set(engines), {'qwen38-dual-836d571', 'flash-next-mtp'})
+        engine = engines['qwen38-dual-836d571']
+        self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
+        self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
+        self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
+        expected = {'daytime': 'flash-next-mtp', 'daytime-flash-f16': 'flash-next-mtp',
+            'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
+            'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
+        for name, engine_name in expected.items():
+            with self.subTest(profile=name):
+                self.assertEqual(read(ROOT / 'config/profiles' / (name + '.json'))['engine'], engine_name)
+        for name in ('daytime-27b', 'daytime-27b-tensor-next'):
+            bundle = render(ROOT / 'config', BASELINE['host'], name)
+            for role in ('coding', 'everyday'):
+                with self.subTest(profile=name, role=role):
+                    self.assertEqual(bundle['compose']['services'][role]['image'], engine['tag'])
+                    self.assertEqual(service_engine(bundle, role), engine)
+
+    def assert_tensor_profile(self, candidate_id, display, alias, capability, quant, main=None):
         baseline = read(ROOT / 'config/profiles/daytime-27b.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-q6k.json')
+        candidate = read(ROOT / 'config/profiles' / (candidate_id + '.json'))
         self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(candidate['id'], 'daytime-27b-q6k')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B Q6_K')
-        # Engine, placement, argument order, and container are inherited unchanged.
+        self.assertEqual(candidate['id'], candidate_id)
+        self.assertEqual(candidate['display_name'], display)
+        # Same engine, context, GPU group, container, and argument order as the saved Q8 recovery profile.
         for key in baseline.keys() - {'id', 'display_name', 'arguments', 'artifacts', 'catalog'}:
             with self.subTest(field=key):
                 self.assertEqual(candidate[key], baseline[key])
-        # Only the alias changes, because it names the weight quantization.
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': 'qwen3.8-27b-ud-q6_k_xl'})
-        main_path = ('llm/Qwen3.8-27B-GGUF/fallbacks/4ca720788d1e01f1bff70c033e0d0028fd02e502/'
-            'Qwen3.8-27B-UD-Q6_K_XL.gguf')
-        self.assertEqual(candidate['artifacts'][0], {'path': main_path, 'target': '/weights/main.gguf',
-            'bytes': 25299061664, 'sha256': '701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917'})
-        self.assertEqual(baseline['artifacts'][0]['target'], '/weights/main.gguf')
-        self.assertEqual(candidate['artifacts'][1:], baseline['artifacts'][1:])  # Q4_0 MTP draft and projector
-        expected_catalog = copy.deepcopy(baseline['catalog'])
-        expected_catalog['quantization'] = 'UD-Q6_K_XL'
-        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q6k'
-        self.assertEqual(candidate['catalog'], expected_catalog)
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k')
-        main_source = str(Path(BASELINE['host']['model_root']) / main_path)
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        mount = next(m for m in variant_cfg['volumes'] if m['target'] == '/weights/main.gguf')
-        self.assertEqual(mount['source'], main_source)
-        mount['source'] = next(m['source'] for m in original_cfg['volumes'] if m['target'] == '/weights/main.gguf')
-        argv = variant_cfg['command']
-        self.assertEqual(argv[argv.index('--alias') + 1], 'qwen3.8-27b-ud-q6_k_xl')
-        argv[argv.index('--alias') + 1] = 'qwen3.8-27b-q8_0'
-        self.assertEqual(variant_cfg, original_cfg)  # identical devices, ports, other mounts, and other argv
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
-        changed = [a for a in variant['artifacts'] if a not in original['artifacts']]
-        self.assertEqual([a['source'] for a in changed], [main_source])
-        self.assertEqual(len(variant['artifacts']), len(original['artifacts']))
-        self.assertEqual(variant['catalog']['model'], 'qwen3.8-27b-ud-q6_k_xl')
-        self.assertEqual(variant['catalog']['model_path'], main_source)
-        self.assertEqual(variant['catalog']['quantization'], 'UD-Q6_K_XL')
-        self.assertEqual(variant['catalog']['aliases'], original['catalog']['aliases'])
-        self.assertEqual(variant['catalog']['context_length'], 163840)
-        self.assertEqual(variant['catalog']['kv_cache'], original['catalog']['kv_cache'])
-        self.assertEqual(variant['catalog']['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
-        self.assertEqual(variant['catalog']['display_name'], 'Daytime-27B Q6_K (160K)')
-        self.assertEqual(variant['catalog']['capability_profile'], {
-            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-q6k'})
-        self.assertEqual(variant['catalog']['models'][1], original['catalog']['models'][1])
-
-    def test_tensor_experiment_changes_only_the_split_mode_and_proportions(self):
-        baseline = read(ROOT / 'config/profiles/daytime-27b.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-tensor.json')
-        self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(candidate['id'], 'daytime-27b-tensor')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B Q8 Tensor')
-        # Engine, artifacts (same Q8_0 weights, Q4_0 MTP draft, projector), argument order,
-        # context, GPU group, and container are inherited unchanged.
-        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        # The split mode changes (overriding the shared 'layer') and the proportions move from 60,40 to
-        # 55,45: in tensor mode both cards read their shares concurrently, so the split balances memory
-        # bandwidth (RTX 3090 936 GB/s, RTX 4080 SUPER 736 GB/s) instead of VRAM capacity. The alias
-        # keeps tensor results apart.
-        self.assertEqual(baseline['arguments']['--tensor-split'], '60,40')
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
-            '--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor', '--tensor-split': '55,45'})
+        # Tensor-parallel placement: split mode tensor with bandwidth-balanced 55,45 proportions.
+        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': alias,
+            '--split-mode': 'tensor', '--tensor-split': '55,45'})
         self.assertIn('--split-mode', candidate['argument_order'])
-        warnings = ['Tensor-parallel placement (--split-mode tensor): load, VRAM headroom at full 160K '
-            'context, and throughput over PCIe have not been qualified on the production GPUs.',
-            '160K is the total prompt, history, reasoning, and output capacity.']
-        expected_catalog = copy.deepcopy(baseline['catalog'])
-        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-tensor'
-        expected_catalog['deployment_warnings'] = warnings
-        self.assertEqual(candidate['catalog'], expected_catalog)
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-tensor')
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        argv = variant_cfg['command']
-        original_argv = original_cfg['command']
-        self.assertEqual(argv.count('--split-mode'), 1)
-        self.assertEqual(original_argv[original_argv.index('--split-mode') + 1], 'layer')
-        for flag, value in {'--alias': 'qwen3.8-27b-q8_0-tensor', '--split-mode': 'tensor',
-                '--tensor-split': '55,45'}.items():
-            with self.subTest(flag=flag):
-                self.assertEqual(argv[argv.index(flag) + 1], value)
-                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
-        # identical devices, draft placement, KV types, mounts, and other argv
-        self.assertEqual(variant_cfg, original_cfg)
-        for flag, value in {'--device': 'CUDA1,CUDA0', '--fit': 'off',
-                '--flash-attn': 'on', '--spec-draft-device': 'CUDA1'}.items():
-            with self.subTest(argument=flag):
-                self.assertEqual(argv[argv.index(flag) + 1], value)
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
-        self.assertEqual(variant['artifacts'], original['artifacts'])
-        catalog = variant['catalog']
-        self.assertEqual(catalog['model'], 'qwen3.8-27b-q8_0-tensor')
-        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
-        self.assertEqual(catalog['quantization'], 'Q8_0')
-        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
-        self.assertEqual(catalog['context_length'], 163840)
-        self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
-        self.assertEqual(catalog['global_ram_prompt_cache_mib'], original['catalog']['global_ram_prompt_cache_mib'])
-        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
-        self.assertEqual(catalog['display_name'], 'Daytime-27B Q8 Tensor (160K)')
-        self.assertEqual(catalog['capability_profile'], {
-            **original['catalog']['capability_profile'], 'name': 'qwen38-27b-golden-vision-tools-tensor'})
-        self.assertEqual(catalog['deployment_warnings'], warnings)
-        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
-
-    def test_q6k_tensor_experiment_changes_only_split_mode_and_proportions(self):
-        baseline = read(ROOT / 'config/profiles/daytime-27b-q6k.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-q6k-tensor.json')
-        self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(candidate['id'], 'daytime-27b-q6k-tensor')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B Q6_K Tensor')
-        # Engine, artifacts (same UD-Q6_K_XL weights, Q4_0 MTP draft, projector), argument order,
-        # context, GPU group, and container are inherited unchanged.
-        for key in baseline.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        # Same tensor-parallel placement as daytime-27b-tensor, applied to the Q6 weights.
-        tensor = read(ROOT / 'config/profiles/daytime-27b-tensor.json')
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
-            '--alias': 'qwen3.8-27b-ud-q6_k_xl-tensor', '--split-mode': 'tensor',
-            '--tensor-split': tensor['arguments']['--tensor-split']})
-        self.assertEqual(candidate['arguments']['--tensor-split'], '55,45')
-        warnings = ['Tensor-parallel placement (--split-mode tensor, 55,45) with UD-Q6_K_XL weights: VRAM '
-            'headroom at full 160K context and throughput have not been qualified on the production GPUs.',
-            '160K is the total prompt, history, reasoning, and output capacity.']
-        expected_catalog = copy.deepcopy(baseline['catalog'])
-        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-q6k-tensor'
-        expected_catalog['deployment_warnings'] = warnings
-        self.assertEqual(candidate['catalog'], expected_catalog)
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-q6k-tensor')
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        argv = variant_cfg['command']
-        original_argv = original_cfg['command']
-        self.assertEqual(argv.count('--split-mode'), 1)
-        for flag, value in {'--alias': 'qwen3.8-27b-ud-q6_k_xl-tensor', '--split-mode': 'tensor',
-                '--tensor-split': '55,45'}.items():
-            with self.subTest(flag=flag):
-                self.assertEqual(argv[argv.index(flag) + 1], value)
-                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
-        self.assertEqual(variant_cfg, original_cfg)  # identical devices, draft placement, KV types, mounts, other argv
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(variant['artifacts'], original['artifacts'])
-        catalog = variant['catalog']
-        self.assertEqual(catalog['model'], 'qwen3.8-27b-ud-q6_k_xl-tensor')
-        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
-        self.assertEqual(catalog['quantization'], 'UD-Q6_K_XL')
-        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
-        self.assertEqual(catalog['context_length'], 163840)
-        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
-        self.assertEqual(catalog['display_name'], 'Daytime-27B Q6_K Tensor (160K)')
-        self.assertEqual(catalog['deployment_warnings'], warnings)
-        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
-
-    def assert_next_engine_variant(self, baseline_id, candidate_id, display, alias, capability, quant):
-        shared = read(ROOT / 'config/shared.json')
-        new, old = shared['engines']['qwen38-dual-836d571'], shared['engines']['qwen38-dual']
-        baseline = read(ROOT / 'config/profiles' / (baseline_id + '.json'))
-        candidate = read(ROOT / 'config/profiles' / (candidate_id + '.json'))
-        self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(baseline['engine'], 'qwen38-dual')
-        self.assertEqual(candidate['engine'], 'qwen38-dual-836d571')
-        self.assertEqual(candidate['id'], candidate_id)
-        self.assertEqual(candidate['display_name'], display)
-        # Only the engine differs: artifacts, argument order, context, GPU group, and container are inherited.
-        for key in baseline.keys() - {'id', 'display_name', 'engine', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'], '--alias': alias})
+        if main is None:
+            self.assertEqual(candidate['artifacts'], baseline['artifacts'])
+        else:
+            self.assertEqual(candidate['artifacts'][0], main)
+            self.assertEqual(candidate['artifacts'][1:], baseline['artifacts'][1:])  # Q4_0 MTP draft and projector
         warnings = ['Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with ' + quant
             + ' tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not '
             'been qualified on the production GPUs.',
@@ -351,65 +206,50 @@ class ConfigurationTests(unittest.TestCase):
         expected_catalog = copy.deepcopy(baseline['catalog'])
         expected_catalog['capability_profile']['name'] = capability
         expected_catalog['deployment_warnings'] = warnings
+        if main is not None:
+            expected_catalog['quantization'] = quant
         self.assertEqual(candidate['catalog'], expected_catalog)
 
-        original = render(ROOT / 'config', BASELINE['host'], baseline_id)
+        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b')
         variant = render(ROOT / 'config', BASELINE['host'], candidate_id)
         original_cfg = original['compose']['services']['coding']
         variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        self.assertEqual(original_cfg['image'], old['tag'])
-        self.assertEqual(variant_cfg['image'], new['tag'])
-        variant_cfg['image'] = original_cfg['image']
-        argv = variant_cfg['command']
-        self.assertEqual(argv[argv.index('--alias') + 1], alias)
-        argv[argv.index('--alias') + 1] = original_cfg['command'][original_cfg['command'].index('--alias') + 1]
-        self.assertEqual(variant_cfg, original_cfg)  # identical argv, devices, split, draft, KV, mounts
-        # Nighttime keeps the original engine and service byte for byte.
+        argv, original_argv = variant_cfg['command'], original_cfg['command']
+        self.assertEqual(argv.count('--split-mode'), 1)
+        self.assertEqual(original_argv[original_argv.index('--split-mode') + 1], 'layer')
+        for flag, value in {'--alias': alias, '--split-mode': 'tensor', '--tensor-split': '55,45'}.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
+        if main is not None:
+            mount = next(m for m in variant_cfg['volumes'] if m['target'] == '/weights/main.gguf')
+            self.assertEqual(mount['source'], str(Path(BASELINE['host']['model_root']) / main['path']))
+            mount['source'] = next(m['source'] for m in original_cfg['volumes'] if m['target'] == '/weights/main.gguf')
+        self.assertEqual(variant_cfg, original_cfg)  # identical image, devices, draft on CUDA1, KV types, other argv
         self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), new)
-        self.assertEqual(service_engine(variant, 'everyday'), service_engine(original, 'everyday'))
-        self.assertEqual(service_engine(original, 'coding'), old)
-        self.assertEqual(variant['artifacts'], original['artifacts'])
+        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
         catalog = variant['catalog']
         self.assertEqual(catalog['model'], alias)
-        self.assertEqual(catalog['backend_revision'], new['revision'])
-        self.assertEqual(original['catalog']['backend_revision'], old['revision'])
-        self.assertEqual(catalog['model_path'], original['catalog']['model_path'])
+        self.assertEqual(catalog['quantization'], quant)
+        self.assertEqual(catalog['backend_revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(catalog['context_length'], 163840)
         self.assertEqual(catalog['kv_cache'], original['catalog']['kv_cache'])
-        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])
+        self.assertEqual(catalog['mtp'], original['catalog']['mtp'])  # same Q4_0 draft on CUDA1
         self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
         self.assertEqual(catalog['display_name'], display + ' (160K)')
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
-    def test_tensor_next_runs_daytime_27b_tensor_on_the_newer_engine_only(self):
-        self.assert_next_engine_variant('daytime-27b-tensor', 'daytime-27b-tensor-next',
-            'Daytime-27B Q8 Tensor Next', 'qwen3.8-27b-q8_0-tensor-next',
-            'qwen38-27b-golden-vision-tools-tensor-next', 'Q8_0')
+    def test_q8_tensor_next_is_daytime_27b_with_tensor_parallel_placement(self):
+        self.assert_tensor_profile('daytime-27b-tensor-next', 'Daytime-27B Q8 Tensor Next',
+            'qwen3.8-27b-q8_0-tensor-next', 'qwen38-27b-golden-vision-tools-tensor-next', 'Q8_0')
 
-    def test_q6k_tensor_next_runs_daytime_27b_q6k_tensor_on_the_newer_engine_only(self):
-        self.assert_next_engine_variant('daytime-27b-q6k-tensor', 'daytime-27b-q6k-tensor-next',
-            'Daytime-27B Q6_K Tensor Next', 'qwen3.8-27b-ud-q6_k_xl-tensor-next',
-            'qwen38-27b-golden-vision-tools-q6k-tensor-next', 'UD-Q6_K_XL')
-
-    def test_newer_engine_is_additive_and_keeps_existing_pins(self):
-        engines = read(ROOT / 'config/shared.json')['engines']
-        self.assertEqual(engines['qwen38-dual'], {
-            'image_id': 'sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a',
-            'tag': 'local/llama.cpp:qwen38-dual-8ea290247c87',
-            'revision': '8ea290247c87ced2ab245b056ffe96dbcf90d36c',
-            'build_base_digest': 'sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66',
-            'runtime_base_id': 'sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9'})
-        new = engines['qwen38-dual-836d571']
-        self.assertEqual(new['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
-        self.assertEqual(new['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
-        self.assertRegex(new['image_id'], r'^sha256:[0-9a-f]{64}$')
-        self.assertNotEqual(new['image_id'], engines['qwen38-dual']['image_id'])
-        users = {name for name in DAYTIME_PROFILES
-                 if read(ROOT / 'config/profiles' / (name + '.json'))['engine'] == 'qwen38-dual-836d571'}
-        self.assertEqual(users, {'daytime-27b-tensor-next', 'daytime-27b-q6k-tensor-next'})
-        self.assertEqual(read(ROOT / 'config/profiles' / (NIGHTTIME_PROFILE + '.json'))['engine'], 'qwen38-dual')
+    def test_q6k_tensor_next_is_daytime_27b_with_q6_weights_and_tensor_parallel_placement(self):
+        main = {'path': 'llm/Qwen3.8-27B-GGUF/fallbacks/4ca720788d1e01f1bff70c033e0d0028fd02e502/'
+                'Qwen3.8-27B-UD-Q6_K_XL.gguf', 'target': '/weights/main.gguf',
+                'bytes': 25299061664, 'sha256': '701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917'}
+        self.assert_tensor_profile('daytime-27b-q6k-tensor-next', 'Daytime-27B Q6_K Tensor Next',
+            'qwen3.8-27b-ud-q6_k_xl-tensor-next', 'qwen38-27b-golden-vision-tools-q6k-tensor-next', 'UD-Q6_K_XL', main)
 
     def test_context_ceiling_is_the_router_contract_native_window(self):
         from runtime.config import ROUTER_CONTEXT_LIMIT
@@ -461,8 +301,8 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
-            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-tensor',
-             'daytime-27b-q6k-tensor', 'daytime-27b-tensor-next', 'daytime-27b-q6k-tensor-next'))
+            ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
+             'daytime-27b-q6k-tensor-next'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

@@ -216,15 +216,12 @@ class ControllerTests(unittest.TestCase):
         configs = self.c.status()['configurations']
         self.assertEqual(configs['active'], 'daytime')
         self.assertEqual([x['profile'] for x in configs['selectable']],
-            ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-tensor',
-             'daytime-27b-q6k-tensor', 'daytime-27b-tensor-next', 'daytime-27b-q6k-tensor-next'])
+            ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
+             'daytime-27b-q6k-tensor-next'])
         self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])
-        self.assertIn('Daytime-27B Q6_K', configs['selectable'][3]['display_name'])
-        self.assertEqual(configs['selectable'][4]['display_name'], 'Daytime-27B Q8 Tensor (160K)')
-        self.assertEqual(configs['selectable'][5]['display_name'], 'Daytime-27B Q6_K Tensor (160K)')
-        self.assertEqual(configs['selectable'][5]['context_tokens'], 163840)
-        self.assertEqual(configs['selectable'][6]['display_name'], 'Daytime-27B Q8 Tensor Next (160K)')
-        self.assertEqual(configs['selectable'][7]['display_name'], 'Daytime-27B Q6_K Tensor Next (160K)')
+        self.assertEqual(configs['selectable'][3]['display_name'], 'Daytime-27B Q8 Tensor Next (160K)')
+        self.assertEqual(configs['selectable'][4]['display_name'], 'Daytime-27B Q6_K Tensor Next (160K)')
+        self.assertEqual(configs['selectable'][4]['context_tokens'], 163840)
         self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
         self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
         self.assertEqual(configs['always_included'][0]['gpu_names'], HOST['gpu_names']['nighttime'])

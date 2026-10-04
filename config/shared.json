@@ -3,13 +3,6 @@
   "backend_project": "local-ai-primary",
   "network": "local-ai-ollama_default",
   "engines": {
-    "qwen38-dual": {
-      "image_id": "sha256:4589112e4edc30606d09ab165b10487d1fd9f75f5f6a3d637f4e6a8a95471f6a",
-      "tag": "local/llama.cpp:qwen38-dual-8ea290247c87",
-      "revision": "8ea290247c87ced2ab245b056ffe96dbcf90d36c",
-      "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
-      "runtime_base_id": "sha256:44469653635e5c16fcd7523972a1fe4d4779813ea3651c606623bb3ff3bc05a9"
-    },
     "qwen38-dual-836d571": {
       "image_id": "sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd",
       "tag": "local/llama.cpp:qwen38-dual-836d57176dc6",

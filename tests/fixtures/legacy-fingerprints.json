@@ -29,12 +29,12 @@
   },
   "profiles": {
     "daytime": {
-      "compose_sha256": "f34adb0c4ccf3162ef2c11ddf54bd3380040ead1032074c2fe6ce9a427ef9308",
-      "catalog_sha256": "3f39ae646e419dfedde0791cb62d9b5108369f21cbe254f0f7b6002919913bee"
+      "compose_sha256": "8a9fbfd52c231610bb5ad73caf795a8f3be1e98c0f212569a731608e838d8132",
+      "catalog_sha256": "5ccf0149d631878213c8ec93f7ff68bb599cb50659c1c33915fb0410a89a74af"
     },
     "daytime-27b": {
-      "compose_sha256": "44628f27cd6afa965b0d3df6ac2ce93c79676f188c711c3c8430ce391fe9a971",
-      "catalog_sha256": "c03036fa47cdfc2dd1c7d95be5b0f077fceb1afa6d74f3d90a5acccabf84586b"
+      "compose_sha256": "2017ae489d1dda83ba9981671020d1b8026c89cc0b3411c5fcd3be8250f9c04d",
+      "catalog_sha256": "ca63d254ff9ecd4467800a6fe63c69b45ea0359f05a26aa0487ac018f87d1802"
     }
   }
 }
