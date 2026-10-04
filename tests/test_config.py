@@ -329,61 +329,6 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['deployment_warnings'], warnings)
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
 
-    def test_tensor_128k_experiment_changes_only_context_split_and_draft_device(self):
-        baseline = read(ROOT / 'config/profiles/daytime-27b-tensor.json')
-        candidate = read(ROOT / 'config/profiles/daytime-27b-tensor-128k.json')
-        self.assertEqual(candidate.keys(), baseline.keys())
-        self.assertEqual(candidate['id'], 'daytime-27b-tensor-128k')
-        self.assertEqual(candidate['display_name'], 'Daytime-27B Q8 Tensor 4080S Draft')
-        self.assertEqual(candidate['context_tokens'], 131072)
-        for key in baseline.keys() - {'id', 'display_name', 'context_tokens', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], baseline[key])
-        # The MTP draft moves to CUDA0 (the RTX 4080 SUPER under --device CUDA1,CUDA0). The split returns
-        # to 60,40 and the context drops to 128K so the draft fits in the RTX 4080 SUPER's VRAM.
-        self.assertEqual(candidate['arguments'], {**baseline['arguments'],
-            '--alias': 'qwen3.8-27b-q8_0-tensor-128k', '--tensor-split': '60,40',
-            '--spec-draft-device': 'CUDA0'})
-        warnings = ['Tensor-parallel placement (60,40) with the MTP draft on the RTX 4080 SUPER (CUDA0) at '
-            '128K: estimated VRAM headroom on the RTX 4080 SUPER is about 0.5 GiB; headroom and throughput '
-            'have not been qualified on the production GPUs.',
-            '128K is the total prompt, history, reasoning, and output capacity.']
-        expected_catalog = copy.deepcopy(baseline['catalog'])
-        expected_catalog['mtp']['device'] = 'CUDA0'
-        expected_catalog['capability_profile']['name'] = 'qwen38-27b-golden-vision-tools-tensor-128k'
-        expected_catalog['deployment_warnings'] = warnings
-        self.assertEqual(candidate['catalog'], expected_catalog)
-
-        original = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-tensor')
-        variant = render(ROOT / 'config', BASELINE['host'], 'daytime-27b-tensor-128k')
-        original_cfg = original['compose']['services']['coding']
-        variant_cfg = copy.deepcopy(variant['compose']['services']['coding'])
-        argv = variant_cfg['command']
-        original_argv = original_cfg['command']
-        for flag, value in {'--alias': 'qwen3.8-27b-q8_0-tensor-128k', '--ctx-size': '131072',
-                '--kv-unified-per-slot': '131072', '--tensor-split': '60,40',
-                '--spec-draft-device': 'CUDA0'}.items():
-            with self.subTest(flag=flag):
-                self.assertEqual(argv[argv.index(flag) + 1], value)
-                argv[argv.index(flag) + 1] = original_argv[original_argv.index(flag) + 1]
-        self.assertEqual(variant_cfg, original_cfg)  # identical devices, split mode, KV types, mounts, other argv
-        self.assertEqual(argv[argv.index('--split-mode') + 1], 'tensor')
-        self.assertEqual(argv[argv.index('--device') + 1], 'CUDA1,CUDA0')
-        self.assertEqual(variant['compose']['services']['everyday'], original['compose']['services']['everyday'])
-        self.assertEqual(service_engine(variant, 'coding'), service_engine(original, 'coding'))
-        self.assertEqual(variant['artifacts'], original['artifacts'])
-        catalog = variant['catalog']
-        self.assertEqual(catalog['model'], 'qwen3.8-27b-q8_0-tensor-128k')
-        self.assertEqual(catalog['quantization'], 'Q8_0')
-        self.assertEqual(catalog['aliases'], original['catalog']['aliases'])
-        self.assertEqual(catalog['context_length'], 131072)
-        self.assertEqual(catalog['total_context_length'], 131072)
-        self.assertEqual(variant['manifest']['services'][0]['context_tokens'], 131072)
-        self.assertEqual(catalog['mtp'], {**original['catalog']['mtp'], 'device': 'CUDA0'})
-        self.assertEqual(catalog['display_name'], 'Daytime-27B Q8 Tensor 4080S Draft (128K)')
-        self.assertEqual(catalog['deployment_warnings'], warnings)
-        self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
-
     def test_context_ceiling_is_the_router_contract_native_window(self):
         from runtime.config import ROUTER_CONTEXT_LIMIT
         self.assertEqual(ROUTER_CONTEXT_LIMIT, 262144)
@@ -435,7 +380,7 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-q6k', 'daytime-27b-tensor',
-             'daytime-27b-q6k-tensor', 'daytime-27b-tensor-128k'))
+             'daytime-27b-q6k-tensor'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
