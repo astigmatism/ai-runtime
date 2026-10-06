@@ -158,6 +158,29 @@ Concurrency and context experiments:
 - **`daytime-flash-solo-tuned-mtp3-2slot`:** two 128K slots with q8_0 K/V, so the pool uses the same KV memory as one F16 slot, and a 512 microbatch. At microbatch 1024, a cold 32K prefill in one slot while the other decoded hit the same RTX 4080 `top_k` out-of-memory abort as F16 at 160K.
 - **`daytime-flash-solo-tuned-mtp3-160k`:** the tuned profile with a 160K window and q8_0 K/V. With F16 K/V at 160K, the RTX 4080 kept about 0.8 GiB free, and a cold 32K–98K prefill aborted the backend. The CUDA out-of-memory error (`cuMemCreate`) came from the VMM pool in `top_k` (CUB argsort) for the sparse-attention indexer, scratch that the compute-buffer reservation does not include. Docker restarted the container, and no other backend was affected.
 
+Measured on 2026-10-06, direct to the backend: two recorded Bench Studio sessions, A (48 requests) and B (29 requests), greedy, prompt cache on.
+
+| Configuration | Single request (tok/s, A / B) | Both at once (tok/s each, A / B) | Total throughput, both sessions |
+| --- | --- | --- | --- |
+| `-tuned-mtp3`, one slot | 90.1 / 97.6 | (router queues the second) | sequential |
+| two slots, microbatch 1024 | 83.2 / 95.4 | 50.5 / 56.2 | 90.7 tok/s against 75.8 back to back (+20%), then aborted on a cold 32K prefill beside a decode |
+| two slots, microbatch 512 | 89.5 / 90.7 | 49.0 / 48.3 | 80.6 tok/s against 74.4 back to back (+8%) |
+
+- **Why the second request is not free.** The low GPU utilization does not translate into a free second stream. Every step carries both sequences' MTP verification batches through the same four-stage layer pipeline and the per-sequence draft passes, so each request runs at about 55% of its solo speed and median prompt time rises 25–45%.
+- **Prefill blocks the other slot.** A cold 32K prefill in one slot (37 s at 892 tokens per second) held the other slot to about 2 streamed tokens per second for its duration, with gaps of up to 2.5 s.
+- **Two slots are not routable yet.** LLM Router admits one request per resident model, so routing two requests also needs a router contract and release change.
+- **160K window (q8_0 K/V), no cost from the allocation itself.** Replay decode was 88.5 tokens per second, and prefill was 1236 / 1128 / 1030 tokens per second at 8K / 32K / 98K, matching the 128K F16 profile within its noise.
+- **The cost of long context comes from using it,** with either window:
+
+  | Context depth | Decode (tok/s) | Prefill (tok/s) |
+  | --- | --- | --- |
+  | 8K | 90.5 | — |
+  | 64K | 56.5 (59.5 at 128K F16) | 1088 |
+  | 120K | 36.1 (38.2 at 128K F16) | 991 |
+  | 155K | 34.5 | 942 (165 s cold) |
+
+- **128K headroom check:** `-tuned-mtp3` completed a cold 130K prefill without errors.
+
 ## Recover an interrupted update
 
 ```sh
