@@ -234,10 +234,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'daytime')
         self.assertEqual([x['profile'] for x in configs['selectable']],
             ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
-             'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
-             'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag', 'daytime-flash-solo-pp512',
-             'daytime-flash-solo-43fe9c6', 'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned',
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
              'daytime-flash-solo-tuned-mtp3'])
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[6:]))
         self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
@@ -329,7 +326,7 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertTrue(self.c.transition()['already_active'])
         # Moving between exclusive profiles has nothing to remove and never starts Nighttime.
         self.system.events.clear()
-        self.assertEqual(self.c.transition('daytime-flash-solo-mtp3')['changed_roles'], ['coding'])
+        self.assertEqual(self.c.transition('daytime-flash-solo-tuned-mtp3')['changed_roles'], ['coding'])
         self.assertFalse(any(e[0] == 'docker' and e[1][0] in ('stop', 'rm') for e in self.system.events))
         self.assertEqual(self.ups(), [('coding',)])
         self.assertIsNone(self.system.inspect(self.NIGHT))

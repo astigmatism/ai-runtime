@@ -284,7 +284,7 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         self.assertIsNone(self.system.inspect('qwen38-nighttime'))
         self.assertEqual(self.web_state['status']['offline_roles'], ['everyday'])
         self.assertTrue(self.web_state['status']['ready'])
-        self.assertEqual(self.run_switch(self.request('daytime-flash-solo-mtp3'))['status'], 'succeeded')
+        self.assertEqual(self.run_switch(self.request('daytime-flash-solo-tuned-mtp3'))['status'], 'succeeded')
         self.assertEqual(self.run_switch(self.request('daytime'))['status'], 'succeeded')
         self.assertTrue(self.system.inspect('qwen38-nighttime')['State']['Running'])
         self.assertEqual(self.web_state['status']['offline_roles'], [])

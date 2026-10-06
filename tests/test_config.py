@@ -281,66 +281,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual((model['mtp']['device'], model['mtp']['max_draft_tokens']), ('CUDA4', 2))
         self.assertEqual([a['path'] for a in bundle['artifacts']], [a['path'] for a in baseline['artifacts']])
 
-    def test_flash_solo_mtp3_changes_only_draft_depth_and_identity(self):
-        solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
-        candidate = read(ROOT / 'config/profiles/daytime-flash-solo-mtp3.json')
-        self.assertEqual(candidate.keys(), solo.keys())
-        self.assertEqual((candidate['id'], candidate['display_name']), ('daytime-flash-solo-mtp3', 'FlashNext Solo 4-GPU MTP3'))
-        for key in solo.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-            with self.subTest(field=key):
-                self.assertEqual(candidate[key], solo[key])
-        self.assertEqual(candidate['arguments'], {**solo['arguments'],
-            '--alias': 'qwen3.8-flash-next-ad4.27-solo-mtp3', '--spec-draft-n-max': '3'})
-        expected_catalog = copy.deepcopy(solo['catalog'])
-        expected_catalog['mtp']['max_draft_tokens'] = 3
-        expected_catalog['capability_profile']['name'] = 'qwen38-flash-next-ad427-solo-mtp3-128k'
-        self.assertEqual(candidate['catalog'], expected_catalog)
-        host = vision_host()
-        model = render(ROOT / 'config', host, 'daytime-flash-solo-mtp3')['catalog']['models'][0]
-        self.assertEqual((model['mtp']['max_draft_tokens'], model['mtp']['device']), (3, 'CUDA4'))
-        base = render(ROOT / 'config', host, 'daytime-flash-solo')['compose']['services']['coding']
-        variant = copy.deepcopy(render(ROOT / 'config', host, 'daytime-flash-solo-mtp3')['compose']['services']['coding'])
-        argv = variant['command']
-        for flag in ('--alias', '--spec-draft-n-max'):
-            argv[argv.index(flag) + 1] = base['command'][base['command'].index(flag) + 1]
-        self.assertEqual(variant, base)
-
-    def test_solo_tuning_experiments_each_change_one_launch_setting(self):
-        # Each experiment differs from daytime-flash-solo only in its identity and the listed setting(s).
-        solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
-        experiments = {
-            'daytime-flash-solo-pmin3': ('FlashNext Solo 4-GPU MTP3 p0.6', 'mtp3-p06', {'--spec-draft-n-max': '3', '--spec-draft-p-min': '0.6'}),
-            'daytime-flash-solo-pmin4': ('FlashNext Solo 4-GPU MTP4 p0.75', 'mtp4-p075', {'--spec-draft-n-max': '4', '--spec-draft-p-min': '0.75'}),
-            'daytime-flash-solo-batch4k': ('FlashNext Solo 4-GPU Batch 4096', 'b4096', {'--batch-size': '4096'}),
-            'daytime-flash-solo-ram': ('FlashNext Solo 4-GPU RAM Table', 'ram', {'--lazy-mode': 'off'}),
-            'daytime-flash-solo-ub2048': ('FlashNext Solo 4-GPU Microbatch 2048', 'ub2048', {'--ubatch-size': '2048'}),
-            'daytime-flash-solo-f16kv': ('FlashNext Solo 4-GPU F16 KV', 'f16kv', {'--cache-type-k': 'f16', '--cache-type-v': 'f16'}),
-            'daytime-flash-solo-diag': ('FlashNext Solo 4-GPU Diagnostics', 'diag', {'--log-verbosity': '4'})}
-        host = vision_host()
-        base = render(ROOT / 'config', host, 'daytime-flash-solo')['compose']['services']['coding']
-        for name, (display, suffix, delta) in experiments.items():
-            with self.subTest(profile=name):
-                candidate = read(ROOT / 'config/profiles' / (name + '.json'))
-                self.assertEqual((candidate['id'], candidate['display_name']), (name, display))
-                for key in solo.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'catalog'}:
-                    self.assertEqual(candidate[key], solo[key])
-                order = list(solo['argument_order'])
-                if '--spec-draft-p-min' in delta:
-                    order.insert(order.index('--spec-draft-n-max') + 1, '--spec-draft-p-min')
-                self.assertEqual(candidate['argument_order'], order)
-                self.assertEqual(candidate['arguments'], {**solo['arguments'],
-                    '--alias': 'qwen3.8-flash-next-ad4.27-solo-' + suffix, **delta})
-                expected_catalog = copy.deepcopy(solo['catalog'])
-                expected_catalog['mtp']['max_draft_tokens'] = int(delta.get('--spec-draft-n-max', 2))
-                expected_catalog['capability_profile']['name'] = 'qwen38-flash-next-ad427-solo-' + suffix + '-128k'
-                self.assertEqual(candidate['catalog'], expected_catalog)
-                cfg = render(ROOT / 'config', host, name)['compose']['services']['coding']
-                argv = cfg['command']
-                for flag, value in {'--alias': 'qwen3.8-flash-next-ad4.27-solo-' + suffix, **delta}.items():
-                    self.assertEqual(argv[argv.index(flag) + 1], value)
-                self.assertEqual({k: v for k, v in cfg.items() if k != 'command'}, {k: v for k, v in base.items() if k != 'command'})
-
-    def test_newer_engine_experiment_changes_only_the_engine_and_identity(self):
+    def test_tuned_solo_profiles_combine_the_measured_winners(self):
+        # Measured one change at a time against daytime-flash-solo on a fixed session replay; these settings
+        # each helped and are combined. See docs/deployment.md for the numbers and the rejected experiments.
         engines = read(ROOT / 'config/shared.json')['engines']
         engine = engines['qwen38-dual-43fe9c6']
         self.assertEqual((engine['revision'], engine['tag'], engine['image_id']), ('43fe9c64281ef735046adc025e9e7559a1f659a5',
@@ -348,51 +291,34 @@ class ConfigurationTests(unittest.TestCase):
         for key in ('repository', 'cuda_architectures', 'build_base_digest', 'runtime_base_digest'):
             self.assertEqual(engine[key], engines['qwen38-dual-836d571'][key])  # same Dockerfile inputs, newer source
         solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
-        candidate = read(ROOT / 'config/profiles/daytime-flash-solo-43fe9c6.json')
-        expected = copy.deepcopy(solo)
-        expected.update(id='daytime-flash-solo-43fe9c6', display_name='FlashNext Solo 4-GPU Engine 43fe9c6', engine='qwen38-dual-43fe9c6')
-        expected['arguments']['--alias'] = 'qwen3.8-flash-next-ad4.27-solo-43fe9c6'
-        expected['catalog']['capability_profile']['name'] = 'qwen38-flash-next-ad427-solo-43fe9c6-128k'
-        self.assertEqual(candidate, expected)
-        bundle = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-43fe9c6')
-        self.assertEqual(bundle['compose']['services']['coding']['image'], engine['tag'])
-        self.assertEqual(bundle['catalog']['backend_revision'], engine['revision'])
-
-    def test_tuned_solo_combines_the_measured_winners_on_the_pinned_layout(self):
-        pinned = read(ROOT / 'config/profiles/daytime-flash-solo-pinned.json')
-        for name, suffix, depth in (('daytime-flash-solo-tuned', 'tuned', 2), ('daytime-flash-solo-tuned-mtp3', 'tuned-mtp3', 3)):
+        order = [x for x in solo['argument_order'] if x != '--fit-target']
+        order[order.index('--fit') + 1:order.index('--fit') + 1] = ['--n-gpu-layers', '--tensor-split', '--override-tensor']
+        for name, depth in (('daytime-flash-solo-tuned', 2), ('daytime-flash-solo-tuned-mtp3', 3)):
             with self.subTest(profile=name):
                 tuned = read(ROOT / 'config/profiles' / (name + '.json'))
+                for key in ('role', 'container_name', 'host_port', 'gpu_group', 'exclusive', 'context_tokens', 'artifacts', 'container'):
+                    self.assertEqual(tuned[key], solo[key])
                 self.assertEqual(tuned['engine'], 'qwen38-dual-43fe9c6')
-                self.assertEqual(tuned['argument_order'], pinned['argument_order'])
-                self.assertEqual(tuned['artifacts'], pinned['artifacts'])
-                self.assertEqual(tuned['arguments'], {**pinned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-' + suffix,
+                self.assertEqual(tuned['argument_order'], order)
+                expected = {k: v for k, v in solo['arguments'].items() if k != '--fit-target'}
+                expected.update({'--alias': 'qwen3.8-flash-next-ad4.27-solo-' + name.removeprefix('daytime-flash-solo-'),
+                    # A fixed whole-layer split (48 blocks + output) replaces automatic fitting, which split two layers
+                    # across devices. The input-embedding override only restates its default CPU placement; any override
+                    # keeps pipeline parallelism, whose larger buffers do not fit at the 1024 microbatch, disabled.
+                    '--fit': 'off', '--n-gpu-layers': 'all', '--tensor-split': '11,12,8,18',
+                    '--override-tensor': ['token_embd\\.weight=CPU'],
                     '--lazy-mode': 'off', '--cache-type-k': 'f16', '--cache-type-v': 'f16', '--spec-draft-n-max': str(depth)})
-                model = render(ROOT / 'config', vision_host(), name)['catalog']['models'][0]
-                self.assertEqual((model['kv_cache']['key_type'], model['mtp']['max_draft_tokens'], model['mtp']['device']), ('f16', depth, 'CUDA4'))
-                self.assertEqual(model['backend_revision'], '43fe9c64281ef735046adc025e9e7559a1f659a5')
-
-    def test_pipeline_experiment_pins_whole_layers_so_no_tensor_override_disables_pipelining(self):
-        solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
-        candidate = read(ROOT / 'config/profiles/daytime-flash-solo-pp512.json')
-        order = [x for x in solo['argument_order'] if x != '--fit-target']
-        order[order.index('--fit') + 1:order.index('--fit') + 1] = ['--n-gpu-layers', '--tensor-split']
-        self.assertEqual(candidate['argument_order'], order)
-        expected = {k: v for k, v in solo['arguments'].items() if k != '--fit-target'}
-        expected.update({'--alias': 'qwen3.8-flash-next-ad4.27-solo-pp512', '--ubatch-size': '512', '--fit': 'off',
-            '--n-gpu-layers': 'all', '--tensor-split': '11,12,8,18'})
-        self.assertEqual(candidate['arguments'], expected)
-        argv = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-pp512')['compose']['services']['coding']['command']
-        self.assertNotIn('--override-tensor', argv)
-        self.assertEqual(sum(int(x) for x in argv[argv.index('--tensor-split') + 1].split(',')), 49)  # 48 blocks + output
-        self.assertEqual(argv[argv.index('--device') + 1], 'CUDA1,CUDA2,CUDA3,CUDA0')
-        # The pinned variant keeps the same whole-layer split at the 1024 microbatch; its single override
-        # restates the default CPU placement of the input embedding and keeps pipelining disabled.
-        pinned = read(ROOT / 'config/profiles/daytime-flash-solo-pinned.json')
-        order = list(candidate['argument_order']); order.insert(order.index('--tensor-split') + 1, '--override-tensor')
-        self.assertEqual(pinned['argument_order'], order)
-        self.assertEqual(pinned['arguments'], {**candidate['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-pinned',
-            '--ubatch-size': '1024', '--override-tensor': ['token_embd\\.weight=CPU']})
+                self.assertEqual(tuned['arguments'], expected)
+                self.assertEqual(sum(int(x) for x in expected['--tensor-split'].split(',')), 49)
+                bundle = render(ROOT / 'config', vision_host(), name)
+                cfg = bundle['compose']['services']['coding']
+                self.assertEqual(cfg['image'], engine['tag'])
+                self.assertEqual(cfg['command'][cfg['command'].index('--device') + 1], 'CUDA1,CUDA2,CUDA3,CUDA0')
+                model = bundle['catalog']['models'][0]
+                self.assertEqual((model['kv_cache']['key_type'], model['kv_cache']['value_type']), ('f16', 'f16'))
+                self.assertEqual((model['mtp']['max_draft_tokens'], model['mtp']['device'], model['fit_target']), (depth, 'CUDA4', 'off'))
+                self.assertEqual(model['backend_revision'], engine['revision'])
+                self.assertEqual(list(bundle['compose']['services']), ['coding'])
 
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
@@ -469,13 +395,7 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'daytime': 'flash-next-mtp', 'daytime-flash-f16': 'flash-next-mtp',
             'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
             'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', 'daytime-flash-next': 'qwen38-dual-836d571',
-            'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-mtp3': 'qwen38-dual-836d571',
-            'daytime-flash-solo-pmin3': 'qwen38-dual-836d571', 'daytime-flash-solo-pmin4': 'qwen38-dual-836d571',
-            'daytime-flash-solo-batch4k': 'qwen38-dual-836d571', 'daytime-flash-solo-ram': 'qwen38-dual-836d571',
-            'daytime-flash-solo-ub2048': 'qwen38-dual-836d571', 'daytime-flash-solo-f16kv': 'qwen38-dual-836d571',
-            'daytime-flash-solo-diag': 'qwen38-dual-836d571', 'daytime-flash-solo-pp512': 'qwen38-dual-836d571',
-            'daytime-flash-solo-43fe9c6': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-pinned': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned': 'qwen38-dual-43fe9c6',
+            'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned': 'qwen38-dual-43fe9c6',
             'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
@@ -628,12 +548,9 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
-             'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
-             'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag', 'daytime-flash-solo-pp512',
-             'daytime-flash-solo-43fe9c6', 'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned',
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
              'daytime-flash-solo-tuned-mtp3'))
-        self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
+        self.assertEqual(EXCLUSIVE, ('daytime-flash-solo', 'daytime-flash-solo-tuned', 'daytime-flash-solo-tuned-mtp3'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
