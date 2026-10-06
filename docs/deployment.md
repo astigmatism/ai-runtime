@@ -132,6 +132,8 @@ Tuning experiments, each a copy of `daytime-flash-solo` with one change, and its
 - `daytime-flash-solo-pinned`: the same whole-layer split at the 1024 microbatch, with `--override-tensor token_embd\.weight=CPU`. That override only restates the input embedding's default placement, and any override keeps pipeline parallelism (whose extra buffers would not fit at this microbatch) off. It is a deterministic version of the fitted layout without the two layers split across devices.
 - `daytime-flash-solo-43fe9c6`: `daytime-flash-solo` on engine `qwen38-dual-43fe9c6`, llama.cpp `43fe9c64281ef735046adc025e9e7559a1f659a5` (2026-10-06, every CUDA CI job green). It adds MMVF for thin F16/BF16 matmuls at small batch (#29633), whole-tile FlashAttention scheduling (#29435), the tiled lightning-indexer kernel (#29901), the k-pool graph-reallocation fix (#29958), batch-independent CUDA graph dependency checks (#29986), and the MMQ fix for `n_expert >> n_ubatch` (#29941). It was built on the host from the unmodified `.devops/cuda.Dockerfile` with the same command as `836d571`, with the CUDA devel, CUDA runtime, and Node base images pinned to the digests of the `836d571` build. The receipt is under `~/ops/reports/20261006-llama-engine-43fe9c6/`.
 
+- `daytime-flash-solo-tuned` and `daytime-flash-solo-tuned-mtp3` combine the settings that measured faster: the pinned layout, engine `qwen38-dual-43fe9c6`, F16 K/V, and lazy reads off. They differ only in MTP depth 2 or 3.
+
 They are measured with a fixed replay of a recorded Bench Studio session (greedy, prompt cache on) plus fixed-depth prefills. Experiments that do not win are retired.
 
 ## Recover an interrupted update

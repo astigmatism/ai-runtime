@@ -358,6 +358,20 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(bundle['compose']['services']['coding']['image'], engine['tag'])
         self.assertEqual(bundle['catalog']['backend_revision'], engine['revision'])
 
+    def test_tuned_solo_combines_the_measured_winners_on_the_pinned_layout(self):
+        pinned = read(ROOT / 'config/profiles/daytime-flash-solo-pinned.json')
+        for name, suffix, depth in (('daytime-flash-solo-tuned', 'tuned', 2), ('daytime-flash-solo-tuned-mtp3', 'tuned-mtp3', 3)):
+            with self.subTest(profile=name):
+                tuned = read(ROOT / 'config/profiles' / (name + '.json'))
+                self.assertEqual(tuned['engine'], 'qwen38-dual-43fe9c6')
+                self.assertEqual(tuned['argument_order'], pinned['argument_order'])
+                self.assertEqual(tuned['artifacts'], pinned['artifacts'])
+                self.assertEqual(tuned['arguments'], {**pinned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-' + suffix,
+                    '--lazy-mode': 'off', '--cache-type-k': 'f16', '--cache-type-v': 'f16', '--spec-draft-n-max': str(depth)})
+                model = render(ROOT / 'config', vision_host(), name)['catalog']['models'][0]
+                self.assertEqual((model['kv_cache']['key_type'], model['mtp']['max_draft_tokens'], model['mtp']['device']), ('f16', depth, 'CUDA4'))
+                self.assertEqual(model['backend_revision'], '43fe9c64281ef735046adc025e9e7559a1f659a5')
+
     def test_pipeline_experiment_pins_whole_layers_so_no_tensor_override_disables_pipelining(self):
         solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
         candidate = read(ROOT / 'config/profiles/daytime-flash-solo-pp512.json')
@@ -461,7 +475,8 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-flash-solo-ub2048': 'qwen38-dual-836d571', 'daytime-flash-solo-f16kv': 'qwen38-dual-836d571',
             'daytime-flash-solo-diag': 'qwen38-dual-836d571', 'daytime-flash-solo-pp512': 'qwen38-dual-836d571',
             'daytime-flash-solo-43fe9c6': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-pinned': 'qwen38-dual-836d571',
+            'daytime-flash-solo-pinned': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned': 'qwen38-dual-43fe9c6',
+            'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -616,7 +631,8 @@ class RegistryTests(unittest.TestCase):
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
              'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
              'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag', 'daytime-flash-solo-pp512',
-             'daytime-flash-solo-43fe9c6', 'daytime-flash-solo-pinned'))
+             'daytime-flash-solo-43fe9c6', 'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned',
+             'daytime-flash-solo-tuned-mtp3'))
         self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
