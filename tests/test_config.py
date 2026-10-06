@@ -312,7 +312,10 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-flash-solo-pmin3': ('FlashNext Solo 4-GPU MTP3 p0.6', 'mtp3-p06', {'--spec-draft-n-max': '3', '--spec-draft-p-min': '0.6'}),
             'daytime-flash-solo-pmin4': ('FlashNext Solo 4-GPU MTP4 p0.75', 'mtp4-p075', {'--spec-draft-n-max': '4', '--spec-draft-p-min': '0.75'}),
             'daytime-flash-solo-batch4k': ('FlashNext Solo 4-GPU Batch 4096', 'b4096', {'--batch-size': '4096'}),
-            'daytime-flash-solo-ram': ('FlashNext Solo 4-GPU RAM Table', 'ram', {'--lazy-mode': 'off'})}
+            'daytime-flash-solo-ram': ('FlashNext Solo 4-GPU RAM Table', 'ram', {'--lazy-mode': 'off'}),
+            'daytime-flash-solo-ub2048': ('FlashNext Solo 4-GPU Microbatch 2048', 'ub2048', {'--ubatch-size': '2048'}),
+            'daytime-flash-solo-f16kv': ('FlashNext Solo 4-GPU F16 KV', 'f16kv', {'--cache-type-k': 'f16', '--cache-type-v': 'f16'}),
+            'daytime-flash-solo-diag': ('FlashNext Solo 4-GPU Diagnostics', 'diag', {'--log-verbosity': '4'})}
         host = vision_host()
         base = render(ROOT / 'config', host, 'daytime-flash-solo')['compose']['services']['coding']
         for name, (display, suffix, delta) in experiments.items():
@@ -415,6 +418,8 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-mtp3': 'qwen38-dual-836d571',
             'daytime-flash-solo-pmin3': 'qwen38-dual-836d571', 'daytime-flash-solo-pmin4': 'qwen38-dual-836d571',
             'daytime-flash-solo-batch4k': 'qwen38-dual-836d571', 'daytime-flash-solo-ram': 'qwen38-dual-836d571',
+            'daytime-flash-solo-ub2048': 'qwen38-dual-836d571', 'daytime-flash-solo-f16kv': 'qwen38-dual-836d571',
+            'daytime-flash-solo-diag': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -567,9 +572,9 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
-             'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram'))
-        self.assertEqual(EXCLUSIVE, ('daytime-flash-solo', 'daytime-flash-solo-mtp3', 'daytime-flash-solo-pmin3',
-            'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram'))
+             'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
+             'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag'))
+        self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
