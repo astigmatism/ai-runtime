@@ -323,6 +323,34 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual(model['backend_revision'], engine['revision'])
                 self.assertEqual(list(bundle['compose']['services']), ['coding'])
 
+    def test_two_slot_and_160k_experiments(self):
+        tuned = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3.json')
+        two = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3-2slot.json')
+        self.assertEqual(two['parallel_slots'], 2)
+        self.assertEqual(two['arguments'], {**tuned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-2slot',
+            '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0'})
+        bundle = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-tuned-mtp3-2slot')
+        argv = bundle['compose']['services']['coding']['command']
+        # Two 128K slots: the KV pool is sized for both, each request still sees 128K.
+        self.assertEqual([argv[argv.index(f) + 1] for f in ('--parallel', '--ctx-size', '--kv-unified-per-slot')], ['2', '262144', '131072'])
+        model = bundle['catalog']['models'][0]
+        self.assertEqual((model['context_length'], model['total_context_length'], model['max_active_requests'],
+            model['backend_parallel_slots']), (131072, 131072, 1, 2))
+        self.assertEqual(bundle['manifest']['services'][0]['parallel_slots'], 2)
+        wide = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3-160k.json')
+        self.assertEqual((wide['context_tokens'], wide['arguments']), (163840, {**tuned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-160k'}))
+        argv = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-tuned-mtp3-160k')['compose']['services']['coding']['command']
+        self.assertEqual([argv[argv.index(f) + 1] for f in ('--parallel', '--ctx-size', '--kv-unified-per-slot')], ['1', '163840', '163840'])
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            for name, change, message in [('daytime-flash-solo-tuned-mtp3-2slot', {'parallel_slots': 3}, 'must be 1 or 2'),
+                    ('daytime', {'parallel_slots': 2}, 'only an exclusive profile')]:
+                target = config / 'profiles' / (name + '.json'); original = target.read_text()
+                definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
+                with self.subTest(profile=name), self.assertRaisesRegex(RuntimeError, message):
+                    render(config, vision_host(), name)
+                target.write_text(original)
+
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
             render(ROOT / 'config', BASELINE['host'], 'daytime-flash-solo')
@@ -399,7 +427,8 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
             'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', 'daytime-flash-next': 'qwen38-dual-836d571',
             'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6',
+            'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-2slot': 'qwen38-dual-43fe9c6',
+            'daytime-flash-solo-tuned-mtp3-160k': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -552,8 +581,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-             'daytime-flash-solo-tuned-mtp3'))
-        self.assertEqual(EXCLUSIVE, ('daytime-flash-solo', 'daytime-flash-solo-tuned', 'daytime-flash-solo-tuned-mtp3'))
+             'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-2slot', 'daytime-flash-solo-tuned-mtp3-160k'))
+        self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

@@ -152,6 +152,12 @@ Host CPU use (2026-10-06): the first tuned profiles kept the shared `--threads 1
 - **No cost to speed:** on the session replay, both tuned profiles with one host thread produce identical output at the same speed: 93.2 against 93.1 tokens per second for `-tuned-mtp3`, with identical 221 s wall time. CPU fell from 2055 to 224 CPU-seconds, about 118 to 13 ms of CPU per generated token. Prefill speed is unchanged (1124–1132 tokens per second at 32K).
 - **Why one thread is enough:** every expert is on the GPUs. The remaining host work is driving the GPUs (the main thread, about one core in every solo profile) and the tiny input split.
 
+Concurrency and context experiments:
+- **Two slots.** A profile may set `"parallel_slots": 2`, and only exclusive profiles may. The renderer then passes `--parallel 2`, sizes `--ctx-size` for both slots, and keeps `--kv-unified-per-slot` and the catalog `context_length` at the per-request window. The controller verifies the slot count and each slot's context.
+- **The router still admits one request.** The catalog keeps `max_active_requests: 1` (LLM Router accepts only one active request per resident model) and records `backend_parallel_slots`. Until the router contract changes, the second slot can be measured only directly on the backend.
+- **`daytime-flash-solo-tuned-mtp3-2slot`:** two 128K slots, with q8_0 K/V so the pool uses the same KV memory as one F16 slot.
+- **`daytime-flash-solo-tuned-mtp3-160k`:** the tuned profile with a 160K window.
+
 ## Recover an interrupted update
 
 ```sh

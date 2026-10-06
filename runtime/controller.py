@@ -163,8 +163,10 @@ class Controller:
                 try:
                     health = self.system.http(self.backend_url(cfg) + '/health', timeout=3)
                     slots = self.system.http(self.backend_url(cfg) + '/slots', timeout=3)
-                    expected_ctx = int(cfg['command'][cfg['command'].index('--ctx-size') + 1])
-                    if len(slots) != 1 or slots[0]['n_ctx'] != expected_ctx:
+                    argv = cfg['command']
+                    expected_ctx = int(argv[argv.index('--kv-unified-per-slot') + 1])
+                    expected_slots = int(argv[argv.index('--parallel') + 1])
+                    if len(slots) != expected_slots or any(s['n_ctx'] != expected_ctx for s in slots):
                         reasons.append('slot context')
                     result['healthy'] = health.get('status') == 'ok' and not reasons
                     result['processing'] = any(x.get('is_processing', False) for x in slots)

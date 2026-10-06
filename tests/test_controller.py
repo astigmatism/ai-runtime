@@ -72,7 +72,7 @@ class FakeSystem:
                     'active_count': self.active_count, 'queued_count': self.queued_count},
                 'models': [{'id': ci['Config']['Cmd'][ci['Config']['Cmd'].index('--alias') + 1],
                     'x_ollama_router': {'health': {'available': True}, 'output_policy': 'unrestricted',
-                        'context_window': int(ci['Config']['Cmd'][ci['Config']['Cmd'].index('--ctx-size') + 1]),
+                        'context_window': int(ci['Config']['Cmd'][ci['Config']['Cmd'].index('--kv-unified-per-slot') + 1]),
                         'default_output_tokens': None, 'max_output_tokens': None}} for ci in self.containers.values()]}
         if url.endswith('/runtime-drain'):
             self.events.append(('drain', body['enabled'])); self.draining = body['enabled']; self.reason = body['reason']; return {}
@@ -82,7 +82,8 @@ class FakeSystem:
         if url.endswith('/health'): return {'status': 'ok'}
         if url.endswith('/slots'):
             ci = self.containers[name]; argv = ci['Config']['Cmd']
-            return [{'n_ctx': int(argv[argv.index('--ctx-size') + 1]), 'is_processing': self.direct_busy}]
+            return [{'n_ctx': int(argv[argv.index('--kv-unified-per-slot') + 1]), 'is_processing': self.direct_busy}
+                for _ in range(int(argv[argv.index('--parallel') + 1]))]
         if url.endswith('/completion'):
             self.events.append(('generation', name))
             if self.generation_fails or self.failed_generations:
@@ -235,7 +236,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([x['profile'] for x in configs['selectable']],
             ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-             'daytime-flash-solo-tuned-mtp3'])
+             'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-2slot', 'daytime-flash-solo-tuned-mtp3-160k'])
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[6:]))
         self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
         self.assertEqual(configs['selectable'][6]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
@@ -378,6 +379,14 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
         self.assertEqual(self.c.desired()['profile'], 'daytime-flash-solo')
         self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo'])
+
+    def test_two_slot_backend_is_verified_by_slot_count_and_per_slot_context(self):
+        self.c.transition('daytime-flash-solo-tuned-mtp3-2slot')
+        self.assertTrue(self.c.status()['ready'])
+        bundle = self.c.desired(); name = 'qwen38-daytime'
+        argv = self.system.containers[name]['Config']['Cmd']
+        argv[argv.index('--parallel') + 1] = '1'  # a backend that came up with one slot is drift
+        self.assertIn('slot context', self.c.observe(bundle)['coding']['differences'])
 
     def test_nighttime_beside_an_exclusive_profile_is_drift_and_is_removed(self):
         pair = render(ROOT / 'config', self.HOST, 'daytime')

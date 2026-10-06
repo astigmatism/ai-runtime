@@ -7,7 +7,7 @@ from pathlib import Path
 
 DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
     'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-    'daytime-flash-solo-tuned-mtp3')
+    'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-2slot', 'daytime-flash-solo-tuned-mtp3-160k')
 NIGHTTIME_PROFILE = 'nighttime'
 PAIR_GROUPS = ('daytime', 'nighttime')
 # An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
@@ -62,6 +62,14 @@ def is_exclusive(definition):
     else:
         require(definition['gpu_group'] in PAIR_GROUPS, definition['id'] + ': unknown GPU group')
     return exclusive
+
+
+def parallel_slots(definition):
+    """Backend slots: one by default; an exclusive profile, which has every GPU, may run two."""
+    slots = definition.get('parallel_slots', 1)
+    require(type(slots) is int and slots in (1, 2), definition['id'] + ': parallel_slots must be 1 or 2')
+    require(slots == 1 or is_exclusive(definition), definition['id'] + ': only an exclusive profile may run two slots')
+    return slots
 
 
 def text_gpus(host, definition):
@@ -198,8 +206,11 @@ def render(config_dir, host, profile):
         engine = shared['engines'][definition['engine']]
         ctx = definition['context_tokens']
         require_router_context(ctx)
-        options = {**shared['arguments'], **definition['arguments'],
-            '--ctx-size': str(ctx), '--kv-unified-per-slot': str(ctx)}
+        slots = parallel_slots(definition)
+        options = {**shared['arguments'], **definition['arguments']}
+        require(options.get('--parallel') == '1', name + ': unsupported policy change: --parallel')
+        # context_tokens is the per-request (per-slot) window; separate KV per slot sums to the total.
+        options.update({'--ctx-size': str(ctx * slots), '--kv-unified-per-slot': str(ctx), '--parallel': str(slots)})
         order = list(definition['argument_order'])
         exclusive = is_exclusive(definition)
         if exclusive:
@@ -214,7 +225,7 @@ def render(config_dir, host, profile):
         require(len(order) == len(set(order)) and set(order) == set(options),
             name + ': argument_order must contain every effective argument exactly once')
         for key, expected in {'--n-predict': '-1', '--reasoning-budget': '-1',
-                '--reasoning-effort': 'default', '--parallel': '1', '--offline': True}.items():
+                '--reasoning-effort': 'default', '--parallel': str(slots), '--offline': True}.items():
             require(options.get(key) == expected, name + ': unsupported policy change: ' + key)
         argv = []
         for key in order:
@@ -266,7 +277,9 @@ def render(config_dir, host, profile):
         compose['services'][role] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
         entry.update(model=options['--alias'], context_length=ctx, total_context_length=ctx,
-            max_active_requests=int(options['--parallel']), gpu_uuids=devices,
+            # LLM Router admits one active request per resident model; a second backend slot is not
+            # routed until the router contract allows it.
+            max_active_requests=1, gpu_uuids=devices,
             model_path=targets[options['--model']], mmproj_path=targets[options['--mmproj']],
             backend_revision=engine['revision'], fit_target=options['--fit'],
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
@@ -279,6 +292,8 @@ def render(config_dir, host, profile):
                 vision_gpu_shared=not exclusive, cuda_visible_devices=cuda_order)
         if exclusive:
             entry['exclusive'] = True
+        if slots > 1:
+            entry['backend_parallel_slots'] = slots
         if entry['mtp'].get('enabled'):
             target = entry['mtp'].pop('artifact_target')
             require(target == options['--spec-draft-model'] and target in targets,
@@ -297,7 +312,7 @@ def render(config_dir, host, profile):
         models.append(entry)
         manifests.append({'role': role, 'container_name': cfg['container_name'],
             'engine': copy.deepcopy(engine),
-            'model_alias': entry['model'], 'context_tokens': ctx, 'parallel_slots': 1,
+            'model_alias': entry['model'], 'context_tokens': ctx, 'parallel_slots': slots,
             'display_name': entry['display_name'], 'recommended_argv': argv,
             'gpu_device_ids': devices, 'mounts': mounts})
     require(len(gpu_ids) == 4 and len(set(gpu_ids)) == 4, 'Backends require four distinct GPUs')
