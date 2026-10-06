@@ -234,9 +234,11 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'daytime')
         self.assertEqual([x['profile'] for x in configs['selectable']],
             ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3'])
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
+             'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram'])
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
-            ['daytime-flash-solo', 'daytime-flash-solo-mtp3'])
+            ['daytime-flash-solo', 'daytime-flash-solo-mtp3', 'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4',
+             'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram'])
         self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
         self.assertEqual(configs['selectable'][6]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])

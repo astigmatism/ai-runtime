@@ -120,6 +120,14 @@ Qualification (agreed window, with the operator's go-ahead for each switch):
 
 If fitting overflows at microbatch 1024, use 512. If it still overflows, trade context only with the owner's agreement. If `daytime-flash-next` fails qualification, run the solo layout on `flash-next-mtp` with its shared head instead. That head borrows the target's output tensor, so the draft must sit on the output device: `--spec-draft-device CUDA0` with a larger fit margin on CUDA0. Use the same change if the vision GPU lacks room for the draft.
 
+Tuning experiments, each a copy of `daytime-flash-solo` with one change, and its own alias for separate benchmark history:
+- `daytime-flash-solo-pmin3`: MTP depth 3 with `--spec-draft-p-min 0.6`. The draft stops early when its top token is below 60% confidence.
+- `daytime-flash-solo-pmin4`: MTP depth 4 with `--spec-draft-p-min 0.75`.
+- `daytime-flash-solo-batch4k`: `--batch-size 4096`. With layer split across four GPUs, llama.cpp overlaps microbatches between pipeline stages, and 4096 keeps four 1024-token microbatches in flight on long prompts instead of two.
+- `daytime-flash-solo-ram`: `--lazy-mode off`. The 35.8 GiB per-layer n-gram embedding table becomes an ordinary memory-mapped tensor held in the host page cache, instead of being read row by row on demand.
+
+They are measured with a fixed replay of a recorded Bench Studio session (greedy, prompt cache on) plus fixed-depth prefills. Experiments that do not win are retired.
+
 ## Recover an interrupted update
 
 ```sh
