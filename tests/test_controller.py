@@ -237,7 +237,7 @@ class ControllerTests(unittest.TestCase):
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
              'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-lazy', 'daytime-flash-solo-tuned-mtp3-poll0',
              'daytime-flash-solo-tuned-mtp3-lean', 'daytime-flash-solo-tuned-mtp3-t1', 'daytime-flash-solo-43fe9c6',
-             'daytime-flash-solo-pinned'])
+             'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned-mtp3-diag'])
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[6:]))
         self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
         self.assertEqual(configs['selectable'][6]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])

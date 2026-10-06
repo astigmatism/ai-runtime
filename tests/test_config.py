@@ -419,7 +419,7 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-lazy': 'qwen38-dual-43fe9c6',
             'daytime-flash-solo-tuned-mtp3-poll0': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-lean': 'qwen38-dual-43fe9c6',
             'daytime-flash-solo-tuned-mtp3-t1': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-43fe9c6': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-pinned': 'qwen38-dual-836d571',
+            'daytime-flash-solo-pinned': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned-mtp3-diag': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -574,7 +574,7 @@ class RegistryTests(unittest.TestCase):
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
              'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-lazy', 'daytime-flash-solo-tuned-mtp3-poll0',
              'daytime-flash-solo-tuned-mtp3-lean', 'daytime-flash-solo-tuned-mtp3-t1', 'daytime-flash-solo-43fe9c6',
-             'daytime-flash-solo-pinned'))
+             'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned-mtp3-diag'))
         self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
