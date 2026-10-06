@@ -95,7 +95,7 @@ Why: on two GPUs, the experts of 31 of 48 blocks (about 32 GiB) live in pageable
 Placement:
 - The renderer orders CUDA devices as `gpu_ids.daytime`, then `gpu_ids.nighttime`, then the vision GPU. On Rosalina that is CUDA0 RTX 3090, CUDA1 RTX 4080 SUPER, CUDA2 RTX 4080, CUDA3 RTX 3080 Ti, CUDA4 RTX 3080. It always exports that `CUDA_VISIBLE_DEVICES` order and reserves all five UUIDs.
 - The language model uses `--device CUDA1,CUDA2,CUDA3,CUDA0`, so the RTX 3090 is last and holds the output layer.
-- `daytime-flash-solo` uses `--fit on --fit-target 1024`, which distributes layers itself and counts the MTP draft. To reach full residency it splits two layers across devices with tensor overrides. The tuned profiles pin whole layers instead: `--fit off --n-gpu-layers all --tensor-split 11,12,8,18` (48 blocks plus the output layer). They load in about 35 s with no fitting search, and a load that does not fit fails loudly instead of spilling to the CPU. With F16 K/V, Rosalina keeps 1.3–2.0 GiB free on each text GPU.
+- `daytime-flash-solo` uses `--fit on --fit-target 1024`, which distributes layers itself and counts the MTP draft. To reach full residency it splits two layers across devices with tensor overrides. The tuned profiles pin whole layers instead: `--fit off --n-gpu-layers all --tensor-split 11,12,8,18` (48 blocks plus the output layer). They use one host thread (`--threads 1 --threads-batch 1`; see host CPU use below). They load in about 35 s with no fitting search, and a load that does not fit fails loudly instead of spilling to the CPU. With F16 K/V, Rosalina keeps 1.3–2.0 GiB free on each text GPU.
 - The microbatch is 1024. Large microbatches only paid for themselves while experts were streamed from the CPU. At 2048, fitting no longer kept every expert on the GPUs.
 - The projector and the MTP draft use CUDA4; the vision GPU is not shared in this mode.
 - Validation requires a configured `vision_gpu_id`, `--device` naming CUDA0–CUDA3 once each, and tensor overrides limited to CPU or CUDA0–CUDA3. A paired profile can still never place text tensors or drafts on the vision GPU.
@@ -144,6 +144,13 @@ Qualification on 2026-10-06:
   - the MMQ fix for `n_expert >> n_ubatch` (#29941)
 - **How the engine was built:** on the host from the unmodified `.devops/cuda.Dockerfile` with the `836d571` command, and the CUDA devel, CUDA runtime, and Node base images pinned to the digests of the `836d571` build. The receipt is under `~/ops/reports/20261006-llama-engine-43fe9c6/`.
 - **Retired:** the one-variable experiment profiles were retired after measurement; this table is their record.
+
+Host CPU use (2026-10-06): the first tuned profiles kept the shared `--threads 18`, and decode then used about 9–11 CPU cores where `daytime-flash-solo` used one. Measurements on Rosalina:
+- **Cause:** engine `43fe9c6` alone reproduced it. On the older engine, the pinned layout, MTP depth, lazy mode, and `--poll 0` changed nothing.
+- **Where the CPU went:** a scheduler trace (`GGML_SCHED_DEBUG=2`, verbosity 5) showed the decode graph's CPU input split gained `DUP` and `SET_ROWS` nodes for the new mixed embedding-and-token batch input (llama.cpp #29622), next to the token and per-layer embedding `GET_ROWS`. The work is microseconds, but it now runs as an 18-thread OpenMP region several times per decode step. Between regions, libgomp workers busy-wait, so 17 threads sat at about 57% each.
+- **Proof that this is only waiting:** `OMP_WAIT_POLICY=PASSIVE` cut decode CPU from 10.7 to 1.05 cores at the same speed. `--threads 1 --threads-batch 1` also gives about 1.0 core.
+- **No cost to speed:** on the session replay, both tuned profiles with one host thread produce identical output at the same speed: 93.2 against 93.1 tokens per second for `-tuned-mtp3`, with identical 221 s wall time. CPU fell from 2055 to 224 CPU-seconds, about 118 to 13 ms of CPU per generated token. Prefill speed is unchanged (1124–1132 tokens per second at 32K).
+- **Why one thread is enough:** every expert is on the GPUs. The remaining host work is driving the GPUs (the main thread, about one core in every solo profile) and the tiny input split.
 
 ## Recover an interrupted update
 

@@ -307,7 +307,10 @@ class ConfigurationTests(unittest.TestCase):
                     # keeps pipeline parallelism, whose larger buffers do not fit at the 1024 microbatch, disabled.
                     '--fit': 'off', '--n-gpu-layers': 'all', '--tensor-split': '11,12,8,18',
                     '--override-tensor': ['token_embd\\.weight=CPU'],
-                    '--lazy-mode': 'off', '--cache-type-k': 'f16', '--cache-type-v': 'f16', '--spec-draft-n-max': str(depth)})
+                    '--lazy-mode': 'off', '--cache-type-k': 'f16', '--cache-type-v': 'f16', '--spec-draft-n-max': str(depth),
+                    # Engine 43fe9c6 adds DUP/SET_ROWS input nodes to the CPU split; with 18 OpenMP threads the team
+                    # busy-waited between steps (about 9 cores at the same speed), so one host thread runs that split.
+                    '--threads': '1', '--threads-batch': '1'})
                 self.assertEqual(tuned['arguments'], expected)
                 self.assertEqual(sum(int(x) for x in expected['--tensor-split'].split(',')), 49)
                 bundle = render(ROOT / 'config', vision_host(), name)
@@ -319,27 +322,6 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual((model['mtp']['max_draft_tokens'], model['mtp']['device'], model['fit_target']), (depth, 'CUDA4', 'off'))
                 self.assertEqual(model['backend_revision'], engine['revision'])
                 self.assertEqual(list(bundle['compose']['services']), ['coding'])
-
-    def test_cpu_efficiency_experiments_change_only_host_thread_settings(self):
-        tuned = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3.json')
-        for name, suffix, delta in (('daytime-flash-solo-tuned-mtp3-lazy', 'lazy', {'--lazy-mode': 'on'}),
-                ('daytime-flash-solo-tuned-mtp3-poll0', 'poll0', {'--poll': '0'}),
-                ('daytime-flash-solo-tuned-mtp3-lean', 'lean', {'--poll': '0', '--threads': '4', '--threads-batch': '4'}),
-                ('daytime-flash-solo-tuned-mtp3-t1', 't1', {'--threads': '1', '--threads-batch': '4'}),
-                ('daytime-flash-solo-tuned-mtp3-t1b1', 't1b1', {'--threads': '1', '--threads-batch': '1'})):
-            with self.subTest(profile=name):
-                candidate = read(ROOT / 'config/profiles' / (name + '.json'))
-                for key in tuned.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'catalog'}:
-                    self.assertEqual(candidate[key], tuned[key])
-                order = list(tuned['argument_order'])
-                if '--poll' in delta:
-                    order.insert(order.index('--threads-batch') + 1, '--poll')
-                self.assertEqual(candidate['argument_order'], order)
-                self.assertEqual(candidate['arguments'], {**tuned['arguments'],
-                    '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-' + suffix, **delta})
-                argv = render(ROOT / 'config', vision_host(), name)['compose']['services']['coding']['command']
-                for flag, value in delta.items():
-                    self.assertEqual(argv[argv.index(flag) + 1], value)
 
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
@@ -417,11 +399,7 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
             'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', 'daytime-flash-next': 'qwen38-dual-836d571',
             'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-lazy': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-tuned-mtp3-poll0': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-lean': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-tuned-mtp3-t1': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-43fe9c6': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-pinned': 'qwen38-dual-836d571', 'daytime-flash-solo-tuned-mtp3-diag': 'qwen38-dual-43fe9c6',
-            'daytime-flash-solo-tuned-mtp3-omp': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-t1b1': 'qwen38-dual-43fe9c6',
+            'daytime-flash-solo-tuned-mtp3': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -574,11 +552,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-             'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-lazy', 'daytime-flash-solo-tuned-mtp3-poll0',
-             'daytime-flash-solo-tuned-mtp3-lean', 'daytime-flash-solo-tuned-mtp3-t1', 'daytime-flash-solo-43fe9c6',
-             'daytime-flash-solo-pinned', 'daytime-flash-solo-tuned-mtp3-diag',
-             'daytime-flash-solo-tuned-mtp3-omp', 'daytime-flash-solo-tuned-mtp3-t1b1'))
-        self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
+             'daytime-flash-solo-tuned-mtp3'))
+        self.assertEqual(EXCLUSIVE, ('daytime-flash-solo', 'daytime-flash-solo-tuned', 'daytime-flash-solo-tuned-mtp3'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

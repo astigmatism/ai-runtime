@@ -72,8 +72,8 @@
     "--alias": "qwen3.8-flash-next-ad4.27-solo-tuned-mtp3",
     "--device": "CUDA1,CUDA2,CUDA3,CUDA0",
     "--lazy-mode": "off",
-    "--threads": "18",
-    "--threads-batch": "18",
+    "--threads": "1",
+    "--threads-batch": "1",
     "--batch-size": "2048",
     "--ubatch-size": "1024",
     "--mmproj": "/weights/mmproj-Qwen3.8-Flash-Next-F16.gguf",
@@ -353,7 +353,7 @@
     },
     "deployment_warnings": [
       "Exclusive profile: Nighttime is stopped and removed while this profile is active; requests for it fail until a paired Daytime profile is selected.",
-      "Combines the measured solo tuning results: engine qwen38-dual-43fe9c6, a fixed whole-layer split (11,12,8,18 on the RTX 4080 SUPER, RTX 4080, RTX 3080 Ti and RTX 3090; the 3090 also holds the output layer) at the 1024 microbatch, F16 K/V, and the 35.8 GiB n-gram table held as an ordinary page-cached tensor (lazy reads off). The token_embd=CPU override restates the default and keeps pipeline parallelism off. The vision GPU holds the projector and the MTP draft.",
+      "Combines the measured solo tuning results: engine qwen38-dual-43fe9c6, a fixed whole-layer split (11,12,8,18 on the RTX 4080 SUPER, RTX 4080, RTX 3080 Ti and RTX 3090; the 3090 also holds the output layer) at the 1024 microbatch, F16 K/V, and the 35.8 GiB n-gram table held as an ordinary page-cached tensor (lazy reads off). The token_embd=CPU override restates the default and keeps pipeline parallelism off. One host thread runs the small CPU input split; the vision GPU holds the projector and the MTP draft.",
       "128K is the total prompt, history, reasoning, and output capacity."
     ],
     "aliases": [
