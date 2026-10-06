@@ -126,6 +126,12 @@ Tuning experiments, each a copy of `daytime-flash-solo` with one change, and its
 - `daytime-flash-solo-batch4k`: `--batch-size 4096`. With layer split across four GPUs, llama.cpp overlaps microbatches between pipeline stages, and 4096 keeps four 1024-token microbatches in flight on long prompts instead of two.
 - `daytime-flash-solo-ram`: `--lazy-mode off`. The 35.8 GiB per-layer n-gram embedding table becomes an ordinary memory-mapped tensor held in the host page cache, instead of being read row by row on demand.
 
+- `daytime-flash-solo-ub2048`, `daytime-flash-solo-f16kv`: a 2048-token microbatch, or F16 instead of q8_0 K/V.
+- `daytime-flash-solo-diag`: log verbosity 4 only, to read the fitting and buffer decisions. It showed that `--fit on` reaches full residency by splitting two layers across devices with tensor overrides, and any tensor override disables llama.cpp pipeline parallelism (`sched copies = 1`).
+- `daytime-flash-solo-pp512`: whole layers pinned with `--fit off --n-gpu-layers all --tensor-split 11,12,8,18` (no overrides), so pipeline parallelism is enabled, with a 512 microbatch so the extra pipeline buffers fit.
+- `daytime-flash-solo-pinned`: the same whole-layer split at the 1024 microbatch, with `--override-tensor token_embd\.weight=CPU`. That override only restates the input embedding's default placement, and any override keeps pipeline parallelism (whose extra buffers would not fit at this microbatch) off. It is a deterministic version of the fitted layout without the two layers split across devices.
+- `daytime-flash-solo-43fe9c6`: `daytime-flash-solo` on engine `qwen38-dual-43fe9c6`, llama.cpp `43fe9c64281ef735046adc025e9e7559a1f659a5` (2026-10-06, every CUDA CI job green). It adds MMVF for thin F16/BF16 matmuls at small batch (#29633), whole-tile FlashAttention scheduling (#29435), the tiled lightning-indexer kernel (#29901), the k-pool graph-reallocation fix (#29958), batch-independent CUDA graph dependency checks (#29986), and the MMQ fix for `n_expert >> n_ubatch` (#29941). It was built on the host from the unmodified `.devops/cuda.Dockerfile` with the same command as `836d571`, with the CUDA devel, CUDA runtime, and Node base images pinned to the digests of the `836d571` build. The receipt is under `~/ops/reports/20261006-llama-engine-43fe9c6/`.
+
 They are measured with a fixed replay of a recorded Bench Studio session (greedy, prompt cache on) plus fixed-depth prefills. Experiments that do not win are retired.
 
 ## Recover an interrupted update

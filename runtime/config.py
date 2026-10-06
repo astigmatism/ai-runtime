@@ -9,7 +9,8 @@ DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-
     'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
     'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
     'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag',
-    'daytime-flash-solo-pp512')
+    'daytime-flash-solo-pp512', 'daytime-flash-solo-43fe9c6',
+    'daytime-flash-solo-pinned')
 NIGHTTIME_PROFILE = 'nighttime'
 PAIR_GROUPS = ('daytime', 'nighttime')
 # An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.

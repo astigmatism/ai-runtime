@@ -15,6 +15,18 @@
       "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
       "runtime_base_digest": "sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867"
     },
+    "qwen38-dual-43fe9c6": {
+      "image_id": "sha256:5a25a54554f2ba945c0761ad67b329ae9cfa0c18cacf1aa890d549d03a9b4546",
+      "tag": "local/llama.cpp:qwen38-dual-43fe9c64281e",
+      "revision": "43fe9c64281ef735046adc025e9e7559a1f659a5",
+      "repository": "https://github.com/ggml-org/llama.cpp.git",
+      "cuda_architectures": [
+        "86",
+        "89"
+      ],
+      "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
+      "runtime_base_digest": "sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867"
+    },
     "flash-next-mtp": {
       "repository": "https://github.com/ggml-org/llama.cpp.git",
       "revision": "d1a92352cbd417fd840b4e765c0b82f5fe3d1d89",
