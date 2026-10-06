@@ -328,7 +328,7 @@ class ConfigurationTests(unittest.TestCase):
         two = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3-2slot.json')
         self.assertEqual(two['parallel_slots'], 2)
         self.assertEqual(two['arguments'], {**tuned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-2slot',
-            '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0'})
+            '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0', '--ubatch-size': '512'})
         bundle = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-tuned-mtp3-2slot')
         argv = bundle['compose']['services']['coding']['command']
         # Two 128K slots: the KV pool is sized for both, each request still sees 128K.
@@ -338,7 +338,9 @@ class ConfigurationTests(unittest.TestCase):
             model['backend_parallel_slots']), (131072, 131072, 1, 2))
         self.assertEqual(bundle['manifest']['services'][0]['parallel_slots'], 2)
         wide = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3-160k.json')
-        self.assertEqual((wide['context_tokens'], wide['arguments']), (163840, {**tuned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-160k'}))
+        # F16 K/V at 160K left the RTX 4080 without room for the indexer top-k scratch and aborted a prefill.
+        self.assertEqual((wide['context_tokens'], wide['arguments']), (163840, {**tuned['arguments'], '--alias': 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-160k',
+            '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0'}))
         argv = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-tuned-mtp3-160k')['compose']['services']['coding']['command']
         self.assertEqual([argv[argv.index(f) + 1] for f in ('--parallel', '--ctx-size', '--kv-unified-per-slot')], ['1', '163840', '163840'])
         with tempfile.TemporaryDirectory() as tmp:

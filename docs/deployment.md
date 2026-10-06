@@ -155,8 +155,8 @@ Host CPU use (2026-10-06): the first tuned profiles kept the shared `--threads 1
 Concurrency and context experiments:
 - **Two slots.** A profile may set `"parallel_slots": 2`, and only exclusive profiles may. The renderer then passes `--parallel 2`, sizes `--ctx-size` for both slots, and keeps `--kv-unified-per-slot` and the catalog `context_length` at the per-request window. The controller verifies the slot count and each slot's context.
 - **The router still admits one request.** The catalog keeps `max_active_requests: 1` (LLM Router accepts only one active request per resident model) and records `backend_parallel_slots`. Until the router contract changes, the second slot can be measured only directly on the backend.
-- **`daytime-flash-solo-tuned-mtp3-2slot`:** two 128K slots, with q8_0 K/V so the pool uses the same KV memory as one F16 slot.
-- **`daytime-flash-solo-tuned-mtp3-160k`:** the tuned profile with a 160K window.
+- **`daytime-flash-solo-tuned-mtp3-2slot`:** two 128K slots with q8_0 K/V, so the pool uses the same KV memory as one F16 slot, and a 512 microbatch. At microbatch 1024, a cold 32K prefill in one slot while the other decoded hit the same RTX 4080 `top_k` out-of-memory abort as F16 at 160K.
+- **`daytime-flash-solo-tuned-mtp3-160k`:** the tuned profile with a 160K window and q8_0 K/V. With F16 K/V at 160K, the RTX 4080 kept about 0.8 GiB free, and a cold 32K–98K prefill aborted the backend. The CUDA out-of-memory error (`cuMemCreate`) came from the VMM pool in `top_k` (CUB argsort) for the sparse-attention indexer, scratch that the compute-buffer reservation does not include. Docker restarted the container, and no other backend was affected.
 
 ## Recover an interrupted update
 
