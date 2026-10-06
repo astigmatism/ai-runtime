@@ -1,7 +1,7 @@
 {
-  "id": "daytime-flash-solo-tuned-mtp3-diag",
+  "id": "daytime-flash-solo-tuned-mtp3-t1b1",
   "role": "coding",
-  "display_name": "FlashNext Solo Tuned MTP3 Diagnostics",
+  "display_name": "FlashNext Solo Tuned MTP3 Single Host Thread",
   "engine": "qwen38-dual-43fe9c6",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
@@ -69,11 +69,11 @@
   ],
   "arguments": {
     "--model": "/weights/Qwen3.8-Flash-Next-AD-4.27bpw-Q4_K_M-M64-00001-of-00033.gguf",
-    "--alias": "qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-diag",
+    "--alias": "qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-t1b1",
     "--device": "CUDA1,CUDA2,CUDA3,CUDA0",
     "--lazy-mode": "off",
-    "--threads": "18",
-    "--threads-batch": "18",
+    "--threads": "1",
+    "--threads-batch": "1",
     "--batch-size": "2048",
     "--ubatch-size": "1024",
     "--mmproj": "/weights/mmproj-Qwen3.8-Flash-Next-F16.gguf",
@@ -91,8 +91,7 @@
     "--spec-draft-type-k": "q8_0",
     "--spec-draft-type-v": "q8_0",
     "--cache-type-k": "f16",
-    "--cache-type-v": "f16",
-    "--log-verbosity": "5"
+    "--cache-type-v": "f16"
   },
   "artifacts": [
     {
@@ -322,9 +321,6 @@
     "labels": {
       "local-ai.profile": "primary",
       "local-ai.role": "coding"
-    },
-    "environment": {
-      "GGML_SCHED_DEBUG": "2"
     }
   },
   "catalog": {
@@ -345,7 +341,7 @@
       "artifact_target": "/weights/mtp.gguf"
     },
     "capability_profile": {
-      "name": "qwen38-flash-next-ad427-solo-tuned-mtp3-diag-128k",
+      "name": "qwen38-flash-next-ad427-solo-tuned-mtp3-t1b1-128k",
       "text": true,
       "streaming": true,
       "vision": true,
