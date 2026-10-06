@@ -19,8 +19,9 @@ def listed(config_dir):
     registry = available_profiles(config_dir)
     night = registry['always_included'][0]
     rows = [f"primary: the selected Daytime configuration + {night['display_name']}"]
-    rows += [describe(entry) for entry in registry['selectable']]
-    rows += [describe(entry, ' (paired with every Daytime configuration)') for entry in registry['always_included']]
+    rows += [describe(entry, ' (all four text GPUs; stops Nighttime)' if entry['exclusive'] else '')
+        for entry in registry['selectable']]
+    rows += [describe(entry, ' (paired with every non-exclusive Daytime configuration)') for entry in registry['always_included']]
     return '\n'.join(rows)
 
 

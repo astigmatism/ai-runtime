@@ -4,7 +4,7 @@ The source repository is now `ai-runtime`. Existing production paths and the `lo
 
 ## Initial staging: no production service changes
 
-The current source offers Flash-Next `daytime` (128K), experimental `daytime-flash-f16` (128K), saved `daytime-27b` (160K), `daytime-27b-tensor-next` (160K), `daytime-27b-q6k-tensor-next` (160K), experimental `daytime-flash-next` (128K), and Nighttime (128K). Initial migration compares only the two historical Daytime profiles with legacy saved profiles; the newer choices have no legacy counterpart. Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
+The current source offers Flash-Next `daytime` (128K), experimental `daytime-flash-f16` (128K), saved `daytime-27b` (160K), `daytime-27b-tensor-next` (160K), `daytime-27b-q6k-tensor-next` (160K), experimental `daytime-flash-next` (128K), the exclusive experiments `daytime-flash-solo` and `daytime-flash-solo-mtp3` (128K, no Nighttime), and Nighttime (128K). Initial migration compares only the two historical Daytime profiles with legacy saved profiles; the newer choices have no legacy counterpart. Any inspection or image prepared before this refresh is stale. For an existing clean checkout, fast-forward public `main` and repeat preparation, image build, and inspection before cutover. Do not run the earlier migration against the new host configuration.
 
 Run on Rosalina as the existing deployment user after the repository is published:
 
@@ -61,7 +61,7 @@ If a new revision retires the profile currently active on a host, the updater re
 
 ## Browser profile changes
 
-The runtime page can select `daytime`, `daytime-flash-f16`, `daytime-27b`, `daytime-27b-tensor-next`, `daytime-27b-q6k-tensor-next`, or `daytime-flash-next` without another source release once this profile is published. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. Source deployments and existing CLI administration retain their existing behavior.
+The runtime page can select `daytime`, `daytime-flash-f16`, `daytime-27b`, `daytime-27b-tensor-next`, `daytime-27b-q6k-tensor-next`, `daytime-flash-next`, `daytime-flash-solo`, or `daytime-flash-solo-mtp3` without another source release once this profile is published. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. An unexpected Nighttime replacement is refused, including during automatic recovery. The one exception is a switch into or out of an exclusive profile, which deliberately removes or recreates Nighttime (see below). Source deployments and existing CLI administration retain their existing behavior.
 
 `daytime-flash-f16` uses the same pinned Flash-Next inference image, model weights, 128K context, and shared-Q4_K_M MTP draft (q8_0 draft K/V) as `daytime`. Only the main model's K/V cache is F16 and its microbatch is 1024. Its VRAM fit and throughput have not been qualified on the production GPUs. The original `daytime` profile remains available for direct comparison and recovery.
 
@@ -82,6 +82,43 @@ Every Daytime profile inherits the RAM prompt-cache cap from `config/shared.json
 A controller-only release of the GPU overview and switching UI does not change rendered model definitions. Verify its revision, health, assignments, profile choices, and disabled controls during other maintenance using read-only requests after deployment. Test an actual production profile switch only in an agreed maintenance window; this pauses new admissions for both models and loads the alternative Daytime backend.
 
 Operation receipts survive page refresh and controller restart. If a switch reports `needs-attention`, inspect the private journals and follow **runtime recover** below. Do not clear journals or edit selected-release receipts to make the controls available. No browser action cancels an in-progress transition or forces a backend restart. After recovery, the controller reconciles the operation result on its next status cycle.
+
+## Exclusive Flash-Next solo profiles
+
+`daytime-flash-solo` is `daytime-flash-next` (the same weights, projector, ggml-org Q4_0 MTP head, 128K context, q8_0 K/V, lazy n-gram table, and engine `qwen38-dual-836d571`) moved onto all four text GPUs. Its profile file sets `"exclusive": true` and `"gpu_group": "all"`, so Nighttime does not run while it is selected. `daytime-flash-solo-mtp3` differs only in its three-token draft and alias. Each keeps a separate alias (`qwen3.8-flash-next-ad4.27-solo`, `-solo-mtp3`) for benchmark history.
+
+Why: on two GPUs, the experts of 31 of 48 blocks (about 32 GiB) live in pageable host memory.
+- Every decode step reads the routed experts of those blocks from RAM, and MTP verification multiplies those reads. The Bench Studio session decoded at about 31.5 tokens per second, against about 90 for the 27B tensor profiles.
+- Every prompt batch of at least 32 tokens (`GGML_OP_OFFLOAD_MIN_BATCH`) copies the used experts over PCIe Gen3, nearly all 512 per block. That is why the median first token was about 3.8 s even for small agent turns, against 0.9 s for the 27B.
+- About 54.5 GB of the model must be resident; the attention cache is about 25 KB per token. That fits in the 68 GiB of the four text GPUs.
+
+Placement:
+- The renderer orders CUDA devices as `gpu_ids.daytime`, then `gpu_ids.nighttime`, then the vision GPU. On Rosalina that is CUDA0 RTX 3090, CUDA1 RTX 4080 SUPER, CUDA2 RTX 4080, CUDA3 RTX 3080 Ti, CUDA4 RTX 3080. It always exports that `CUDA_VISIBLE_DEVICES` order and reserves all five UUIDs.
+- The language model uses `--device CUDA1,CUDA2,CUDA3,CUDA0`, so the RTX 3090 is last and holds the output layer.
+- There is no hand split and no CPU tensor override. `--fit on --fit-target 1024` distributes layers itself and also counts the MTP draft.
+- The microbatch is 1024. Large microbatches only paid for themselves while experts were streamed from the CPU, and the compute buffers are part of the tight VRAM budget.
+- The projector and the MTP draft use CUDA4; the vision GPU is not shared in this mode.
+- Validation requires a configured `vision_gpu_id`, `--device` naming CUDA0–CUDA3 once each, and tensor overrides limited to CPU or CUDA0–CUDA3. A paired profile can still never place text tensors or drafts on the vision GPU.
+
+Transitions:
+- **Into an exclusive profile.** The controller drains both models and waits until both are idle. It stops and removes `qwen38-nighttime` (removal keeps its restart policy from reviving it on reassigned GPUs), then recreates Daytime and publishes a one-model catalog. Requests for the Nighttime model return `MODEL_NOT_FOUND`; there is deliberately no alias substitution.
+- **Back to a paired profile.** Daytime is recreated first, so the exclusive container releases every GPU, and Nighttime second. Nighttime's in-memory prompt cache does not survive.
+- **Failed switch.** Recovery follows the same order. Restoring a paired release recreates Daytime and then Nighttime. Restoring an exclusive release first removes any Nighttime the failed target started.
+- **Drift.** A running Nighttime beside an exclusive release is reported as `competing Nighttime backend running`, and the next apply removes it.
+- **Status.** `/api/status` reports `offline_roles: ["everyday"]` while an exclusive profile is active, and the page asks for confirmation before selecting one.
+- **Unchanged rules.** Browser switches between paired profiles still refuse to touch Nighttime.
+
+Qualification (agreed window, with the operator's go-ahead for each switch):
+1. Confirm the 2,199,652,640-byte ggml-org MTP head and its SHA-256 on the host. Also record `nvidia-smi --query-gpu=index,uuid,name,memory.total,pcie.link.gen.max,pcie.link.width.current --format=csv`, `nvidia-smi topo -m`, `lscpu`, and `numactl -H`.
+2. Baseline `daytime` with the Bench Studio context sweep (2K–64K) and coding-throughput profiles. Then qualify `daytime-flash-next` with the same two profiles plus one coding session. The solo profiles use its engine and head.
+3. Select `daytime-flash-solo`. Read the `llama_params_fit` and memory-breakdown lines from `docker logs qwen38-daytime`. Require zero overflowing expert layers and at least 512 MiB free on each text GPU after a 64K-depth prefill. Then run the context sweep, coding throughput, and one coding session.
+   - Success means: 2/2 tasks pass, session decode is at least 1.5x the baseline (at least 47 tokens per second), median first token is at most 1.5 s, there are no restarts, and the 8K prefill is at least 3x the baseline.
+4. Pin the fitted layout in both solo profiles, so a later load fails loudly instead of silently spilling experts to the CPU:
+   - Copy the fitted per-device layer counts into `--tensor-split`, with `--fit off` and `--n-gpu-layers all`.
+   - Re-verify the memory breakdown.
+5. Qualify `daytime-flash-solo-mtp3` the same way and keep the faster one. Switching back to `daytime` must restore a healthy two-model catalog.
+
+If fitting overflows at microbatch 1024, use 512. If it still overflows, trade context only with the owner's agreement. If `daytime-flash-next` fails qualification, run the solo layout on `flash-next-mtp` with its shared head instead. That head borrows the target's output tensor, so the draft must sit on the output device: `--spec-draft-device CUDA0` with a larger fit margin on CUDA0. Use the same change if the vision GPU lacks room for the draft.
 
 ## Recover an interrupted update
 

@@ -12,6 +12,14 @@ from runtime.system import atomic_json, lock, System
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
+VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
+
+
+def vision_host():
+    host = copy.deepcopy(HOST)
+    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080',
+        cuda_order={'daytime': host['gpu_ids']['daytime'][::-1], 'nighttime': host['gpu_ids']['nighttime'][:]})
+    return host
 
 
 class FakeSystem:
@@ -21,6 +29,7 @@ class FakeSystem:
         self.bundle = bundle; self.events = []; self.draining = False; self.reason = None
         self.active_count = 0; self.queued_count = 0; self.direct_busy = False
         self.generation_fails = False; self.fail_reconcile = False; self.serial = 0
+        self.failed_ups = 0; self.failed_generations = 0  # fail only the next N loads or acceptances
         self.engines = {s['engine']['tag']: s['engine'] for s in bundle['manifest']['services']}
         shared = read(ROOT / 'config/shared.json')
         self.engines.update({e['tag']: e for e in shared['engines'].values()})
@@ -46,8 +55,12 @@ class FakeSystem:
             engine = self.engines[args[2]]
             return json.dumps([{'Id': engine['image_id'],
                 'Config': {'Labels': {'org.opencontainers.image.revision': engine['revision']}}}])
+        if args[0] == 'stop': self.containers[args[-1]]['State']['Running'] = False
+        if args[0] == 'rm': self.containers.pop(args[-1])
         if args[0] == 'compose' and 'up' in args:
-            if self.fail_reconcile: raise RuntimeError('Simulated load failure')
+            if self.fail_reconcile or self.failed_ups:
+                self.failed_ups = max(0, self.failed_ups - 1)
+                raise RuntimeError('Simulated load failure')
             compose = read(args[args.index('-f') + 1])
             roles = args[args.index('450') + 1:]
             for role in roles: self.install(role, compose['services'][role])
@@ -72,15 +85,19 @@ class FakeSystem:
             return [{'n_ctx': int(argv[argv.index('--ctx-size') + 1]), 'is_processing': self.direct_busy}]
         if url.endswith('/completion'):
             self.events.append(('generation', name))
-            if self.generation_fails: raise RuntimeError('Simulated acceptance failure')
+            if self.generation_fails or self.failed_generations:
+                self.failed_generations = max(0, self.failed_generations - 1)
+                raise RuntimeError('Simulated acceptance failure')
             return {'content': 'K'}
         raise AssertionError(url)
 
 
 class ControllerTests(unittest.TestCase):
+    HOST = HOST
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.state = Path(self.tmp.name); host = copy.deepcopy(HOST)
+        self.state = Path(self.tmp.name); host = copy.deepcopy(self.HOST)
         host['router_state_dir'] = str(self.state / 'router')
         atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
         self.bundle = render(ROOT / 'config', host, 'daytime')
@@ -217,7 +234,11 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'daytime')
         self.assertEqual([x['profile'] for x in configs['selectable']],
             ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next'])
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3'])
+        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
+            ['daytime-flash-solo', 'daytime-flash-solo-mtp3'])
+        self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
+        self.assertEqual(configs['selectable'][6]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])
         self.assertEqual(configs['selectable'][3]['display_name'], 'Daytime-27B Q8 Tensor Next (160K)')
         self.assertEqual(configs['selectable'][4]['display_name'], 'Daytime-27B Q6_K Tensor Next (160K)')
@@ -261,6 +282,114 @@ class ControllerTests(unittest.TestCase):
         proposed['compose']['services']['coding']['logging']['options']['max-size'] = '30m'
         with patch.object(self.c, 'desired', return_value=proposed): result = self.c.transition()
         self.assertEqual(result['changed_roles'], ['coding'])
+
+
+class ExclusiveProfileTests(unittest.TestCase):
+    """An exclusive profile removes Nighttime before loading; a paired profile restores it."""
+    HOST = vision_host()
+    setUp = ControllerTests.setUp
+    NIGHT = 'qwen38-nighttime'
+
+    def ups(self):
+        return [e[1][e[1].index('450') + 1:] for e in self.system.events
+            if e[0] == 'docker' and e[1][0] == 'compose' and 'up' in e[1]]
+
+    def published(self):
+        return [m['model'] for m in read(self.state / 'router/active-model.json')['models']]
+
+    def test_switch_to_solo_removes_nighttime_before_loading_and_publishes_one_model(self):
+        day = self.system.inspect('qwen38-daytime')['Id']
+        result = self.c.transition('daytime-flash-solo')
+        self.assertEqual(result['changed_roles'], ['coding'])
+        self.assertIsNone(self.system.inspect(self.NIGHT))
+        events = self.system.events
+        drain = events.index(('drain', True))
+        stop = events.index(('docker', ('stop', '--time', '60', self.NIGHT)))
+        remove = events.index(('docker', ('rm', self.NIGHT)))
+        load = next(i for i, e in enumerate(events) if e[0] == 'docker' and 'up' in e[1])
+        self.assertLess(drain, stop); self.assertLess(stop, remove); self.assertLess(remove, load)
+        self.assertEqual(self.ups(), [('coding',)])
+        self.assertNotEqual(self.system.inspect('qwen38-daytime')['Id'], day)
+        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo'])
+        self.assertEqual(events[-1], ('drain', False))
+        tx = read(self.state / 'transaction.json')
+        self.assertEqual((tx['phase'], tx['removed_backends']), ('succeeded', [self.NIGHT]))
+        self.assertNotIn('protected_services', tx)
+        status = self.c.status()
+        self.assertTrue(status['ready'])
+        self.assertEqual(status['offline_roles'], ['everyday'])
+        [service] = status['services']
+        self.assertTrue(service['exclusive'])
+        self.assertEqual(service['gpu_ids'], [*self.HOST['gpu_ids']['daytime'], *self.HOST['gpu_ids']['nighttime']])
+        self.assertEqual(service['gpu_names'], [*self.HOST['gpu_names']['daytime'], *self.HOST['gpu_names']['nighttime']])
+        self.assertEqual((service['vision_device'], service['vision_gpu_shared']), ('CUDA4', False))
+        self.assertTrue(self.c.transition()['already_active'])
+        # Moving between exclusive profiles has nothing to remove and never starts Nighttime.
+        self.system.events.clear()
+        self.assertEqual(self.c.transition('daytime-flash-solo-mtp3')['changed_roles'], ['coding'])
+        self.assertFalse(any(e[0] == 'docker' and e[1][0] in ('stop', 'rm') for e in self.system.events))
+        self.assertEqual(self.ups(), [('coding',)])
+        self.assertIsNone(self.system.inspect(self.NIGHT))
+
+    def test_switch_back_from_solo_starts_daytime_before_nighttime(self):
+        original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        self.c.transition('daytime-flash-solo')
+        self.system.events.clear()
+        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding', 'everyday'])
+        self.assertEqual(self.ups(), [('coding',), ('everyday',)])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+        self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
+        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27', 'qwen3.8-27b-abliterated-q6_k'])
+        status = self.c.status()
+        self.assertTrue(status['ready']); self.assertEqual(status['offline_roles'], [])
+        self.assertEqual(status['services'][0]['gpu_names'], self.HOST['gpu_names']['daytime'])
+
+    def test_failed_solo_load_restores_nighttime_and_the_pair(self):
+        day = self.system.inspect('qwen38-daytime')['Id']
+        self.system.failed_ups = 1
+        with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('daytime-flash-solo')
+        self.assertEqual(self.ups(), [('coding',), ('everyday',)])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)
+        self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
+        self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
+        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(len(self.published()), 2)
+        self.assertFalse(self.system.draining)
+        self.assertTrue(self.c.status()['ready'])
+
+    def test_rejected_solo_restores_daytime_before_recreating_nighttime(self):
+        original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        self.system.failed_generations = 1
+        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('daytime-flash-solo')
+        self.assertEqual(self.ups(), [('coding',), ('coding',), ('everyday',)])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+        self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
+        self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
+        self.assertTrue(self.c.status()['ready'])
+
+    def test_failed_return_to_the_pair_removes_new_nighttime_and_restores_solo(self):
+        self.c.transition('daytime-flash-solo')
+        solo = self.system.inspect('qwen38-daytime')['Config']['Cmd']
+        self.system.events.clear(); self.system.failed_generations = 1
+        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('daytime')
+        self.assertEqual(self.ups(), [('coding',), ('everyday',), ('coding',)])
+        self.assertIsNone(self.system.inspect(self.NIGHT))
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], solo)
+        self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
+        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-solo')
+        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo'])
+
+    def test_nighttime_beside_an_exclusive_profile_is_drift_and_is_removed(self):
+        pair = render(ROOT / 'config', self.HOST, 'daytime')
+        self.c.transition('daytime-flash-solo')
+        solo = self.c.desired()
+        self.system.install('everyday', pair['compose']['services']['everyday'])
+        self.assertIn('competing Nighttime backend running', self.c.observe(solo)['coding']['differences'])
+        self.assertFalse(self.c.status()['ready'])
+        result = self.c.transition()
+        self.assertEqual(result['changed_roles'], ['coding'])
+        self.assertIsNone(self.system.inspect(self.NIGHT))
+        self.assertTrue(self.c.status()['ready'])
 
 
 class ArtifactTests(unittest.TestCase):

@@ -6,8 +6,12 @@ import re
 from pathlib import Path
 
 DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-    'daytime-27b-q6k-tensor-next', 'daytime-flash-next')
+    'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3')
 NIGHTTIME_PROFILE = 'nighttime'
+PAIR_GROUPS = ('daytime', 'nighttime')
+# An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
+EXCLUSIVE_GROUP = 'all'
+GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 # LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
 # native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
 ROUTER_CONTEXT_LIMIT = 262144
@@ -47,13 +51,43 @@ def service_engine(bundle, role):
     return service.get('engine') or manifest['engine']
 
 
+def is_exclusive(definition):
+    """An exclusive profile owns all four text GPUs; Nighttime is not run while it is selected."""
+    exclusive = definition.get('exclusive', False)
+    require(exclusive is True or exclusive is False, definition['id'] + ': exclusive must be true or false')
+    if exclusive:
+        require(definition['role'] == 'coding' and definition['gpu_group'] == EXCLUSIVE_GROUP,
+            definition['id'] + ': an exclusive profile is a coding profile on the "all" GPU group')
+    else:
+        require(definition['gpu_group'] in PAIR_GROUPS, definition['id'] + ': unknown GPU group')
+    return exclusive
+
+
+def text_gpus(host, definition):
+    """Text GPU UUIDs in CUDA order for an exclusive profile, or the configured pair otherwise."""
+    groups = PAIR_GROUPS if is_exclusive(definition) else (definition['gpu_group'],)
+    devices = []
+    for group in groups:
+        pair = host['gpu_ids'][group]
+        require(len(pair) == 2 and all(x.startswith('GPU-') and 'REPLACE' not in x for x in pair),
+            'Configure two real GPU UUIDs per group in host.json')
+        devices.extend(pair)
+    return devices
+
+
+def gpu_names(host, definition):
+    """Card names in the same order as text_gpus(); empty when the host does not name them."""
+    names = (host or {}).get('gpu_names') or {}
+    groups = PAIR_GROUPS if is_exclusive(definition) else (definition['gpu_group'],)
+    return [name for group in groups for name in names.get(group, [])]
+
+
 def vision_devices(host, group, options):
-    """A shared encoder GPU is never a member of either exclusive text pair."""
+    """A shared encoder GPU is never a member of either text pair."""
     vision = host.get('vision_gpu_id')
     if vision is None:
         return None
-    require(isinstance(vision, str) and re.fullmatch(
-        r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', vision),
+    require(isinstance(vision, str) and re.fullmatch(GPU_UUID, vision),
         'vision_gpu_id must be a full GPU UUID')
     pairs = host['gpu_ids']
     require(vision not in [gpu for pair in pairs.values() for gpu in pair],
@@ -81,7 +115,40 @@ def vision_devices(host, group, options):
     return [*order, vision]
 
 
-def profile_summary(config_dir, name, shared, gpu_names=None):
+def exclusive_devices(host, options, text):
+    """CUDA order for an exclusive profile: the four text GPUs, then the vision GPU.
+
+    Nighttime is not running, so the vision GPU is not shared: it carries the projector and
+    may also carry the MTP draft. The language model itself stays on the four text GPUs.
+    """
+    vision = host.get('vision_gpu_id')
+    require(vision is not None,
+        'Exclusive profiles require a configured vision GPU (vision_gpu_id) for the projector and MTP draft')
+    require(isinstance(vision, str) and re.fullmatch(GPU_UUID, vision), 'vision_gpu_id must be a full GPU UUID')
+    require(vision not in text, 'Shared vision GPU must be distinct from all text GPUs')
+    text_cuda = [f'CUDA{i}' for i in range(len(text))]
+    vision_cuda = f'CUDA{len(text)}'
+    listed = options.get('--device', '').split(',')
+    require(len(listed) == len(text_cuda) and set(listed) == set(text_cuda),
+        'Exclusive language-model devices must list each of ' + ','.join(text_cuda) + ' exactly once')
+    if '--tensor-split' in options:
+        require(len(options['--tensor-split'].split(',')) == len(text),
+            'Exclusive tensor split must contain exactly one value per text GPU')
+    if '--main-gpu' in options:
+        require(options['--main-gpu'] in [str(i) for i in range(len(text))], 'Main GPU must remain on a text GPU')
+    if '--spec-draft-device' in options:
+        require(options['--spec-draft-device'] in [*text_cuda, vision_cuda], 'Draft model must use a reserved GPU')
+    overrides = options.get('--override-tensor', [])
+    if isinstance(overrides, str):
+        overrides = [overrides]
+    require(all(re.fullmatch(r'.+=(CPU|CUDA[0-%d])' % (len(text) - 1), item) for item in overrides),
+        'Tensor overrides must target CPU or a text GPU, never the vision GPU')
+    require(options.get('--no-mmproj-offload') is True and options.get('--mmproj-device') == 'none',
+        'Profiles must retain their CPU vision defaults; configure GPU vision in host.json')
+    return [*text, vision], vision_cuda
+
+
+def profile_summary(config_dir, name, shared, host=None):
     """Public facts about one profile, derived without Docker, network, or artifact I/O.
 
     Host paths, mount targets, and artifact checksums are deliberately absent: this is
@@ -98,7 +165,8 @@ def profile_summary(config_dir, name, shared, gpu_names=None):
     return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
-        'gpu_group': definition['gpu_group'], 'gpu_names': list((gpu_names or {}).get(definition['gpu_group'], []))}
+        'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
+        'exclusive': is_exclusive(definition)}
 
 
 def available_profiles(config_dir, host=None):
@@ -106,9 +174,8 @@ def available_profiles(config_dir, host=None):
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
-    gpu_names = (host or {}).get('gpu_names') or {}
     def describe(name):
-        return profile_summary(config_dir, name, shared, gpu_names)
+        return profile_summary(config_dir, name, shared, host)
     return {'selectable': [describe(name) for name in DAYTIME_PROFILES],
         'always_included': [describe(NIGHTTIME_PROFILE)]}
 
@@ -123,7 +190,8 @@ def render(config_dir, host, profile):
     compose = {'name': shared['backend_project'], 'services': {}, 'networks': {
         'router': {'external': True, 'name': shared['network']}}}
     models, artifacts, manifests, gpu_ids = [], {}, [], []
-    for name in (profile, NIGHTTIME_PROFILE):
+    exclusive_profile = is_exclusive(read(config_dir / 'profiles' / (profile + '.json')))
+    for name in (profile,) if exclusive_profile else (profile, NIGHTTIME_PROFILE):
         definition = read(config_dir / 'profiles' / (name + '.json'))
         role = definition['role']
         engine = shared['engines'][definition['engine']]
@@ -132,11 +200,15 @@ def render(config_dir, host, profile):
         options = {**shared['arguments'], **definition['arguments'],
             '--ctx-size': str(ctx), '--kv-unified-per-slot': str(ctx)}
         order = list(definition['argument_order'])
-        cuda_order = vision_devices(host, definition['gpu_group'], options)
+        exclusive = is_exclusive(definition)
+        if exclusive:
+            cuda_order, vision_device = exclusive_devices(host, options, text_gpus(host, definition))
+        else:
+            cuda_order, vision_device = vision_devices(host, definition['gpu_group'], options), 'CUDA2'
         if cuda_order:
             options.pop('--no-mmproj-offload')
             options['--mmproj-offload'] = True
-            options['--mmproj-device'] = 'CUDA2'
+            options['--mmproj-device'] = vision_device
             order[order.index('--no-mmproj-offload')] = '--mmproj-offload'
         require(len(order) == len(set(order)) and set(order) == set(options),
             name + ': argument_order must contain every effective argument exactly once')
@@ -157,12 +229,9 @@ def render(config_dir, host, profile):
             argv.append(key)
             if value is not True:
                 argv.append(value)
-        devices = host['gpu_ids'][definition['gpu_group']]
-        require(len(devices) == 2 and all(x.startswith('GPU-') and 'REPLACE' not in x for x in devices),
-            'Configure two real GPU UUIDs per group in host.json')
-        gpu_ids.extend(devices)
-        text_devices = list(devices)
-        devices = [*devices, host['vision_gpu_id']] if cuda_order else devices
+        text_devices = text_gpus(host, definition)
+        gpu_ids.extend(text_devices)
+        devices = [*text_devices, host['vision_gpu_id']] if cuda_order else list(text_devices)
         mounts, targets = [], {}
         for artifact in definition['artifacts']:
             relative = Path(artifact['path'])
@@ -205,8 +274,10 @@ def render(config_dir, host, profile):
             source='local-ai-runtime', updated_at=None)
         if cuda_order:
             entry.update(mmproj_offload='gpu', text_gpu_uuids=text_devices,
-                vision_gpu_uuid=host['vision_gpu_id'], vision_device='CUDA2',
-                vision_gpu_shared=True, cuda_visible_devices=cuda_order)
+                vision_gpu_uuid=host['vision_gpu_id'], vision_device=vision_device,
+                vision_gpu_shared=not exclusive, cuda_visible_devices=cuda_order)
+        if exclusive:
+            entry['exclusive'] = True
         if entry['mtp'].get('enabled'):
             target = entry['mtp'].pop('artifact_target')
             require(target == options['--spec-draft-model'] and target in targets,

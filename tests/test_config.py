@@ -10,6 +10,23 @@ from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, available_profi
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
+VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
+# Exclusive profiles hold all four text GPUs and run without Nighttime; every other Daytime
+# profile is paired with the unchanged Nighttime backend.
+EXCLUSIVE = tuple(n for n in DAYTIME_PROFILES if read(ROOT / 'config/profiles' / (n + '.json')).get('exclusive'))
+PAIRED = tuple(n for n in DAYTIME_PROFILES if n not in EXCLUSIVE)
+
+
+def vision_host(host=None):
+    host = copy.deepcopy(host or BASELINE['host'])
+    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080',
+        cuda_order={'daytime': host['gpu_ids']['daytime'][::-1], 'nighttime': host['gpu_ids']['nighttime'][:]})
+    return host
+
+
+def host_for(profile):
+    # The exclusive profiles place their projector and MTP draft on the vision GPU.
+    return vision_host() if profile in EXCLUSIVE else BASELINE['host']
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -199,6 +216,133 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(catalog['models'][1], original['catalog']['models'][1])
         self.assertEqual(len(variant['artifacts']), 37)
 
+    def test_flash_solo_is_flash_next_on_all_four_text_gpus_without_nighttime(self):
+        baseline = read(ROOT / 'config/profiles/daytime-flash-next.json')
+        candidate = read(ROOT / 'config/profiles/daytime-flash-solo.json')
+        self.assertEqual(candidate.keys(), baseline.keys() | {'exclusive'})
+        self.assertIs(candidate['exclusive'], True)
+        self.assertEqual((candidate['id'], candidate['display_name'], candidate['gpu_group']),
+            ('daytime-flash-solo', 'FlashNext Solo 4-GPU', 'all'))
+        # Same engine, container, port, context, weights, projector, and MTP head as the paired
+        # next-engine profile; only placement changes.
+        for key in baseline.keys() - {'id', 'display_name', 'gpu_group', 'argument_order', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], baseline[key])
+        # Every expert block fits in VRAM, so the CPU overrides and hand split go away and
+        # automatic fitting distributes the 48 layers across the four text GPUs.
+        removed = ('--n-gpu-layers', '--tensor-split', '--override-tensor')
+        order = [x for x in baseline['argument_order'] if x not in removed]
+        order.insert(order.index('--fit') + 1, '--fit-target')
+        self.assertEqual(candidate['argument_order'], order)
+        self.assertEqual(candidate['arguments'], {**{k: v for k, v in baseline['arguments'].items() if k not in removed},
+            '--alias': 'qwen3.8-flash-next-ad4.27-solo', '--device': 'CUDA1,CUDA2,CUDA3,CUDA0',
+            '--ubatch-size': '1024', '--fit': 'on', '--fit-target': '1024', '--spec-draft-device': 'CUDA4'})
+        expected_catalog = copy.deepcopy(baseline['catalog'])
+        expected_catalog['mtp']['device'] = 'CUDA4'
+        expected_catalog['capability_profile']['name'] = 'qwen38-flash-next-ad427-solo-128k'
+        expected_catalog['deployment_warnings'] = candidate['catalog']['deployment_warnings']
+        self.assertEqual(candidate['catalog'], expected_catalog)
+        self.assertIn('Nighttime is stopped', candidate['catalog']['deployment_warnings'][0])
+
+        host = vision_host()
+        bundle = render(ROOT / 'config', host, 'daytime-flash-solo')
+        self.assertEqual(list(bundle['compose']['services']), ['coding'])
+        cfg = bundle['compose']['services']['coding']
+        text = [*host['gpu_ids']['daytime'], *host['gpu_ids']['nighttime']]  # CUDA0-3: 3090, 4080S, 4080, 3080 Ti
+        self.assertEqual(cfg['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*text, VISION])
+        self.assertEqual(cfg['environment'], {'CUDA_VISIBLE_DEVICES': ','.join([*text, VISION])})
+        argv = cfg['command']
+        for flag, value in {'--split-mode': 'layer', '--device': 'CUDA1,CUDA2,CUDA3,CUDA0', '--fit': 'on',
+                '--fit-target': '1024', '--ubatch-size': '1024', '--batch-size': '2048', '--ctx-size': '131072',
+                '--mmproj-device': 'CUDA4', '--spec-draft-device': 'CUDA4', '--spec-draft-n-max': '2',
+                '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0', '--lazy-mode': 'on'}.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(argv.count(flag), 1)
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+        self.assertIn('--mmproj-offload', argv)
+        for flag in (*removed, '--no-mmproj-offload'):
+            self.assertNotIn(flag, argv)
+        paired = render(ROOT / 'config', host, 'daytime-flash-next')['compose']['services']['coding']
+        for key in cfg.keys() - {'command', 'deploy', 'environment'}:
+            with self.subTest(compose=key):
+                self.assertEqual(cfg[key], paired[key])  # image, container, ports, mounts, network, health
+        catalog = bundle['catalog']
+        self.assertEqual(len(catalog['models']), 1)
+        model = catalog['models'][0]
+        self.assertEqual(catalog['default_model'], model['model'])
+        for key, value in {'model': 'qwen3.8-flash-next-ad4.27-solo', 'display_name': 'FlashNext Solo 4-GPU (128K)',
+                'exclusive': True, 'vision_gpu_shared': False, 'vision_device': 'CUDA4', 'vision_gpu_uuid': VISION,
+                'mmproj_offload': 'gpu', 'text_gpu_uuids': text, 'gpu_uuids': [*text, VISION],
+                'cuda_visible_devices': [*text, VISION], 'fit_target': 'on', 'context_length': 131072,
+                'aliases': ['local-active', 'daytime'],
+                'backend_revision': '836d57176dc699a726c55418e4f96b8ca628e1bf'}.items():
+            with self.subTest(catalog=key):
+                self.assertEqual(model[key], value)
+        self.assertEqual((model['mtp']['device'], model['mtp']['max_draft_tokens']), ('CUDA4', 2))
+        self.assertEqual([a['path'] for a in bundle['artifacts']], [a['path'] for a in baseline['artifacts']])
+
+    def test_flash_solo_mtp3_changes_only_draft_depth_and_identity(self):
+        solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
+        candidate = read(ROOT / 'config/profiles/daytime-flash-solo-mtp3.json')
+        self.assertEqual(candidate.keys(), solo.keys())
+        self.assertEqual((candidate['id'], candidate['display_name']), ('daytime-flash-solo-mtp3', 'FlashNext Solo 4-GPU MTP3'))
+        for key in solo.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
+            with self.subTest(field=key):
+                self.assertEqual(candidate[key], solo[key])
+        self.assertEqual(candidate['arguments'], {**solo['arguments'],
+            '--alias': 'qwen3.8-flash-next-ad4.27-solo-mtp3', '--spec-draft-n-max': '3'})
+        expected_catalog = copy.deepcopy(solo['catalog'])
+        expected_catalog['mtp']['max_draft_tokens'] = 3
+        expected_catalog['capability_profile']['name'] = 'qwen38-flash-next-ad427-solo-mtp3-128k'
+        self.assertEqual(candidate['catalog'], expected_catalog)
+        host = vision_host()
+        model = render(ROOT / 'config', host, 'daytime-flash-solo-mtp3')['catalog']['models'][0]
+        self.assertEqual((model['mtp']['max_draft_tokens'], model['mtp']['device']), (3, 'CUDA4'))
+        base = render(ROOT / 'config', host, 'daytime-flash-solo')['compose']['services']['coding']
+        variant = copy.deepcopy(render(ROOT / 'config', host, 'daytime-flash-solo-mtp3')['compose']['services']['coding'])
+        argv = variant['command']
+        for flag in ('--alias', '--spec-draft-n-max'):
+            argv[argv.index(flag) + 1] = base['command'][base['command'].index(flag) + 1]
+        self.assertEqual(variant, base)
+
+    def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
+        with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
+            render(ROOT / 'config', BASELINE['host'], 'daytime-flash-solo')
+        host = vision_host(); host['gpu_ids']['nighttime'][0] = host['gpu_ids']['daytime'][0]
+        with self.assertRaisesRegex(RuntimeError, 'four distinct'):
+            render(ROOT / 'config', host, 'daytime-flash-solo')
+        host = vision_host(); host['gpu_ids']['nighttime'] = host['gpu_ids']['nighttime'][:1]
+        with self.assertRaisesRegex(RuntimeError, 'two real GPU UUIDs'):
+            render(ROOT / 'config', host, 'daytime-flash-solo')
+        host = vision_host(); host['vision_gpu_id'] = 'GPU-night-2'
+        with self.assertRaisesRegex(RuntimeError, 'full GPU UUID'):
+            render(ROOT / 'config', host, 'daytime-flash-solo')
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles/daytime-flash-solo.json'; original = read(path)
+            for key, value, message in [
+                    ('--device', 'CUDA0,CUDA1,CUDA2', 'exactly once'),
+                    ('--device', 'CUDA0,CUDA1,CUDA2,CUDA4', 'exactly once'),
+                    ('--device', 'CUDA0,CUDA1,CUDA2,CUDA2', 'exactly once'),
+                    ('--tensor-split', '30,30,40', 'one value per text GPU'),
+                    ('--override-tensor', ['blk.*=CUDA4'], 'never the vision GPU'),
+                    ('--spec-draft-device', 'CUDA5', 'reserved GPU'),
+                    ('--main-gpu', '4', 'text GPU')]:
+                definition = copy.deepcopy(original); definition['arguments'][key] = value
+                path.write_text(json.dumps(definition))
+                with self.subTest(key=key, value=value), self.assertRaisesRegex(RuntimeError, message):
+                    render(config, vision_host(), 'daytime-flash-solo')
+            for name, change, message in [
+                    ('daytime-flash-solo', {'exclusive': 'yes'}, 'true or false'),
+                    ('daytime-flash-solo', {'gpu_group': 'daytime'}, '"all" GPU group'),
+                    ('daytime', {'gpu_group': 'all'}, 'unknown GPU group'),
+                    ('nighttime', {'exclusive': True}, '"all" GPU group')]:
+                shutil.rmtree(config); shutil.copytree(ROOT / 'config', config)
+                target = config / 'profiles' / (name + '.json')
+                definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
+                with self.subTest(profile=name, change=change), self.assertRaisesRegex(RuntimeError, message):
+                    render(config, vision_host(), 'daytime-flash-solo' if name == 'daytime-flash-solo' else 'daytime')
+
     def test_ram_prompt_cache_is_shared_for_daytime_and_lowered_only_for_nighttime(self):
         shared = read(ROOT / 'config/shared.json')
         self.assertEqual(shared['arguments']['--cache-ram'], '49152')
@@ -214,12 +358,12 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('--cache-ram', night['argument_order'])
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
-                rendered = render(ROOT / 'config', BASELINE['host'], name)
+                rendered = render(ROOT / 'config', host_for(name), name)
                 self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
-                coding, everyday = rendered['catalog']['models']
+                coding, *paired = rendered['catalog']['models']
                 self.assertEqual(coding['global_ram_prompt_cache_mib'], 49152)
-                self.assertEqual(everyday['global_ram_prompt_cache_mib'], 24576)
-                for role, expected in (('coding', '49152'), ('everyday', '24576')):
+                self.assertEqual([m['global_ram_prompt_cache_mib'] for m in paired], [] if name in EXCLUSIVE else [24576])
+                for role, expected in (('coding', '49152'), ('everyday', '24576'))[:1 if name in EXCLUSIVE else 2]:
                     argv = rendered['compose']['services'][role]['command']
                     self.assertEqual(argv.count('--cache-ram'), 1)
                     self.assertEqual(argv[argv.index('--cache-ram') + 1], expected)
@@ -236,6 +380,7 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'daytime': 'flash-next-mtp', 'daytime-flash-f16': 'flash-next-mtp',
             'daytime-27b': 'qwen38-dual-836d571', 'daytime-27b-tensor-next': 'qwen38-dual-836d571',
             'daytime-27b-q6k-tensor-next': 'qwen38-dual-836d571', 'daytime-flash-next': 'qwen38-dual-836d571',
+            'daytime-flash-solo': 'qwen38-dual-836d571', 'daytime-flash-solo-mtp3': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -257,7 +402,7 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(argument=flag):
                 self.assertEqual(night['arguments'][flag], value)
         self.assertNotIn('--spec-type', night['arguments'])  # Nighttime has no MTP draft
-        for name in DAYTIME_PROFILES:
+        for name in PAIRED:
             with self.subTest(profile=name):
                 argv = render(ROOT / 'config', BASELINE['host'], name)['compose']['services']['everyday']['command']
                 self.assertEqual(argv.count('--split-mode'), 1)
@@ -387,7 +532,8 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES,
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next'))
+             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3'))
+        self.assertEqual(EXCLUSIVE, ('daytime-flash-solo', 'daytime-flash-solo-mtp3'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]
@@ -395,13 +541,19 @@ class RegistryTests(unittest.TestCase):
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 entry = next(x for x in registry['selectable'] if x['profile'] == name)
-                rendered = render(ROOT / 'config', BASELINE['host'], name)
+                rendered = render(ROOT / 'config', host_for(name), name)
                 model = next(m for m in rendered['catalog']['models'] if m['model'] == entry['model'])
                 engine = service_engine(rendered, 'coding')
                 self.assertEqual(entry['display_name'], model['display_name'])
                 self.assertEqual(entry['context_tokens'], model['context_length'])
                 self.assertEqual(entry['engine_tag'], engine['tag'])
                 self.assertEqual(entry['backend_revision'], engine['revision'])
+                self.assertEqual(entry['exclusive'], name in EXCLUSIVE)
+                if name in EXCLUSIVE:
+                    # Nighttime is neither launched nor published while an exclusive profile is selected.
+                    self.assertEqual(list(rendered['compose']['services']), ['coding'])
+                    self.assertEqual([m['model'] for m in rendered['catalog']['models']], [entry['model']])
+                    continue
                 # The paired backend is identical whichever Daytime configuration is selected.
                 everyday = service_engine(rendered, 'everyday')
                 night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == night['model'])
@@ -448,6 +600,7 @@ class RegistryTests(unittest.TestCase):
             row = next(line for line in lines if line.startswith(entry['profile'] + ':'))
             self.assertIn(entry['display_name'], row)
             self.assertIn(entry['model'], row)
+            self.assertEqual(row.endswith('(all four text GPUs; stops Nighttime)'), entry['profile'] in EXCLUSIVE)
 
     def registry_with(self, name, mutate):
         with tempfile.TemporaryDirectory() as tmp:

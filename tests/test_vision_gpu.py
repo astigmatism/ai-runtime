@@ -26,7 +26,8 @@ class VisionTests(unittest.TestCase):
     def test_all_profiles_only_change_encoder_and_visibility(self):
         host = vision_host()
         gpu_night = render(ROOT / 'config', host, 'daytime')['compose']['services']['everyday']
-        for profile in DAYTIME_PROFILES:
+        # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests.
+        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
             self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)

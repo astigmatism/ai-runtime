@@ -6,8 +6,8 @@ const node = (tag, text = '', cls = '') => {
   if (cls) element.className = cls;
   return element;
 };
-const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', 'daytime-27b-tensor-next': 'Daytime-27B Q8 Tensor Next', 'daytime-27b-q6k-tensor-next': 'Daytime-27B Q6_K Tensor Next', 'daytime-flash-next': 'FlashNext Next Engine', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
-const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-flash-next-ad4.27-next': 'Flash-Next · next engine', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-q8_0-tensor-next': '27B Q8 · Tensor · next engine', 'qwen3.8-27b-ud-q6_k_xl-tensor-next': '27B UD-Q6_K_XL · Tensor · next engine', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
+const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', 'daytime-27b-tensor-next': 'Daytime-27B Q8 Tensor Next', 'daytime-27b-q6k-tensor-next': 'Daytime-27B Q6_K Tensor Next', 'daytime-flash-next': 'FlashNext Next Engine', 'daytime-flash-solo': 'FlashNext Solo 4-GPU', 'daytime-flash-solo-mtp3': 'FlashNext Solo 4-GPU MTP3', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
+const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-flash-next-ad4.27-next': 'Flash-Next · next engine', 'qwen3.8-flash-next-ad4.27-solo': 'Flash-Next · solo 4-GPU', 'qwen3.8-flash-next-ad4.27-solo-mtp3': 'Flash-Next · solo 4-GPU · MTP3', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-q8_0-tensor-next': '27B Q8 · Tensor · next engine', 'qwen3.8-27b-ud-q6_k_xl-tensor-next': '27B UD-Q6_K_XL · Tensor · next engine', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
 const phaseNames = {checking: 'Check', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
 const phases = Object.keys(phaseNames);
@@ -65,7 +65,7 @@ function renderRegistry() {
       const input = node('input'); input.type = 'radio'; input.name = 'profile'; input.value = config.profile;
       input.addEventListener('change', () => { selected = input.value; actionError=''; tellError(''); updateControls(); });
       const text = node('span', '', 'profile-label');
-      text.append(node('strong', profileName(config.profile)), node('small', `${modelName(config.model)} · ${context(config.context_tokens)}`));
+      text.append(node('strong', profileName(config.profile)), node('small', `${modelName(config.model)} · ${context(config.context_tokens)}${config.exclusive ? ' · stops Nighttime' : ''}`));
       const marker = node('span', '', 'profile-state'); marker.dataset.profile = config.profile;
       label.append(input, text, marker); el('config-list').append(label);
     }
@@ -90,7 +90,7 @@ function updateControls() {
 }
 function renderTopology() {
   const services = status?.services || [];
-  const signature = JSON.stringify([services.map(s => [s.role,s.name,s.model,s.context_tokens,s.gpu_ids,s.gpu_names,s.vision_gpu_id,s.vision_gpu_name,s.healthy]), running() ? [operation.target_profile,operation.phase] : null, status?.maintenance?.draining, connected]);
+  const signature = JSON.stringify([services.map(s => [s.role,s.name,s.model,s.context_tokens,s.gpu_ids,s.gpu_names,s.vision_gpu_id,s.vision_gpu_name,s.exclusive,s.healthy]), status?.offline_roles, running() ? [operation.target_profile,operation.phase] : null, status?.maintenance?.draining, connected]);
   if (signature === topologySignature) return;
   topologySignature = signature;
   const graph = el('topology'); graph.replaceChildren();
@@ -119,7 +119,13 @@ function renderTopology() {
     });
     graph.append(set);
   });
-  if (shared) graph.append(gpuNode(shared.vision_gpu_name || 'Vision GPU', 'Shared vision', 'shared vision-node'));
+  if (status?.offline_roles?.includes('everyday')) {
+    // Not a connected model: an exclusive Daytime profile holds Nighttime's GPUs.
+    const offline = node('article', '', 'model-bubble night unavailable');
+    offline.append(node('h3', 'Nighttime'), node('p', 'Offline while an exclusive profile holds its GPUs'), node('p', 'Not running', 'model-health'));
+    graph.append(offline);
+  }
+  if (shared) graph.append(gpuNode(shared.vision_gpu_name || 'Vision GPU', shared.exclusive ? 'Vision + MTP draft' : 'Shared vision', 'shared vision-node'));
   drawConnections();
 }
 function gpuNode(name, role, cls) {
@@ -171,7 +177,7 @@ function renderDetails() {
   for (const service of status?.services || []) {
     const article = node('article', '', 'service-detail'), facts = node('dl');
     article.append(node('h3', service.name));
-    for (const [label,value] of [['Model',service.model],['Context',context(service.context_tokens)],['Container',service.container_name],['Running since',service.started_at ? new Date(service.started_at).toLocaleString() : 'Unavailable'],['Text GPUs',service.gpu_names?.join(' + ') || 'Names unavailable'],['Vision',service.vision_gpu_id ? `${service.vision_gpu_name || 'Vision GPU'} · ${service.vision_device} · shared` : 'CPU'],['Configuration differences',service.differences?.join(', ') || 'None']]) {
+    for (const [label,value] of [['Model',service.model],['Context',context(service.context_tokens)],['Container',service.container_name],['Running since',service.started_at ? new Date(service.started_at).toLocaleString() : 'Unavailable'],['Text GPUs',service.gpu_names?.join(' + ') || 'Names unavailable'],['Vision',service.vision_gpu_id ? `${service.vision_gpu_name || 'Vision GPU'} · ${service.vision_device} · ${service.exclusive ? 'exclusive' : 'shared'}` : 'CPU'],['Configuration differences',service.differences?.join(', ') || 'None']]) {
       facts.append(node('dt',label),node('dd',value || 'Unavailable'));
     }
     article.append(facts); el('services').append(article);
@@ -250,6 +256,8 @@ async function tick() {
 el('switch-form').addEventListener('submit',async event => {
   event.preventDefault();
   if (el('apply').disabled) return;
+  const target = status?.configurations?.selectable?.find(c => c.profile === selected);
+  if (target?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs. Nighttime will be stopped until you switch to a paired profile. Continue?`)) return;
   submitting=true; actionError=''; tellError(''); updateControls(); clearTimeout(timer);
   const request = pending && pending.profile===selected && pending.expected_profile===status.profile && pending.expected_revision===status.deployed_revision ? pending : {profile:selected,request_id:uuid(),expected_profile:status.profile,expected_revision:status.deployed_revision};
   remember(request);

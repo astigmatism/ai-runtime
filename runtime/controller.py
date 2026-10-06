@@ -1,4 +1,9 @@
-"""Serialized, recoverable reconciliation of the existing two backend containers."""
+"""Serialized, recoverable reconciliation of the existing backend containers.
+
+Paired profiles run Daytime and Nighttime side by side. An exclusive Daytime profile owns
+all four text GPUs, so selecting it stops and removes Nighttime, and selecting a paired
+profile again recreates it.
+"""
 import copy
 import hashlib
 import json
@@ -7,8 +12,12 @@ from pathlib import Path
 import time
 import uuid
 
-from .config import available_profiles, digest, read, render, require, service_engine
+from .config import NIGHTTIME_PROFILE, available_profiles, digest, read, render, require, service_engine
 from .system import System, atomic_json, lock, now
+
+
+def services_of(bundle):
+    return bundle['compose']['services'] if bundle else {}
 
 
 class Controller:
@@ -41,6 +50,29 @@ class Controller:
 
     def backend_url(self, cfg):
         return 'http://' + cfg['container_name'] + ':8080'
+
+    def nighttime_container(self):
+        return read(self.config_dir / 'profiles' / (NIGHTTIME_PROFILE + '.json'))['container_name']
+
+    def removed_backends(self, bundle, previous_bundle):
+        """Existing containers that must not run beside `bundle`, so they release their GPUs first.
+
+        These are the previous release's services that the target omits, plus any leftover
+        Nighttime container when the target is exclusive.
+        """
+        services = services_of(bundle)
+        names = [cfg['container_name'] for role, cfg in services_of(previous_bundle).items() if role not in services]
+        if 'everyday' not in services:
+            names.append(self.nighttime_container())
+        return [name for name in dict.fromkeys(names) if self.system.inspect(name)]
+
+    def release(self, names):
+        """Stop, then remove, so a restart policy can never bring a backend back onto reassigned GPUs."""
+        for name in names:
+            if self.system.inspect(name):
+                self.system.docker('stop', '--time', '60', name, timeout=180)
+                self.system.docker('rm', name)
+            require(not self.system.inspect(name), 'Backend could not be removed: ' + name)
 
     def validate(self, bundle, full_hash=False):
         images = {}
@@ -139,6 +171,11 @@ class Controller:
                 except Exception:
                     result['health_error'] = 'Backend readiness unavailable'
             observed[role] = result
+        if 'everyday' not in bundle['compose']['services'] and 'coding' in observed:
+            night = self.system.inspect(self.nighttime_container())
+            if night and night['State']['Running']:
+                observed['coding']['differences'].append('competing Nighttime backend running')
+                observed['coding']['healthy'] = False
         legacy = self.system.inspect('local-ai-llama-cpp')
         require(not legacy or not legacy['State']['Running'], 'Legacy inference backend is running; refusing competing GPU ownership')
         return observed
@@ -186,12 +223,16 @@ class Controller:
         path = self.compose_path(bundle)
         self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path), 'config', '--quiet')
 
-    def reconcile(self, bundle, roles):
+    def reconcile(self, bundle, roles, sequential=False):
+        """Start the changed roles; across a topology change Daytime starts first, then Nighttime,
+        so the outgoing Daytime has released every GPU before Nighttime loads."""
         if roles:
             path = self.compose_path(bundle)
-            self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path),
-                'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', '450', *roles,
-                timeout=510)
+            batches = [[role] for role in sorted(roles, key=lambda role: role != 'coding')] if sequential else [roles]
+            for batch in batches:
+                self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path),
+                    'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', '450', *batch,
+                    timeout=510)
         observed = self.observe(bundle)
         require(all(s['healthy'] for s in observed.values()), 'Backend identity/readiness verification failed')
         return observed
@@ -251,13 +292,20 @@ class Controller:
         require(previous is not None, 'No previous release exists; recovery needs operator attention')
         require(self.owns_drain(transaction), 'Recovery does not own the router drain; refusing to change it')
         old = previous['bundle']
+        target = transaction['target']['bundle']
         self.prepare(old)
-        self.wait_idle([old, transaction['target']['bundle']])
+        self.wait_idle([old, target])
+        protected = transaction.get('protected_services', {})
+        topology = set(services_of(old)) != set(services_of(target))
+        # Leaving an exclusive target frees the GPUs it took before the paired release returns;
+        # restoring an exclusive release first removes a Nighttime the failed target started.
+        extra = self.removed_backends(old, target)
+        require(not extra or not protected, 'Recovery would replace a protected backend; operator attention required')
+        self.release(extra)
         observed = self.observe(old)
         roles = [role for role, s in observed.items() if not s['healthy']]
-        protected = transaction.get('protected_services', {})
         require(not set(roles).intersection(protected), 'Recovery would replace a protected backend; operator attention required')
-        after = self.reconcile(old, roles)
+        after = self.reconcile(old, roles, sequential=topology)
         require(all(after[r].get('id') == cid for r, cid in protected.items()),
             'A protected backend changed during recovery')
         self.acceptance(old, roles)
@@ -288,13 +336,18 @@ class Controller:
         bundle = self.desired(profile)
         self.prepare(bundle)
         observed = self.observe(bundle)
+        prior = services_of(previous['bundle']) if previous else {}
         roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
-            previous['bundle']['compose']['services'][role] != bundle['compose']['services'][role])]
-        require(not adopt or not roles, 'Adoption requires an exact match to healthy existing backends')
-        require(not daytime_only or 'everyday' not in roles, 'Profile switch would replace Nighttime; operator attention required')
+            prior.get(role) != bundle['compose']['services'][role])]
+        # Selecting or leaving an exclusive profile deliberately removes or restores Nighttime.
+        topology = bool(previous) and set(prior) != set(bundle['compose']['services'])
+        removed = self.removed_backends(bundle, previous['bundle'] if previous else None)
+        require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
+        require(not daytime_only or topology or 'everyday' not in roles,
+            'Profile switch would replace Nighttime; operator attention required')
         state = self.admin('runtime-state')['runtime']
         require(not state['draining'], 'Another operation owns the router drain')
-        if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles:
+        if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles and not removed:
             return {'already_active': True, 'profile': bundle['profile']}
         unchanged = {role: s['id'] for role, s in observed.items() if role not in roles}
         target = {'revision': self.revision, 'image': self.image, 'bundle': bundle, 'applied_at': now()}
@@ -304,7 +357,9 @@ class Controller:
         tx = {'id': operation_id or str(uuid.uuid4()), 'started_at': now(), 'phase': 'prepared', 'previous': previous,
             'target': target, 'changed_roles': roles, 'revision': self.revision,
             'config_sha256': bundle['config_sha256']}
-        if daytime_only:
+        if removed:
+            tx['removed_backends'] = removed
+        if daytime_only and not topology and 'everyday' in observed:
             tx['protected_services'] = {'everyday': observed['everyday']['id']}
         self.save('transaction.json', tx)
         changed = False
@@ -318,7 +373,8 @@ class Controller:
             self.save('transaction.json', tx)
             progress('loading')
             changed = True
-            after = self.reconcile(bundle, roles)
+            self.release(removed)
+            after = self.reconcile(bundle, roles, sequential=topology)
             require(all(after[r]['id'] == cid for r, cid in unchanged.items()), 'An unchanged backend was unexpectedly recreated')
             tx['phase'] = 'verifying'
             self.save('transaction.json', tx)
@@ -418,6 +474,7 @@ class Controller:
         bundle = active['bundle'] if active else self.desired()
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
+            'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
             'last_deployment': self.load('last-deployment.json'), 'updated_at': now()}
         # Read-only presentation of the profile registry. It is reported before the live
         # checks below so an unreadable definition never hides the health of the pair.
@@ -435,16 +492,20 @@ class Controller:
                 ('phase', 'started_at', 'finished_at', 'error', 'revision')}
         try:
             observed = self.observe(bundle)
+            names = {gpu: name for group, ids in self.host.get('gpu_ids', {}).items()
+                for gpu, name in zip(ids, self.host.get('gpu_names', {}).get(group, []))}
             for model, service in zip(bundle['catalog']['models'], bundle['manifest']['services']):
                 live = observed[service['role']]
+                text = model.get('text_gpu_uuids', model['gpu_uuids'])
                 result['services'].append({'role': service['role'], 'name': model['display_name'], 'model': model['model'],
                     'context_tokens': model['context_length'],
-                    'gpu_ids': model.get('text_gpu_uuids', model['gpu_uuids']),
+                    'gpu_ids': text,
                     'vision_gpu_id': model.get('vision_gpu_uuid'),
                     'vision_gpu_name': self.host.get('vision_gpu_name') if model.get('vision_gpu_uuid') else None,
                     'vision_device': model.get('vision_device', 'CPU'),
                     'vision_gpu_shared': model.get('vision_gpu_shared', False),
-                    'gpu_names': self.host.get('gpu_names', {}).get('daytime' if service['role'] == 'coding' else 'nighttime', []),
+                    'exclusive': model.get('exclusive', False),
+                    'gpu_names': [names[gpu] for gpu in text if gpu in names],
                     **live})
             router = self.admin('runtime-state')
             state = router['runtime']

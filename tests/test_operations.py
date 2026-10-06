@@ -11,8 +11,11 @@ from runtime.system import lock, now
 
 
 class OperationFixture:
+    controller_setup = controller_fixture.ControllerTests.setUp
+    HOST = controller_fixture.HOST
+
     def setUp(self):
-        controller_fixture.ControllerTests.setUp(self)
+        self.controller_setup()
         self.web_state = {'started': True, 'status': self.c.status()}
         self.ops = Operations(self.c, self.web_state)
         self.release = threading.Event()
@@ -268,3 +271,37 @@ class OperationTests(OperationFixture, unittest.TestCase):
             self.ops.reconcile_interrupted()
         self.assertEqual(self.ops.latest()['status'], 'succeeded')
         self.assertEqual(self.system.events, [])
+
+
+class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
+    """Browser switches may remove Nighttime only to select, or restore it only to leave, an exclusive profile."""
+    controller_setup = controller_fixture.ExclusiveProfileTests.setUp
+    HOST = controller_fixture.ExclusiveProfileTests.HOST
+
+    def test_browser_switch_to_solo_and_back(self):
+        result = self.run_switch(self.request('daytime-flash-solo'))
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertIsNone(self.system.inspect('qwen38-nighttime'))
+        self.assertEqual(self.web_state['status']['offline_roles'], ['everyday'])
+        self.assertTrue(self.web_state['status']['ready'])
+        self.assertEqual(self.run_switch(self.request('daytime-flash-solo-mtp3'))['status'], 'succeeded')
+        self.assertEqual(self.run_switch(self.request('daytime'))['status'], 'succeeded')
+        self.assertTrue(self.system.inspect('qwen38-nighttime')['State']['Running'])
+        self.assertEqual(self.web_state['status']['offline_roles'], [])
+        self.assertFalse(self.system.draining)
+
+    def test_failed_solo_browser_switch_reports_recovered_with_nighttime_restored(self):
+        self.system.failed_generations = 1
+        result = self.run_switch(self.request('daytime-flash-solo'))
+        self.assertEqual(result['status'], 'recovered')
+        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertTrue(self.system.inspect('qwen38-nighttime')['State']['Running'])
+        self.assertFalse(self.system.draining)
+
+    def test_paired_browser_switch_still_refuses_nighttime_changes(self):
+        desired = self.c.desired('daytime-27b')
+        desired['compose']['services']['everyday']['logging']['options']['max-size'] = '31m'
+        with patch.object(self.c, 'desired', return_value=desired):
+            result = self.run_switch(self.request('daytime-27b'))
+        self.assertEqual(result['status'], 'failed')
+        self.assertFalse(any(e[0] == 'docker' for e in self.system.events))
