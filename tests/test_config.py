@@ -340,6 +340,21 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertEqual(argv[argv.index(flag) + 1], value)
                 self.assertEqual({k: v for k, v in cfg.items() if k != 'command'}, {k: v for k, v in base.items() if k != 'command'})
 
+    def test_pipeline_experiment_pins_whole_layers_so_no_tensor_override_disables_pipelining(self):
+        solo = read(ROOT / 'config/profiles/daytime-flash-solo.json')
+        candidate = read(ROOT / 'config/profiles/daytime-flash-solo-pp512.json')
+        order = [x for x in solo['argument_order'] if x != '--fit-target']
+        order[order.index('--fit') + 1:order.index('--fit') + 1] = ['--n-gpu-layers', '--tensor-split']
+        self.assertEqual(candidate['argument_order'], order)
+        expected = {k: v for k, v in solo['arguments'].items() if k != '--fit-target'}
+        expected.update({'--alias': 'qwen3.8-flash-next-ad4.27-solo-pp512', '--ubatch-size': '512', '--fit': 'off',
+            '--n-gpu-layers': 'all', '--tensor-split': '11,12,8,18'})
+        self.assertEqual(candidate['arguments'], expected)
+        argv = render(ROOT / 'config', vision_host(), 'daytime-flash-solo-pp512')['compose']['services']['coding']['command']
+        self.assertNotIn('--override-tensor', argv)
+        self.assertEqual(sum(int(x) for x in argv[argv.index('--tensor-split') + 1].split(',')), 49)  # 48 blocks + output
+        self.assertEqual(argv[argv.index('--device') + 1], 'CUDA1,CUDA2,CUDA3,CUDA0')
+
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
             render(ROOT / 'config', BASELINE['host'], 'daytime-flash-solo')
@@ -419,7 +434,7 @@ class ConfigurationTests(unittest.TestCase):
             'daytime-flash-solo-pmin3': 'qwen38-dual-836d571', 'daytime-flash-solo-pmin4': 'qwen38-dual-836d571',
             'daytime-flash-solo-batch4k': 'qwen38-dual-836d571', 'daytime-flash-solo-ram': 'qwen38-dual-836d571',
             'daytime-flash-solo-ub2048': 'qwen38-dual-836d571', 'daytime-flash-solo-f16kv': 'qwen38-dual-836d571',
-            'daytime-flash-solo-diag': 'qwen38-dual-836d571',
+            'daytime-flash-solo-diag': 'qwen38-dual-836d571', 'daytime-flash-solo-pp512': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -573,7 +588,7 @@ class RegistryTests(unittest.TestCase):
             ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
              'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-mtp3',
              'daytime-flash-solo-pmin3', 'daytime-flash-solo-pmin4', 'daytime-flash-solo-batch4k', 'daytime-flash-solo-ram',
-             'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag'))
+             'daytime-flash-solo-ub2048', 'daytime-flash-solo-f16kv', 'daytime-flash-solo-diag', 'daytime-flash-solo-pp512'))
         self.assertEqual(EXCLUSIVE, DAYTIME_PROFILES[6:])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
