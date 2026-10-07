@@ -202,7 +202,10 @@ These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of token
 2. **DFlash 2 on Daytime 27B Q6_K in layer mode:** `qwen27b-q6k-dflash2-with-nighttime`.
    - **Drafter:** the MTP3 head is replaced by z-lab's `Qwen3.8-27B-DFlash2-GGUF` Q4_K_M (revision `2d9571f`, which includes the 2026-08-24 `dflash.rope.dimension_sections` update), mounted as `/weights/dflash2.gguf` on the RTX 3090.
    - **Depth:** `--spec-draft-n-max 5`. A published sweep peaked at 5; the block size is 8, so llama.cpp caps the depth at 7.
-   - **Placement:** `--split-mode layer` with `--tensor-split 60,40`. Layer mode gives up tensor parallelism, so it must recover about 30% to match the current configuration. Nighttime is unchanged.
+   - **Placement:** `--split-mode layer`. Layer mode gives up tensor parallelism, so it must recover about 30% to match the current configuration. Nighttime is unchanged.
+   - **First load (2026-10-07) failed:** with `--device CUDA1,CUDA0`, the draft context aborted with `pre-allocated tensor (output.weight) in a buffer (CUDA0) that cannot run the operation`. The drafter shares the target's output layer, which llama.cpp places on the last device, the RTX 4080 SUPER, while the drafter runs on the RTX 3090.
+     - **Recovery:** the backend restart-looped as a failed initializer, so automatic recovery timed out waiting for it (`needs-attention`). The documented repair restored the previous configuration in about 8 minutes, with Nighttime untouched: confirm no active work, stop that container, run `runtime recover`.
+     - **Fix:** `--device CUDA0,CUDA1 --tensor-split 40,60` lists the RTX 3090 last, so it holds both the output layer and the drafter, with the same 60/40 share.
    - **Copy drafter:** not combined, because experiment 1 showed it hurts planning.
 3. **Speculative decoding for Nighttime** (after that), which has none today: the base 27B MTP head in tensor mode, and DFlash 2 in layer mode. The Nighttime cards lack the room, so the draft goes on the shared RTX 3080 for these experiments.
 

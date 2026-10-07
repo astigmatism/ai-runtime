@@ -69,8 +69,8 @@
     "--model": "/weights/main.gguf",
     "--alias": "qwen3.8-27b-ud-q6_k_xl-dflash2",
     "--n-gpu-layers": "66",
-    "--tensor-split": "60,40",
-    "--device": "CUDA1,CUDA0",
+    "--tensor-split": "40,60",
+    "--device": "CUDA0,CUDA1",
     "--lazy-mode": "off",
     "--threads": "18",
     "--threads-batch": "18",
@@ -153,7 +153,7 @@
       "prompt_cache_persistence": false
     },
     "deployment_warnings": [
-      "Experiment: the z-lab DFlash 2 block drafter for Qwen3.8-27B (Q4_K_M, block size 8, drafting up to 5 tokens per pass) replaces the MTP3 head. It runs layer split (60,40 across the RTX 3090 and RTX 4080 SUPER) because DFlash 2 aborts under --split-mode tensor (llama.cpp #28777, fix #27858 unmerged). Not yet benchmarked.",
+      "Experiment: the z-lab DFlash 2 block drafter for Qwen3.8-27B (Q4_K_M, block size 8, drafting up to 5 tokens per pass) replaces the MTP3 head. It runs layer split because DFlash 2 aborts under --split-mode tensor (llama.cpp #28777, fix #27858 unmerged). The drafter shares the target output layer, which llama.cpp places on the last --device, so the RTX 3090 is listed last (40,60 across the RTX 4080 SUPER and RTX 3090) and holds both the output layer and the drafter. Not yet benchmarked.",
       "160K is the total prompt, history, reasoning, and output capacity."
     ],
     "aliases": [

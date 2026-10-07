@@ -181,10 +181,13 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(candidate[key], base[key])
         self.assertEqual((candidate['id'], candidate['display_name']),
             ('qwen27b-q6k-dflash2-with-nighttime', 'Qwen3.8 27B Q6_K, DFlash 2 (layer split)'))
-        # DFlash 2 aborts under --split-mode tensor (llama.cpp #28777), so the pair runs layer split at the
-        # 60,40 proportions of the former layer-split 27B profile; only the draft model and its depth change.
+        # DFlash 2 aborts under --split-mode tensor (llama.cpp #28777), so the pair runs layer split. The
+        # drafter shares the target's output layer, which llama.cpp puts on the last --device; on the RTX 4080
+        # SUPER (CUDA0) the draft context on the RTX 3090 (CUDA1) aborted at load ("pre-allocated tensor
+        # (output.weight) in a buffer (CUDA0) that cannot run the operation"). Listing the 3090 last puts the
+        # output layer beside the drafter, at the former 60% share for the 3090.
         self.assertEqual(candidate['arguments'], {**base['arguments'], '--alias': 'qwen3.8-27b-ud-q6_k_xl-dflash2',
-            '--split-mode': 'layer', '--tensor-split': '60,40', '--spec-type': 'draft-dflash',
+            '--split-mode': 'layer', '--device': 'CUDA0,CUDA1', '--tensor-split': '40,60', '--spec-type': 'draft-dflash',
             '--spec-draft-model': '/weights/dflash2.gguf', '--spec-draft-n-max': '5'})
         drafter = {'path': 'llm/z-lab/Qwen3.8-27B-DFlash2-GGUF/revisions/2d9571f8ce46e151f61c6499c99dee6079e1d610/'
                 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf', 'target': '/weights/dflash2.gguf', 'bytes': 1143006816,
@@ -192,7 +195,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(candidate['artifacts'], [drafter if a['target'] == '/weights/mtp.gguf' else a for a in base['artifacts']])
         bundle = render(ROOT / 'config', vision_host(), 'qwen27b-q6k-dflash2-with-nighttime')
         argv = bundle['compose']['services']['coding']['command']
-        for flag, value in {'--split-mode': 'layer', '--tensor-split': '60,40', '--spec-type': 'draft-dflash',
+        for flag, value in {'--split-mode': 'layer', '--device': 'CUDA0,CUDA1', '--tensor-split': '40,60', '--spec-type': 'draft-dflash',
                 '--spec-draft-model': '/weights/dflash2.gguf', '--spec-draft-n-max': '5', '--spec-draft-device': 'CUDA1'}.items():
             self.assertEqual(argv[argv.index(flag) + 1], value)
         draft = bundle['catalog']['models'][0]['mtp']
