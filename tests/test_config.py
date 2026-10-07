@@ -133,11 +133,7 @@ class ConfigurationTests(unittest.TestCase):
                     {'--ctx-size': '131072', '--parallel': '1', '--cache-type-k': 'f16', '--cache-type-v': 'f16', '--ubatch-size': '1024'}),
             # F16 K/V at 160K left the RTX 4080 without room for the indexer top-k scratch and aborted a prefill.
             'flash-next-solo-160k': ('Qwen3.8 Flash-Next (160K)', 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-160k',
-                    {'--ctx-size': '163840', '--parallel': '1', '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0', '--ubatch-size': '1024'}),
-            # Two 128K slots: q8_0 K/V keeps the pool at one F16 slot's size; the 512 microbatch fits the top-k scratch.
-            'flash-next-solo-two-requests': ('Qwen3.8 Flash-Next, two requests at once (128K)', 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3-2slot',
-                    {'--ctx-size': '262144', '--kv-unified-per-slot': '131072', '--parallel': '2', '--cache-type-k': 'q8_0',
-                     '--cache-type-v': 'q8_0', '--ubatch-size': '512'})}
+                    {'--ctx-size': '163840', '--parallel': '1', '--cache-type-k': 'q8_0', '--cache-type-v': 'q8_0', '--ubatch-size': '1024'})}
         for name, (display, alias, specific) in cases.items():
             with self.subTest(profile=name):
                 bundle = render(ROOT / 'config', host, name)
@@ -159,7 +155,18 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual(bundle['manifest']['services'][0]['parallel_slots'], slots)
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            for name, change, message in [('flash-next-solo-two-requests', {'parallel_slots': 3}, 'must be 1 or 2'),
+            # No configuration runs two slots now; the capability stays (LLM Router admits two requests for
+            # such a resident). Two 128K slots size the KV pool for both and keep the per-request window.
+            target = config / 'profiles/flash-next-solo-128k.json'; original = target.read_text()
+            definition = read(target); definition['parallel_slots'] = 2; target.write_text(json.dumps(definition))
+            bundle = render(config, host, 'flash-next-solo-128k')
+            argv = bundle['compose']['services']['coding']['command']
+            self.assertEqual([argv[argv.index(f) + 1] for f in ('--parallel', '--ctx-size', '--kv-unified-per-slot')], ['2', '262144', '131072'])
+            model = bundle['catalog']['models'][0]
+            self.assertEqual((model['context_length'], model['total_context_length'], model['max_active_requests']), (131072, 262144, 2))
+            self.assertEqual(bundle['manifest']['services'][0]['parallel_slots'], 2)
+            target.write_text(original)
+            for name, change, message in [('flash-next-solo-128k', {'parallel_slots': 3}, 'must be 1 or 2'),
                     ('qwen27b-q8-with-nighttime', {'parallel_slots': 2}, 'only an exclusive profile')]:
                 target = config / 'profiles' / (name + '.json'); original = target.read_text()
                 definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
@@ -243,7 +250,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'flash-next-solo-two-requests': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -313,7 +319,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'flash-next-solo-two-requests'))
+            'flash-next-solo-160k'))
         self.assertEqual(PAIRED, DAYTIME_PROFILES[:2])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])

@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -220,9 +221,9 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'qwen27b-q8-with-nighttime')
         self.assertEqual([x['profile'] for x in configs['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[2:]))
-        self.assertEqual([x['display_name'] for x in configs['selectable'][:5]], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
-            'Qwen3.8 Flash-Next (128K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next, two requests at once (128K)'])
-        self.assertEqual([x['parallel_slots'] for x in configs['selectable'][:5]], [1, 1, 1, 1, 2])
+        self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
+            'Qwen3.8 Flash-Next (128K)', 'Qwen3.8 Flash-Next (160K)'])
+        self.assertEqual([x['parallel_slots'] for x in configs['selectable']], [1, 1, 1, 1])
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
         self.assertEqual(configs['selectable'][2]['engine'], 'qwen38-dual-43fe9c6')
@@ -362,7 +363,13 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo-tuned-mtp3'])
 
     def test_two_slot_backend_is_verified_by_slot_count_and_per_slot_context(self):
-        self.c.transition('flash-next-solo-two-requests')
+        # No configuration runs two slots now; the capability is exercised on a copy of the configuration.
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        config = Path(tmp.name) / 'config'; shutil.copytree(ROOT / 'config', config)
+        path = config / 'profiles/flash-next-solo-128k.json'; definition = read(path)
+        definition['parallel_slots'] = 2; path.write_text(json.dumps(definition))
+        self.c.config_dir = config
+        self.c.transition('flash-next-solo-128k')
         self.assertTrue(self.c.status()['ready'])
         bundle = self.c.desired(); name = 'qwen38-daytime'
         argv = self.system.containers[name]['Config']['Cmd']

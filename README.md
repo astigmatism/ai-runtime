@@ -21,11 +21,10 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
 | `qwen27b-q6k-with-nighttime` | Qwen3.8 27B Unsloth UD-Q6_K_XL, otherwise as above, 160K | Same Nighttime | Same |
 | `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
 | `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
-| `flash-next-solo-two-requests` | Same Flash-Next serving two requests at once, 128K each (q8_0 K/V, 512 microbatch) | Off | Same |
 
 `qwen27b-q8-with-nighttime` is the default when a host has no recorded release. Nighttime's RAM prompt cache is capped at 24 GiB; Daytime uses the shared 48 GiB. `primary` means the selected configuration; it is not a clock-based schedule.
 - **27B configurations:** each was benchmarked on a full Bench Studio coding session (2/2 passed), at about 26.1 (Q8) and 27.0 (Q6_K) steps per second.
-- **Flash-Next solo configurations:** the whole model stays in VRAM on all four text GPUs. On a fixed session replay, `flash-next-solo-128k` decodes at about 94 tokens per second. With two concurrent requests, each runs at about half speed. Decode slows as a conversation's context fills, in every configuration: about 56 tokens per second at 64K and 36 at 120K.
+- **Flash-Next solo configurations:** the whole model stays in VRAM on all four text GPUs. On a fixed session replay, `flash-next-solo-128k` decodes at about 94 tokens per second. Decode slows as a conversation's context fills, in every configuration: about 56 tokens per second at 64K and 36 at 120K.
 - **Selecting a solo configuration:** it drains both models, stops and removes Nighttime, and publishes a one-model catalog. Requests for Nighttime fail until a configuration with Nighttime is selected again. See [deployment](docs/deployment.md#exclusive-flash-next-solo-profiles) for placement, measurements, and recovery.
 - **Consolidation (2026-10-07):** the configurations were renamed and the superseded ones retired. Each kept configuration launches the same backend and model alias as before, so its Bench Studio history continues:
 
@@ -35,11 +34,11 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
   | `daytime-27b-q6k-tensor-next` | `qwen27b-q6k-with-nighttime` |
   | `daytime-flash-solo-tuned-mtp3` | `flash-next-solo-128k` |
   | `daytime-flash-solo-tuned-mtp3-160k` | `flash-next-solo-160k` |
-  | `daytime-flash-solo-tuned-mtp3-2slot` | `flash-next-solo-two-requests` |
 - **Retired:**
   - `daytime`, `daytime-flash-f16`, and `daytime-flash-next`: two-GPU Flash-Next at about 31 tokens per second.
   - `daytime-27b`: layer-split Q8.
   - `daytime-flash-solo` and `daytime-flash-solo-tuned`: superseded by MTP3.
+  - `flash-next-solo-two-requests` (formerly `daytime-flash-solo-tuned-mtp3-2slot`): retired the same day. Two requests at once ran each at about half speed. Exclusive profiles can still set `"parallel_slots": 2`, and LLM Router admits two requests for such a resident.
   - The `flash-next-mtp` engine they used is no longer referenced.
 
 The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Every Qwen3.8-27B backend (Nighttime and both 27B configurations) uses `836d57176dc699a726c55418e4f96b8ca628e1bf` (engine `qwen38-dual-836d571`). The Flash-Next solo configurations use `43fe9c64281ef735046adc025e9e7559a1f659a5` (engine `qwen38-dual-43fe9c6`). The original `8ea2902` engine and the Flash-Next branch engine `d1a92352c` are retired. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
