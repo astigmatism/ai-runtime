@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, available_profiles, digest, read,
+from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, NIGHTTIME_PROFILES, available_profiles, digest, read,
     render, service_engine)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +25,10 @@ def vision_host(host=None):
 
 
 def host_for(profile):
-    # The exclusive profiles place their projector and MTP draft on the vision GPU.
-    return vision_host() if profile in EXCLUSIVE else BASELINE['host']
+    # The exclusive profiles place their projector and MTP draft on the vision GPU, and so does a Nighttime
+    # variant that declares draft_on_vision_gpu.
+    night = read(ROOT / 'config/profiles' / (read(ROOT / 'config/profiles' / (profile + '.json')).get('nighttime', NIGHTTIME_PROFILE) + '.json'))
+    return vision_host() if profile in EXCLUSIVE or night.get('draft_on_vision_gpu') else BASELINE['host']
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -204,6 +206,51 @@ class ConfigurationTests(unittest.TestCase):
         paired = render(ROOT / 'config', vision_host(), 'qwen27b-q6k-with-nighttime')
         self.assertEqual(bundle['compose']['services']['everyday'], paired['compose']['services']['everyday'])
 
+    def test_nighttime_mtp3_variant_adds_the_base_mtp_head_on_the_shared_vision_gpu(self):
+        night = read(ROOT / 'config/profiles/nighttime.json')
+        variant = read(ROOT / 'config/profiles/nighttime-mtp3.json')
+        for key in night.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'artifacts', 'catalog'}:
+            self.assertEqual(variant[key], night[key])
+        self.assertEqual((variant['id'], variant['display_name'], variant['variant_label'], variant['draft_on_vision_gpu']),
+            ('nighttime-mtp3', 'Qwen3.8 27B Abliterated Q6_K, MTP3', 'MTP3', True))
+        spec = {'--spec-type': 'draft-mtp', '--spec-draft-model': '/weights/mtp.gguf', '--spec-draft-n-max': '3',
+            '--spec-draft-ngl': 'all', '--spec-draft-device': 'CUDA2', '--spec-draft-type-k': 'q8_0', '--spec-draft-type-v': 'q8_0'}
+        self.assertEqual(variant['arguments'], {**night['arguments'], '--alias': 'qwen3.8-27b-abliterated-q6_k-mtp3', **spec})
+        self.assertEqual([x for x in variant['argument_order'] if x not in spec], night['argument_order'])
+        head = next(a for a in read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime.json')['artifacts'] if a['target'] == '/weights/mtp.gguf')
+        self.assertEqual(variant['artifacts'], [*night['artifacts'], head])  # the same self-contained 27B MTP head Daytime uses
+        # The configuration that names it changes nothing about Daytime, so switching recreates only Nighttime.
+        q6k = read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime.json')
+        config = read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime-mtp3.json')
+        self.assertEqual({k: v for k, v in config.items() if k not in ('id', 'nighttime')}, {k: v for k, v in q6k.items() if k != 'id'})
+        self.assertEqual(config['nighttime'], 'nighttime-mtp3')
+        host = vision_host()
+        bundle = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime-mtp3')
+        self.assertEqual(bundle['nighttime_profile'], 'nighttime-mtp3')
+        self.assertNotIn('nighttime_profile', render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime'))
+        self.assertEqual(bundle['compose']['services']['coding'],
+            render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime')['compose']['services']['coding'])
+        everyday = bundle['compose']['services']['everyday']
+        argv = everyday['command']
+        for flag, value in {**spec, '--split-mode': 'tensor', '--device': 'CUDA0,CUDA1', '--mmproj-device': 'CUDA2'}.items():
+            self.assertEqual(argv[argv.index(flag) + 1], value)
+        self.assertEqual(everyday['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*host['gpu_ids']['nighttime'], VISION])
+        model = bundle['catalog']['models'][1]
+        self.assertEqual((model['model'], model['mtp']['device'], model['mtp']['max_draft_tokens'], model['display_name']),
+            ('qwen3.8-27b-abliterated-q6_k-mtp3', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K, MTP3 (128K)'))
+        with self.assertRaisesRegex(RuntimeError, 'requires a configured vision GPU'):
+            render(ROOT / 'config', BASELINE['host'], 'qwen27b-q6k-with-nighttime-mtp3')
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config_dir)
+            for name, change, message in [('nighttime-mtp3', {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU'),
+                    ('qwen27b-q6k-with-nighttime-mtp3', {'nighttime': 'nighttime-retired'}, 'unknown Nighttime profile'),
+                    ('flash-next-solo-128k', {'nighttime': 'nighttime'}, 'runs no Nighttime')]:
+                target = config_dir / 'profiles' / (name + '.json'); original = target.read_text()
+                definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
+                with self.subTest(profile=name), self.assertRaisesRegex(RuntimeError, message):
+                    render(config_dir, host, 'flash-next-solo-128k' if name == 'flash-next-solo-128k' else 'qwen27b-q6k-with-nighttime-mtp3')
+                target.write_text(original)
+
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
             render(ROOT / 'config', BASELINE['host'], 'flash-next-solo-128k')
@@ -280,14 +327,15 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'qwen27b-q6k-dflash2-with-nighttime': 'qwen38-dual-836d571',
+            'qwen27b-q6k-dflash2-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime-mtp3': 'qwen38-dual-836d571',
+            'nighttime-mtp3': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
-        self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
+        self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
             with self.subTest(profile=name):
                 self.assertEqual(read(ROOT / 'config/profiles' / (name + '.json'))['engine'], engine_name)
         for name in PAIRED:
-            bundle = render(ROOT / 'config', BASELINE['host'], name)
+            bundle = render(ROOT / 'config', host_for(name), name)
             for role in ('coding', 'everyday'):
                 with self.subTest(profile=name, role=role):
                     self.assertEqual(bundle['compose']['services'][role]['image'], engine['tag'])
@@ -304,7 +352,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('--spec-type', night['arguments'])  # Nighttime has no MTP draft
         for name in PAIRED:
             with self.subTest(profile=name):
-                argv = render(ROOT / 'config', BASELINE['host'], name)['compose']['services']['everyday']['command']
+                argv = render(ROOT / 'config', host_for(name), name)['compose']['services']['everyday']['command']
                 self.assertEqual(argv.count('--split-mode'), 1)
                 self.assertEqual(argv[argv.index('--split-mode') + 1], 'tensor')
                 self.assertEqual(argv[argv.index('--flash-attn') + 1], 'on')  # required by tensor mode
@@ -350,12 +398,16 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'qwen27b-q6k-dflash2-with-nighttime'))
-        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-dflash2-with-nighttime'))
+            'flash-next-solo-160k', 'qwen27b-q6k-dflash2-with-nighttime', 'qwen27b-q6k-with-nighttime-mtp3'))
+        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-dflash2-with-nighttime',
+            'qwen27b-q6k-with-nighttime-mtp3'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
-        self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
-        night = registry['always_included'][0]
-        baseline_night = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-with-nighttime')['compose']['services']['everyday']
+        # Every Nighttime variant a configuration names is listed, the default first.
+        self.assertEqual([x['profile'] for x in registry['always_included']], list(NIGHTTIME_PROFILES))
+        variants = {x['profile']: x for x in registry['always_included']}
+        night = variants[NIGHTTIME_PROFILE]
+        baseline = {name: render(ROOT / 'config', vision_host(), cfg)['compose']['services']['everyday']
+            for name, cfg in (('nighttime', 'qwen27b-q8-with-nighttime'), ('nighttime-mtp3', 'qwen27b-q6k-with-nighttime-mtp3'))}
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 entry = next(x for x in registry['selectable'] if x['profile'] == name)
@@ -378,14 +430,16 @@ class RegistryTests(unittest.TestCase):
                         'reason': 'exclusive_configuration'}])
                     continue
                 self.assertEqual(rendered['catalog']['offline_services'], [])
-                # The paired backend is identical whichever Daytime configuration is selected.
+                # The paired backend is the Nighttime variant the configuration names, identical whichever
+                # Daytime configuration names it.
+                paired = variants[entry['nighttime']]
                 everyday = service_engine(rendered, 'everyday')
-                night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == night['model'])
-                self.assertEqual(night['engine_tag'], everyday['tag'])
-                self.assertEqual(night['backend_revision'], everyday['revision'])
-                self.assertEqual(night['context_tokens'], night_entry['context_length'])
-                self.assertEqual(night['display_name'], night_entry['display_name'])
-                self.assertEqual(rendered['compose']['services']['everyday'], baseline_night)
+                night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == paired['model'])
+                self.assertEqual(paired['engine_tag'], everyday['tag'])
+                self.assertEqual(paired['backend_revision'], everyday['revision'])
+                self.assertEqual(paired['context_tokens'], night_entry['context_length'])
+                self.assertEqual(paired['display_name'], night_entry['display_name'])
+                self.assertEqual(render(ROOT / 'config', vision_host(), name)['compose']['services']['everyday'], baseline[entry['nighttime']])
 
     def test_catalog_names_each_backends_text_gpus_and_vision_gpu(self):
         host = vision_host()
@@ -437,7 +491,7 @@ class RegistryTests(unittest.TestCase):
         from runtime.__main__ import listed
         lines = listed(ROOT / 'config').splitlines()
         self.assertEqual([line.split(':')[0] for line in lines],
-            ['primary', *DAYTIME_PROFILES, NIGHTTIME_PROFILE])
+            ['primary', *DAYTIME_PROFILES, *NIGHTTIME_PROFILES])
         registry = available_profiles(ROOT / 'config')
         self.assertIn(registry['always_included'][0]['display_name'], lines[0])
         for entry in registry['selectable'] + registry['always_included']:

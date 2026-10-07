@@ -228,7 +228,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
         self.assertEqual(configs['selectable'][2]['engine'], 'qwen38-dual-43fe9c6')
-        self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
+        self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime', 'nighttime-mtp3'])
         self.assertEqual(configs['always_included'][0]['display_name'], 'Qwen3.8 27B Abliterated Q6_K (128K)')
         self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
         self.assertEqual(configs['always_included'][0]['gpu_names'], HOST['gpu_names']['nighttime'])

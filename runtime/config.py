@@ -10,10 +10,12 @@ from pathlib import Path
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
     'flash-next-solo-160k',
     # Speculative-decoding experiments (2026-10-07), each one change to the configuration it names.
-    'qwen27b-q6k-dflash2-with-nighttime')
+    'qwen27b-q6k-dflash2-with-nighttime', 'qwen27b-q6k-with-nighttime-mtp3')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'
+# Nighttime variants a paired configuration may name with "nighttime"; NIGHTTIME_PROFILE is the default.
+NIGHTTIME_PROFILES = ('nighttime', 'nighttime-mtp3')
 PAIR_GROUPS = ('daytime', 'nighttime')
 # An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
 EXCLUSIVE_GROUP = 'all'
@@ -96,7 +98,15 @@ def gpu_names(host, definition):
     return [name for group in groups for name in names.get(group, [])]
 
 
-def vision_devices(host, group, options):
+def nighttime_for(definition):
+    """The Nighttime profile a paired configuration runs beside it."""
+    name = definition.get('nighttime', NIGHTTIME_PROFILE)
+    require(name in NIGHTTIME_PROFILES, definition['id'] + ': unknown Nighttime profile ' + str(name))
+    require(not is_exclusive(definition) or 'nighttime' not in definition, definition['id'] + ': an exclusive profile runs no Nighttime')
+    return name
+
+
+def vision_devices(host, group, options, draft_on_vision=False):
     """A shared encoder GPU is never a member of either text pair."""
     vision = host.get('vision_gpu_id')
     if vision is None:
@@ -117,7 +127,9 @@ def vision_devices(host, group, options):
     if '--main-gpu' in options:
         require(options['--main-gpu'] in ('0', '1'), 'Main GPU must remain on a text GPU')
     if '--spec-draft-device' in options:
-        require(options['--spec-draft-device'] in ('CUDA0', 'CUDA1'),
+        # A profile that declares draft_on_vision_gpu may put its draft beside the shared projectors;
+        # the text model itself still never uses the vision GPU.
+        require(options['--spec-draft-device'] in (('CUDA0', 'CUDA1', 'CUDA2') if draft_on_vision else ('CUDA0', 'CUDA1')),
             'Draft model must remain on a text GPU')
     overrides = options.get('--override-tensor', [])
     if isinstance(overrides, str):
@@ -180,7 +192,9 @@ def profile_summary(config_dir, name, shared, host=None):
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
-        'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1)}
+        'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1),
+        **({'nighttime': nighttime_for(definition)} if definition['role'] == 'coding' and not is_exclusive(definition) else {}),
+        **({'variant_label': definition['variant_label']} if definition.get('variant_label') else {})}
 
 
 def available_profiles(config_dir, host=None):
@@ -190,8 +204,10 @@ def available_profiles(config_dir, host=None):
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
     def describe(name):
         return profile_summary(config_dir, name, shared, host)
-    return {'selectable': [describe(name) for name in DAYTIME_PROFILES],
-        'always_included': [describe(NIGHTTIME_PROFILE)]}
+    selectable = [describe(name) for name in DAYTIME_PROFILES]
+    used = {entry['nighttime'] for entry in selectable if 'nighttime' in entry}
+    return {'selectable': selectable,
+        'always_included': [describe(name) for name in NIGHTTIME_PROFILES if name == NIGHTTIME_PROFILE or name in used]}
 
 
 def offline_services(config_dir, shared, host, exclusive):
@@ -215,8 +231,11 @@ def render(config_dir, host, profile):
     compose = {'name': shared['backend_project'], 'services': {}, 'networks': {
         'router': {'external': True, 'name': shared['network']}}}
     models, artifacts, manifests, gpu_ids = [], {}, [], []
-    exclusive_profile = is_exclusive(read(config_dir / 'profiles' / (profile + '.json')))
-    for name in (profile,) if exclusive_profile else (profile, NIGHTTIME_PROFILE):
+    selected = read(config_dir / 'profiles' / (profile + '.json'))
+    exclusive_profile = is_exclusive(selected)
+    night_profile = nighttime_for(selected)  # also refuses a Nighttime named by an exclusive profile
+    night_profile = None if exclusive_profile else night_profile
+    for name in (profile,) if exclusive_profile else (profile, night_profile):
         definition = read(config_dir / 'profiles' / (name + '.json'))
         role = definition['role']
         engine = shared['engines'][definition['engine']]
@@ -232,7 +251,10 @@ def render(config_dir, host, profile):
         if exclusive:
             cuda_order, vision_device = exclusive_devices(host, options, text_gpus(host, definition))
         else:
-            cuda_order, vision_device = vision_devices(host, definition['gpu_group'], options), 'CUDA2'
+            cuda_order, vision_device = vision_devices(host, definition['gpu_group'], options,
+                definition.get('draft_on_vision_gpu') is True), 'CUDA2'
+            require(cuda_order or definition.get('draft_on_vision_gpu') is not True,
+                name + ': a draft on the vision GPU requires a configured vision GPU (vision_gpu_id)')
         if cuda_order:
             options.pop('--no-mmproj-offload')
             options['--mmproj-offload'] = True
@@ -340,5 +362,7 @@ def render(config_dir, host, profile):
     bundle = {'schema_version': 1, 'profile': profile, 'compose': compose, 'catalog': catalog,
         'manifest': {'schema_version': 2, 'services': manifests},
         'artifacts': list(artifacts.values())}
+    if night_profile not in (None, NIGHTTIME_PROFILE):
+        bundle['nighttime_profile'] = night_profile
     bundle['config_sha256'] = digest(bundle)
     return bundle

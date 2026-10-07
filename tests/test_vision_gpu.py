@@ -27,7 +27,10 @@ class VisionTests(unittest.TestCase):
         host = vision_host()
         gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')['compose']['services']['everyday']
         # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests.
-        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
+        # Exclusive profiles, and configurations whose Nighttime variant puts its draft on the vision GPU,
+        # have no CPU-vision form; the latter are covered by the Nighttime variant tests.
+        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')
+                and read(ROOT / 'config/profiles' / (p + '.json')).get('nighttime', 'nighttime') == 'nighttime'):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
             self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)

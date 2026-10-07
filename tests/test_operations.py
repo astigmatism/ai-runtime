@@ -295,6 +295,22 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         self.assertEqual(self.web_state['status']['offline_roles'], [])
         self.assertFalse(self.system.draining)
 
+    def test_browser_switch_between_nighttime_variants_recreates_only_nighttime(self):
+        self.assertEqual(self.run_switch(self.request('qwen27b-q6k-with-nighttime'))['status'], 'succeeded')
+        day, night = self.system.inspect('qwen38-daytime')['Id'], self.system.inspect('qwen38-nighttime')['Id']
+        result = self.run_switch(self.request('qwen27b-q6k-with-nighttime-mtp3'))
+        self.assertEqual((result['status'], result['nighttime']), ('succeeded', 'changes'))
+        self.assertIn('Restarting Nighttime', public_operation({**result, 'status': 'running', 'phase': 'loading'})['message'])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)  # identical Daytime is preserved
+        self.assertNotEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
+        argv = self.system.inspect('qwen38-nighttime')['Config']['Cmd']
+        self.assertEqual(argv[argv.index('--spec-draft-device') + 1], 'CUDA2')
+        back = self.run_switch(self.request('qwen27b-q6k-with-nighttime'))
+        self.assertEqual((back['status'], back['nighttime']), ('succeeded', 'changes'))
+        self.assertNotIn('--spec-type', self.system.inspect('qwen38-nighttime')['Config']['Cmd'])
+        self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)
+        self.assertFalse(self.system.draining)
+
     def test_failed_solo_browser_switch_reports_recovered_with_nighttime_restored(self):
         self.system.failed_generations = 1
         result = self.run_switch(self.request('flash-next-solo-128k'))

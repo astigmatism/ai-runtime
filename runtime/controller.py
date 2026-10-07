@@ -352,9 +352,12 @@ class Controller:
             prior.get(role) != bundle['compose']['services'][role])]
         # Selecting or leaving an exclusive profile deliberately removes or restores Nighttime.
         topology = bool(previous) and set(prior) != set(bundle['compose']['services'])
+        # So does choosing a paired configuration that names a different Nighttime variant.
+        night_change = bool(previous) and not topology and 'everyday' in bundle['compose']['services'] and (
+            previous['bundle'].get('nighttime_profile', NIGHTTIME_PROFILE) != bundle.get('nighttime_profile', NIGHTTIME_PROFILE))
         removed = self.removed_backends(bundle, previous['bundle'] if previous else None)
         require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
-        require(not daytime_only or topology or 'everyday' not in roles,
+        require(not daytime_only or topology or night_change or 'everyday' not in roles,
             'Profile switch would replace Nighttime; operator attention required')
         state = self.admin('runtime-state')['runtime']
         require(not state['draining'], 'Another operation owns the router drain')
@@ -370,7 +373,7 @@ class Controller:
             'config_sha256': bundle['config_sha256']}
         if removed:
             tx['removed_backends'] = removed
-        if daytime_only and not topology and 'everyday' in observed:
+        if daytime_only and not topology and not night_change and 'everyday' in observed:
             tx['protected_services'] = {'everyday': observed['everyday']['id']}
         self.save('transaction.json', tx)
         changed = False

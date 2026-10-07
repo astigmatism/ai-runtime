@@ -9,17 +9,22 @@ const node = (tag, text = '', cls = '') => {
 // Names come from the configuration registry in /api/status, so the page never needs a code change
 // when a configuration is added or renamed.
 const configurations = () => status?.configurations?.selectable || [];
-const nighttime = () => status?.configurations?.always_included?.[0];
+const nighttime = profile => {
+  const variants = status?.configurations?.always_included || [];
+  return variants.find(n => n.profile === profile) || variants[0];
+};
 const configFor = profile => configurations().find(c => c.profile === profile);
 const profileName = profile => configFor(profile)?.display_name || profile || 'Unknown configuration';
 const gpuList = names => names?.length ? names.join(' + ') : 'GPUs unavailable';
 // Only added where a display name does not already say how many requests run at once.
 const slotsText = (slots, name = '') => slots > 1 && !/request/i.test(name) ? ` · ${slots} requests at once` : '';
 function configTitle(config) {
-  return `${config.display_name}${config.exclusive ? ' · Nighttime off' : ' + Nighttime'}`;
+  if (config.exclusive) return `${config.display_name} · Nighttime off`;
+  const label = nighttime(config.nighttime)?.variant_label;
+  return `${config.display_name} + Nighttime${label ? ` (${label})` : ''}`;
 }
 function configRows(config) {
-  const night = nighttime();
+  const night = nighttime(config.nighttime);
   return [
     ['Daytime', `${config.display_name}${slotsText(config.parallel_slots, config.display_name)} · ${gpuList(config.gpu_names)}`],
     ['Nighttime', config.exclusive ? 'Off while this configuration uses its GPUs'
@@ -81,7 +86,7 @@ function uuid() {
 }
 function renderRegistry() {
   const configs = status?.configurations?.selectable || [];
-  const signature = JSON.stringify([configs, nighttime()]);
+  const signature = JSON.stringify([configs, status?.configurations?.always_included]);
   if (signature !== registrySignature) {
     registrySignature = signature;
     el('config-list').replaceChildren();

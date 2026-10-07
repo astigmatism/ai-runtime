@@ -207,7 +207,20 @@ These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of token
      - **Recovery:** the backend restart-looped as a failed initializer, so automatic recovery timed out waiting for it (`needs-attention`). The documented repair restored the previous configuration in about 8 minutes, with Nighttime untouched: confirm no active work, stop that container, run `runtime recover`.
      - **Fix:** `--device CUDA0,CUDA1 --tensor-split 40,60` lists the RTX 3090 last, so it holds both the output layer and the drafter, with the same 60/40 share.
    - **Copy drafter:** not combined, because experiment 1 showed it hurts planning.
-3. **Speculative decoding for Nighttime** (after that), which has none today: the base 27B MTP head in tensor mode, and DFlash 2 in layer mode. The Nighttime cards lack the room, so the draft goes on the shared RTX 3080 for these experiments.
+   - **Result (quick check, against tensor split + MTP3):**
+
+     | Prompt | DFlash 2, layer split | Tensor split + MTP3 |
+     | --- | --- | --- |
+     | File rewrite | 110 tokens per second | 111 |
+     | Short fresh answer | 57.7 | 75.5 |
+     | Planning prompt, 45K, temperature 0.7 | 49.7 | 64.6 |
+     | Same prompt, greedy | 54.0 | 69.3 |
+
+     DFlash 2 accepted only 40–48% of its drafted tokens on planning text, so it did not recover what layer split loses. The owner declined a benchmark, and the experiment retires once its configuration is no longer active. Revisit it if llama.cpp fixes DFlash 2 under tensor split.
+3. **Speculative decoding for Nighttime:** `qwen27b-q6k-with-nighttime-mtp3`. Nighttime has no draft model today, while Daytime 27B already gets its speed from MTP3.
+   - **Mechanism:** the configuration keeps the 27B Q6_K Daytime unchanged and names the Nighttime variant `nighttime-mtp3`. That variant is Nighttime plus the same self-contained base Qwen3.8-27B MTP3 head Daytime uses (unsloth Q4_0, with its own embeddings and output layer), keeping tensor mode.
+   - **Draft placement:** the Nighttime pair has about 0.7 and 1.3 GB free, so the head runs on the shared RTX 3080 (`--spec-draft-device CUDA2`) beside both projectors. Only a profile that declares `draft_on_vision_gpu` may do that, and such a profile requires a configured vision GPU. The text model still never uses it.
+   - **Switching:** the head was trained for the original model, not the abliterated one, so acceptance may be lower than Daytime's. In the browser, switching between configurations that differ only in their Nighttime variant recreates only Nighttime; an unexpected Nighttime change is still refused. DFlash 2 for Nighttime is not planned, given experiment 2.
 
 ## Recover an interrupted update
 
