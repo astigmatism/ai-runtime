@@ -209,9 +209,6 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse([x for x in argv if x.startswith('--spec-')])
         self.assertNotIn('/weights/mtp.gguf', [m['target'] for m in cpu['compose']['services']['everyday']['volumes']])
         self.assertEqual(cpu['catalog']['models'][1]['mtp'], {'enabled': False})
-        # The transitional configuration is the 27B Q6_K configuration under its experiment name.
-        a = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime'); b = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime-mtp3')
-        self.assertEqual(a['compose'], b['compose'])
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config_dir)
             for name, change, message, target in [
@@ -300,7 +297,6 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'qwen27b-q6k-with-nighttime-mtp3': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -370,15 +366,15 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'qwen27b-q6k-with-nighttime-mtp3'))
-        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-with-nighttime-mtp3'))
+            'flash-next-solo-160k'))
+        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         # Every Nighttime variant a configuration names is listed, the default first.
         self.assertEqual([x['profile'] for x in registry['always_included']], list(NIGHTTIME_PROFILES))
         variants = {x['profile']: x for x in registry['always_included']}
         night = variants[NIGHTTIME_PROFILE]
         baseline = {name: render(ROOT / 'config', vision_host(), cfg)['compose']['services']['everyday']
-            for name, cfg in (('nighttime', 'qwen27b-q8-with-nighttime'), ('nighttime-mtp3', 'qwen27b-q6k-with-nighttime-mtp3'))}
+            for name, cfg in (('nighttime', 'qwen27b-q8-with-nighttime'),)}
         for name in DAYTIME_PROFILES:
             with self.subTest(profile=name):
                 entry = next(x for x in registry['selectable'] if x['profile'] == name)
