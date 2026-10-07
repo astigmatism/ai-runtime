@@ -34,7 +34,7 @@ class ConfigurationTests(unittest.TestCase):
         # The 2026-10-07 consolidation renamed the kept configurations. Their backends and model aliases
         # (benchmark history) are unchanged, so switching from an old name to its new one recreates nothing.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
-        self.assertEqual(set(recorded), set(DAYTIME_PROFILES))
+        self.assertEqual(set(recorded), {'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k', 'flash-next-solo-160k'})
         for name, expected in recorded.items():
             with self.subTest(profile=name, previous=expected['previous_id']):
                 self.assertEqual(digest(render(ROOT / 'config', vision_host(), name)['compose']), expected['compose_sha256'])
@@ -174,6 +174,30 @@ class ConfigurationTests(unittest.TestCase):
                     render(config, vision_host(), name)
                 target.write_text(original)
 
+    def test_copy_drafter_experiments_add_only_the_ngram_lookup_drafter(self):
+        # The lookup drafter is listed before MTP in llama.cpp's precedence; it drafts copied text when the
+        # last 12 tokens recur in context (up to 48 tokens) and otherwise MTP drafts as before.
+        for name, base, display in (('qwen27b-q6k-copy-drafter-with-nighttime', 'qwen27b-q6k-with-nighttime', 'Qwen3.8 27B Q6_K, MTP3 + copy drafter'),
+                ('flash-next-solo-128k-copy-drafter', 'flash-next-solo-128k', 'Qwen3.8 Flash-Next, MTP3 + copy drafter')):
+            with self.subTest(profile=name):
+                original, candidate = read(ROOT / 'config/profiles' / (base + '.json')), read(ROOT / 'config/profiles' / (name + '.json'))
+                for key in original.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
+                    self.assertEqual(candidate[key], original[key])
+                self.assertEqual((candidate['id'], candidate['display_name']), (name, display))
+                self.assertEqual(candidate['arguments'], {**original['arguments'], '--spec-type': 'draft-mtp,ngram-map-k4v',
+                    '--alias': original['arguments']['--alias'] + '-copy'})
+                expected = copy.deepcopy(original['catalog'])
+                expected['capability_profile']['name'] += '-copy'
+                expected['deployment_warnings'].insert(1, candidate['catalog']['deployment_warnings'][1])
+                self.assertEqual(candidate['catalog'], expected)
+                self.assertIn('ngram-map-k4v', candidate['catalog']['deployment_warnings'][1])
+                host = vision_host()
+                a = render(ROOT / 'config', host, base)['compose']; b = render(ROOT / 'config', host, name)['compose']
+                argv = b['services']['coding']['command']
+                self.assertEqual(argv[argv.index('--spec-type') + 1], 'draft-mtp,ngram-map-k4v')
+                argv[argv.index('--spec-type') + 1] = 'draft-mtp'; argv[argv.index('--alias') + 1] = original['arguments']['--alias']
+                self.assertEqual(b, a)  # identical backend otherwise, including Nighttime for the paired one
+
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
             render(ROOT / 'config', BASELINE['host'], 'flash-next-solo-128k')
@@ -250,6 +274,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
+            'qwen27b-q6k-copy-drafter-with-nighttime': 'qwen38-dual-836d571', 'flash-next-solo-128k-copy-drafter': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -319,8 +344,8 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k'))
-        self.assertEqual(PAIRED, DAYTIME_PROFILES[:2])
+            'flash-next-solo-160k', 'qwen27b-q6k-copy-drafter-with-nighttime', 'flash-next-solo-128k-copy-drafter'))
+        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-copy-drafter-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

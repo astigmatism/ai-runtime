@@ -186,6 +186,17 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
   - Two concurrent 60K cold prompts both completed (141 s for both).
   - A 120K prompt alongside a 32K prompt both completed. Free VRAM afterwards was at least 0.8 GiB on each text GPU.
 
+## Speculative decoding experiments
+
+These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of tokens per pass from a small model trained for Qwen3.8-27B. llama.cpp supports it ([#27342](https://github.com/ggml-org/llama.cpp/pull/27342)), and both pinned engines include it. With `--split-mode tensor`, however, it aborts in `ggml-backend-meta.cpp` ([#28777](https://github.com/ggml-org/llama.cpp/issues/28777), [#27833](https://github.com/ggml-org/llama.cpp/issues/27833)); the fix [#27858](https://github.com/ggml-org/llama.cpp/pull/27858) is an unmerged draft. Each experiment is one configuration that adds one drafter to the configuration it names, and each has its own alias for separate benchmark history. The owner benchmarks each one; the runtime only verifies that it loads and drafts.
+
+1. **Copy drafter:** `qwen27b-q6k-copy-drafter-with-nighttime` and `flash-next-solo-128k-copy-drafter`.
+   - **Change:** `--spec-type draft-mtp,ngram-map-k4v`. llama.cpp tries the lookup drafters before draft models. When the last 12 tokens recur in the context (`--spec-ngram-map-k4v-size-n`, default 12), `ngram-map-k4v` proposes up to 48 copied tokens (`size-m`, default 48); otherwise MTP drafts its usual three. It needs no VRAM.
+   - **Expected:** a published DFlash 2 study measured +68% on iterative multi-turn coding from one lookup drafter, and nothing on single fresh prompts. A long rejected lookup draft costs a larger verification batch, which matters more for the Flash-Next MoE than for the dense 27B.
+   - **Engine:** the 27B configuration is on `836d571`, which predates #29924. That fix concerns lookup drafts truncated at temperature > 0, which happens only at the end of the context window.
+2. **DFlash 2 on Daytime 27B Q6_K in layer mode** (next): replaces the MTP head with `Qwen3.8-27B-DFlash2` (Q4_K_M, about 2.7 GiB including its buffers, on the RTX 3090), with and without the copy drafter. Layer mode gives up tensor parallelism, so it must recover about 30% to match the current configuration.
+3. **Speculative decoding for Nighttime** (after that), which has none today: the base 27B MTP head in tensor mode, and DFlash 2 in layer mode. The Nighttime cards lack the room, so the draft goes on the shared RTX 3080 for these experiments.
+
 ## Recover an interrupted update
 
 ```sh

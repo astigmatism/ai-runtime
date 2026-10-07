@@ -220,10 +220,11 @@ class ControllerTests(unittest.TestCase):
         configs = self.c.status()['configurations']
         self.assertEqual(configs['active'], 'qwen27b-q8-with-nighttime')
         self.assertEqual([x['profile'] for x in configs['selectable']], list(DAYTIME_PROFILES))
-        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[2:]))
-        self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
+        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
+            ['flash-next-solo-128k', 'flash-next-solo-160k', 'flash-next-solo-128k-copy-drafter'])
+        self.assertEqual([x['display_name'] for x in configs['selectable']][:4], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
             'Qwen3.8 Flash-Next (128K)', 'Qwen3.8 Flash-Next (160K)'])
-        self.assertEqual([x['parallel_slots'] for x in configs['selectable']], [1, 1, 1, 1])
+        self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
         self.assertEqual(configs['selectable'][2]['engine'], 'qwen38-dual-43fe9c6')
