@@ -428,6 +428,28 @@ class RegistryTests(unittest.TestCase):
         self.assertNotIn('vision_gpu_name', cpu)
         self.assertEqual(cpu['gpu_names'], BASELINE['host']['gpu_names']['daytime'])
 
+    def test_every_model_declares_whether_it_is_nsfw(self):
+        # Router clients pick "the most capable NSFW model" from this flag; only Nighttime is abliterated.
+        for name in DAYTIME_PROFILES:
+            with self.subTest(profile=name):
+                catalog = render(ROOT / 'config', host_for(name), name)['catalog']
+                flags = {m['model']: m['capability_profile']['nsfw'] for m in catalog['models']}
+                self.assertEqual(sorted(flags.values()), [False] if name in EXCLUSIVE else [False, True])
+                self.assertIs(catalog['models'][0]['capability_profile']['nsfw'], False)
+                self.assertIs(catalog['capability_profile']['nsfw'], False)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles' / 'nighttime.json'
+            definition = read(path)
+            for value in (None, 'yes'):
+                if value is None:
+                    definition['catalog']['capability_profile'].pop('nsfw', None)
+                else:
+                    definition['catalog']['capability_profile']['nsfw'] = value
+                path.write_text(json.dumps(definition))
+                with self.subTest(nsfw=value), self.assertRaisesRegex(RuntimeError, 'capability_profile.nsfw must be declared'):
+                    render(config, BASELINE['host'], 'qwen27b-q8-with-nighttime')
+
     def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
         definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}
         self.assertEqual(sorted(k for k, v in definitions.items() if v['role'] == 'coding'),

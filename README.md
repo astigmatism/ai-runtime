@@ -111,6 +111,7 @@ The published catalog is the router's source for what clients may use. In additi
 - **`offline_services`** (catalog root): services this configuration deliberately stops. An exclusive configuration lists Nighttime (`{model, aliases, display_name, role, reason: "exclusive_configuration"}`). LLM Router answers requests for those IDs with `503 SERVICE_OFFLINE` instead of `404`. Paired configurations publish `[]`.
 - **`gpu_names`** (per entry): text GPU card names, in the same order as `text_gpu_uuids`/`gpu_uuids`.
 - **`vision_gpu_name`** (per entry): set when the projector runs on the vision GPU.
+- **`capability_profile.nsfw`** (per entry, required): `true` for an abliterated model (refusals removed), `false` otherwise. Today only Nighttime is `true`. Rendering refuses a profile that does not declare it. LLM Router publishes it as `nsfw`, beside an automatic `capability_score`, so clients can ask for the most capable NSFW model.
 
 LLM Router publishes names and counts, never UUIDs, paths, or backend URLs. It combines them with what each llama.cpp process reports (`/slots`, `/props`, `/v1/models`) and its own admission state, and serves the result at `GET /v1/router/capabilities`. Changes are pushed at `GET /v1/router/events`. A switch therefore reaches subscribers as: drain, the new catalog, ready. Routers that predate these fields ignore them. These fields change the rendered catalog, so the first update that includes them drains briefly and republishes. It recreates no backend.
 

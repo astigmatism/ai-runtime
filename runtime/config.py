@@ -318,6 +318,10 @@ def render(config_dir, host, profile):
                 'Split model is missing a declared shard mount')
         compose['services'][role] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
+        # Router clients select models by this flag ("most capable NSFW model"); every profile
+        # states it explicitly, because the router never infers it from a model name.
+        require(type(entry['capability_profile'].get('nsfw')) is bool,
+            name + ': capability_profile.nsfw must be declared true or false')
         if draft_dropped:
             entry['mtp'] = {'enabled': False}
         # LLM Router admits max_active_requests overlapping requests; every slot has the full window.

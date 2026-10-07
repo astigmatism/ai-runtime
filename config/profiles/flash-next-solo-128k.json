@@ -349,7 +349,8 @@
       "reasoning": true,
       "speculative": true,
       "prompt_cache_volatile": true,
-      "prompt_cache_persistence": false
+      "prompt_cache_persistence": false,
+      "nsfw": false
     },
     "deployment_warnings": [
       "Exclusive profile: Nighttime is stopped and removed while this profile is active; requests for it fail until a paired Daytime profile is selected.",

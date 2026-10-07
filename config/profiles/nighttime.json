@@ -150,7 +150,8 @@
       "reasoning": true,
       "speculative": false,
       "prompt_cache_volatile": true,
-      "prompt_cache_persistence": false
+      "prompt_cache_persistence": false,
+      "nsfw": true
     },
     "deployment_warnings": [
       "MTP3 speculative decoding (since 2026-10-07): the base Qwen3.8-27B MTP3 head (unsloth Q4_0), trained for the original model rather than the abliterated one, decoded a 16K planning prompt at 65.7 against 37.8 tokens per second (57% acceptance). The head runs on the shared RTX 3080 beside both projectors because the Nighttime pair has about 2 GB free; on a host without a vision GPU, Nighttime runs without it. The context is 96K because at 128K the speculative buffers did not fit on the RTX 4080."

@@ -150,7 +150,8 @@
       "reasoning": true,
       "speculative": true,
       "prompt_cache_volatile": true,
-      "prompt_cache_persistence": false
+      "prompt_cache_persistence": false,
+      "nsfw": false
     },
     "deployment_warnings": [
       "Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with Q8_0 tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not been qualified on the production GPUs.",
