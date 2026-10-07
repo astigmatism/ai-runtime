@@ -199,7 +199,7 @@ These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of token
      - **Planning:** slower. Over the owner's 26-request planning session it averaged 55.4 tokens per second, with 42% of drafted tokens accepted, at contexts up to 53K.
      - **Matched planning prompt (45K context):** 57.8 against 64.6 tokens per second at temperature 0.7, with 49% against 61% acceptance. Greedy decoding gave 66.6 against 69.3.
      - **Why:** plans repeat paths and identifiers, so the lookup proposes long copies the model then departs from. Each rejection costs a large verification batch. At temperature > 0, lookup drafts also need exact matches, while MTP drafts get rejection sampling.
-2. **DFlash 2 on Daytime 27B Q6_K in layer mode:** `qwen27b-q6k-dflash2-with-nighttime`.
+2. **DFlash 2 on Daytime 27B Q6_K in layer mode:** `qwen27b-q6k-dflash2-with-nighttime`. Retired.
    - **Drafter:** the MTP3 head is replaced by z-lab's `Qwen3.8-27B-DFlash2-GGUF` Q4_K_M (revision `2d9571f`, which includes the 2026-08-24 `dflash.rope.dimension_sections` update), mounted as `/weights/dflash2.gguf` on the RTX 3090.
    - **Depth:** `--spec-draft-n-max 5`. A published sweep peaked at 5; the block size is 8, so llama.cpp caps the depth at 7.
    - **Placement:** `--split-mode layer`. Layer mode gives up tensor parallelism, so it must recover about 30% to match the current configuration. Nighttime is unchanged.
@@ -216,11 +216,21 @@ These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of token
      | Planning prompt, 45K, temperature 0.7 | 49.7 | 64.6 |
      | Same prompt, greedy | 54.0 | 69.3 |
 
-     DFlash 2 accepted only 40–48% of its drafted tokens on planning text, so it did not recover what layer split loses. The owner declined a benchmark, and the experiment retires once its configuration is no longer active. Revisit it if llama.cpp fixes DFlash 2 under tensor split.
+     DFlash 2 accepted only 40–48% of its drafted tokens on planning text, so it did not recover what layer split loses. The owner declined a benchmark, and the configuration was retired on 2026-10-07. The drafter file stays on the host under `llm/z-lab/Qwen3.8-27B-DFlash2-GGUF/revisions/2d9571f…/`. Revisit it if llama.cpp fixes DFlash 2 under tensor split.
 3. **Speculative decoding for Nighttime:** `qwen27b-q6k-with-nighttime-mtp3`. Nighttime has no draft model today, while Daytime 27B already gets its speed from MTP3.
    - **Mechanism:** the configuration keeps the 27B Q6_K Daytime unchanged and names the Nighttime variant `nighttime-mtp3`. That variant is Nighttime plus the same self-contained base Qwen3.8-27B MTP3 head Daytime uses (unsloth Q4_0, with its own embeddings and output layer), keeping tensor mode.
    - **Draft placement:** the Nighttime pair has about 0.7 and 1.3 GB free, so the head runs on the shared RTX 3080 (`--spec-draft-device CUDA2`) beside both projectors. Only a profile that declares `draft_on_vision_gpu` may do that, and such a profile requires a configured vision GPU. The text model still never uses it.
    - **Context:** the first load at 128K failed: `cudaMalloc` of 564 MiB on the RTX 4080 failed while llama.cpp allocated speculative-decoding buffers. A watchdog stopped the failed initializer, and the runtime restored the previous configuration in 40 s. The variant now runs 96K, which frees about 0.9 GB of K/V across the pair.
+   - **Quick check (2026-10-07, before benchmarking):** Nighttime without a draft, then with MTP3.
+
+     | Prompt | No draft | MTP3 | Acceptance |
+     | --- | --- | --- | --- |
+     | File rewrite | 39.3 tokens per second | 101.8 | — |
+     | Short fresh answer | 39.4 | 66.5 | — |
+     | 16K planning prompt, temperature 0.7 | 37.8 | 65.7 | 57% |
+     | Same prompt, greedy | 37.8 | 64.5 | 55% |
+
+     After load the RTX 4080 has 1.06 GB free, the RTX 3080 Ti 1.5 GB, and the RTX 3080 4.2 GB in use.
    - **Switching:** the head was trained for the original model, not the abliterated one, so acceptance may be lower than Daytime's. In the browser, switching between configurations that differ only in their Nighttime variant recreates only Nighttime; an unexpected Nighttime change is still refused. DFlash 2 for Nighttime is not planned, given experiment 2.
 
 ## Recover an interrupted update

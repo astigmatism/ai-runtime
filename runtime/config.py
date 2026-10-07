@@ -10,7 +10,7 @@ from pathlib import Path
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
     'flash-next-solo-160k',
     # Speculative-decoding experiments (2026-10-07), each one change to the configuration it names.
-    'qwen27b-q6k-dflash2-with-nighttime', 'qwen27b-q6k-with-nighttime-mtp3')
+    'qwen27b-q6k-with-nighttime-mtp3')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'

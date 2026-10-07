@@ -98,9 +98,8 @@ class RecoveryTests(unittest.TestCase):
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
-        # The z-lab DFlash 2 drafter (1,143,006,816 bytes) joined with the DFlash 2 experiment.
-        self.assertEqual(len(artifacts), 42)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 178774011904)
+        self.assertEqual(len(artifacts), 41)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 177631005088)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():
