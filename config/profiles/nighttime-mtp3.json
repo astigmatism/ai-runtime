@@ -8,7 +8,7 @@
   "container_name": "qwen38-nighttime",
   "host_port": 18081,
   "gpu_group": "nighttime",
-  "context_tokens": 131072,
+  "context_tokens": 98304,
   "argument_order": [
     "--model",
     "--alias",
@@ -154,7 +154,7 @@
       "prompt_cache_persistence": false
     },
     "deployment_warnings": [
-      "Experiment: Nighttime with the base Qwen3.8-27B MTP3 head (unsloth Q4_0), which was trained for the original model, not the abliterated one. The head runs on the shared RTX 3080 beside both projectors because the Nighttime pair has about 2 GB free. Not yet benchmarked."
+      "Experiment: Nighttime with the base Qwen3.8-27B MTP3 head (unsloth Q4_0), which was trained for the original model, not the abliterated one. The head runs on the shared RTX 3080 beside both projectors because the Nighttime pair has about 2 GB free. At 128K, enabling speculative decoding needed another 564 MiB on the RTX 4080 (cudaMalloc failed at load), so this variant runs a 96K context. Not yet benchmarked."
     ],
     "aliases": [
       "nighttime"

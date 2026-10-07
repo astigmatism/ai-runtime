@@ -209,10 +209,12 @@ class ConfigurationTests(unittest.TestCase):
     def test_nighttime_mtp3_variant_adds_the_base_mtp_head_on_the_shared_vision_gpu(self):
         night = read(ROOT / 'config/profiles/nighttime.json')
         variant = read(ROOT / 'config/profiles/nighttime-mtp3.json')
-        for key in night.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'artifacts', 'catalog'}:
+        for key in night.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'artifacts', 'catalog', 'context_tokens'}:
             self.assertEqual(variant[key], night[key])
         self.assertEqual((variant['id'], variant['display_name'], variant['variant_label'], variant['draft_on_vision_gpu']),
             ('nighttime-mtp3', 'Qwen3.8 27B Abliterated Q6_K, MTP3', 'MTP3', True))
+        # At 128K, speculative decoding needed another 564 MiB on the RTX 4080 than the pair had free.
+        self.assertEqual((night['context_tokens'], variant['context_tokens']), (131072, 98304))
         spec = {'--spec-type': 'draft-mtp', '--spec-draft-model': '/weights/mtp.gguf', '--spec-draft-n-max': '3',
             '--spec-draft-ngl': 'all', '--spec-draft-device': 'CUDA2', '--spec-draft-type-k': 'q8_0', '--spec-draft-type-v': 'q8_0'}
         self.assertEqual(variant['arguments'], {**night['arguments'], '--alias': 'qwen3.8-27b-abliterated-q6_k-mtp3', **spec})
@@ -237,7 +239,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(everyday['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*host['gpu_ids']['nighttime'], VISION])
         model = bundle['catalog']['models'][1]
         self.assertEqual((model['model'], model['mtp']['device'], model['mtp']['max_draft_tokens'], model['display_name']),
-            ('qwen3.8-27b-abliterated-q6_k-mtp3', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K, MTP3 (128K)'))
+            ('qwen3.8-27b-abliterated-q6_k-mtp3', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K, MTP3 (96K)'))
         with self.assertRaisesRegex(RuntimeError, 'requires a configured vision GPU'):
             render(ROOT / 'config', BASELINE['host'], 'qwen27b-q6k-with-nighttime-mtp3')
         with tempfile.TemporaryDirectory() as tmp:
