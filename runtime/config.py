@@ -9,8 +9,8 @@ from pathlib import Path
 # (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
     'flash-next-solo-160k',
-    # Speculative-decoding experiments (2026-10-07): each adds one drafter to the configuration it names.
-    'qwen27b-q6k-copy-drafter-with-nighttime', 'flash-next-solo-128k-copy-drafter')
+    # Speculative-decoding experiments (2026-10-07), each one change to the configuration it names.
+    'qwen27b-q6k-dflash2-with-nighttime')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'

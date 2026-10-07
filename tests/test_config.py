@@ -174,29 +174,32 @@ class ConfigurationTests(unittest.TestCase):
                     render(config, vision_host(), name)
                 target.write_text(original)
 
-    def test_copy_drafter_experiments_add_only_the_ngram_lookup_drafter(self):
-        # The lookup drafter is listed before MTP in llama.cpp's precedence; it drafts copied text when the
-        # last 12 tokens recur in context (up to 48 tokens) and otherwise MTP drafts as before.
-        for name, base, display in (('qwen27b-q6k-copy-drafter-with-nighttime', 'qwen27b-q6k-with-nighttime', 'Qwen3.8 27B Q6_K, MTP3 + copy drafter'),
-                ('flash-next-solo-128k-copy-drafter', 'flash-next-solo-128k', 'Qwen3.8 Flash-Next, MTP3 + copy drafter')):
-            with self.subTest(profile=name):
-                original, candidate = read(ROOT / 'config/profiles' / (base + '.json')), read(ROOT / 'config/profiles' / (name + '.json'))
-                for key in original.keys() - {'id', 'display_name', 'arguments', 'catalog'}:
-                    self.assertEqual(candidate[key], original[key])
-                self.assertEqual((candidate['id'], candidate['display_name']), (name, display))
-                self.assertEqual(candidate['arguments'], {**original['arguments'], '--spec-type': 'draft-mtp,ngram-map-k4v',
-                    '--alias': original['arguments']['--alias'] + '-copy'})
-                expected = copy.deepcopy(original['catalog'])
-                expected['capability_profile']['name'] += '-copy'
-                expected['deployment_warnings'].insert(1, candidate['catalog']['deployment_warnings'][1])
-                self.assertEqual(candidate['catalog'], expected)
-                self.assertIn('ngram-map-k4v', candidate['catalog']['deployment_warnings'][1])
-                host = vision_host()
-                a = render(ROOT / 'config', host, base)['compose']; b = render(ROOT / 'config', host, name)['compose']
-                argv = b['services']['coding']['command']
-                self.assertEqual(argv[argv.index('--spec-type') + 1], 'draft-mtp,ngram-map-k4v')
-                argv[argv.index('--spec-type') + 1] = 'draft-mtp'; argv[argv.index('--alias') + 1] = original['arguments']['--alias']
-                self.assertEqual(b, a)  # identical backend otherwise, including Nighttime for the paired one
+    def test_dflash2_experiment_replaces_mtp_with_the_block_drafter_in_layer_mode(self):
+        base = read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime.json')
+        candidate = read(ROOT / 'config/profiles/qwen27b-q6k-dflash2-with-nighttime.json')
+        for key in base.keys() - {'id', 'display_name', 'arguments', 'artifacts', 'catalog'}:
+            self.assertEqual(candidate[key], base[key])
+        self.assertEqual((candidate['id'], candidate['display_name']),
+            ('qwen27b-q6k-dflash2-with-nighttime', 'Qwen3.8 27B Q6_K, DFlash 2 (layer split)'))
+        # DFlash 2 aborts under --split-mode tensor (llama.cpp #28777), so the pair runs layer split at the
+        # 60,40 proportions of the former layer-split 27B profile; only the draft model and its depth change.
+        self.assertEqual(candidate['arguments'], {**base['arguments'], '--alias': 'qwen3.8-27b-ud-q6_k_xl-dflash2',
+            '--split-mode': 'layer', '--tensor-split': '60,40', '--spec-type': 'draft-dflash',
+            '--spec-draft-model': '/weights/dflash2.gguf', '--spec-draft-n-max': '5'})
+        drafter = {'path': 'llm/z-lab/Qwen3.8-27B-DFlash2-GGUF/revisions/2d9571f8ce46e151f61c6499c99dee6079e1d610/'
+                'Qwen3.8-27B-DFlash2-Q4_K_M.gguf', 'target': '/weights/dflash2.gguf', 'bytes': 1143006816,
+                'sha256': '1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd'}
+        self.assertEqual(candidate['artifacts'], [drafter if a['target'] == '/weights/mtp.gguf' else a for a in base['artifacts']])
+        bundle = render(ROOT / 'config', vision_host(), 'qwen27b-q6k-dflash2-with-nighttime')
+        argv = bundle['compose']['services']['coding']['command']
+        for flag, value in {'--split-mode': 'layer', '--tensor-split': '60,40', '--spec-type': 'draft-dflash',
+                '--spec-draft-model': '/weights/dflash2.gguf', '--spec-draft-n-max': '5', '--spec-draft-device': 'CUDA1'}.items():
+            self.assertEqual(argv[argv.index(flag) + 1], value)
+        draft = bundle['catalog']['models'][0]['mtp']
+        self.assertEqual((draft['type'], draft['quantization'], draft['max_draft_tokens'], draft['device']), ('draft-dflash', 'Q4_K_M', 5, 'CUDA1'))
+        self.assertTrue(draft['model_path'].endswith('Qwen3.8-27B-DFlash2-Q4_K_M.gguf'))
+        paired = render(ROOT / 'config', vision_host(), 'qwen27b-q6k-with-nighttime')
+        self.assertEqual(bundle['compose']['services']['everyday'], paired['compose']['services']['everyday'])
 
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
@@ -274,7 +277,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'qwen27b-q6k-copy-drafter-with-nighttime': 'qwen38-dual-836d571', 'flash-next-solo-128k-copy-drafter': 'qwen38-dual-43fe9c6',
+            'qwen27b-q6k-dflash2-with-nighttime': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -344,8 +347,8 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'qwen27b-q6k-copy-drafter-with-nighttime', 'flash-next-solo-128k-copy-drafter'))
-        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-copy-drafter-with-nighttime'))
+            'flash-next-solo-160k', 'qwen27b-q6k-dflash2-with-nighttime'))
+        self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'qwen27b-q6k-dflash2-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
         night = registry['always_included'][0]

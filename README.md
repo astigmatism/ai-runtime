@@ -22,7 +22,7 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
 | `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
 | `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
 
-Speculative-decoding experiments (unbenchmarked) are `qwen27b-q6k-copy-drafter-with-nighttime` and `flash-next-solo-128k-copy-drafter`. Each is its base configuration plus the `ngram-map-k4v` lookup (copy) drafter. See [deployment](docs/deployment.md#speculative-decoding-experiments).
+The current speculative-decoding experiment is `qwen27b-q6k-dflash2-with-nighttime`. It is the 27B Q6_K configuration with the DFlash 2 block drafter in place of MTP3, run layer split, and it has not been benchmarked. See [deployment](docs/deployment.md#speculative-decoding-experiments).
 
 `qwen27b-q8-with-nighttime` is the default when a host has no recorded release. Nighttime's RAM prompt cache is capped at 24 GiB; Daytime uses the shared 48 GiB. `primary` means the selected configuration; it is not a clock-based schedule.
 - **27B configurations:** each was benchmarked on a full Bench Studio coding session (2/2 passed), at about 26.1 (Q8) and 27.0 (Q6_K) steps per second.

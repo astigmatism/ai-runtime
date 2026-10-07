@@ -221,7 +221,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'qwen27b-q8-with-nighttime')
         self.assertEqual([x['profile'] for x in configs['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
-            ['flash-next-solo-128k', 'flash-next-solo-160k', 'flash-next-solo-128k-copy-drafter'])
+            ['flash-next-solo-128k', 'flash-next-solo-160k'])
         self.assertEqual([x['display_name'] for x in configs['selectable']][:4], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
             'Qwen3.8 Flash-Next (128K)', 'Qwen3.8 Flash-Next (160K)'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})

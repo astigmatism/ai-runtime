@@ -1,7 +1,7 @@
 {
-  "id": "qwen27b-q6k-copy-drafter-with-nighttime",
+  "id": "qwen27b-q6k-dflash2-with-nighttime",
   "role": "coding",
-  "display_name": "Qwen3.8 27B Q6_K, MTP3 + copy drafter",
+  "display_name": "Qwen3.8 27B Q6_K, DFlash 2 (layer split)",
   "engine": "qwen38-dual-836d571",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
@@ -67,24 +67,24 @@
   ],
   "arguments": {
     "--model": "/weights/main.gguf",
-    "--alias": "qwen3.8-27b-ud-q6_k_xl-tensor-next-copy",
+    "--alias": "qwen3.8-27b-ud-q6_k_xl-dflash2",
     "--n-gpu-layers": "66",
-    "--tensor-split": "55,45",
+    "--tensor-split": "60,40",
     "--device": "CUDA1,CUDA0",
     "--lazy-mode": "off",
     "--threads": "18",
     "--threads-batch": "18",
     "--batch-size": "2048",
     "--ubatch-size": "512",
-    "--spec-type": "draft-mtp,ngram-map-k4v",
-    "--spec-draft-model": "/weights/mtp.gguf",
-    "--spec-draft-n-max": "3",
+    "--spec-type": "draft-dflash",
+    "--spec-draft-model": "/weights/dflash2.gguf",
+    "--spec-draft-n-max": "5",
     "--spec-draft-ngl": "all",
     "--spec-draft-device": "CUDA1",
     "--spec-draft-type-k": "q8_0",
     "--spec-draft-type-v": "q8_0",
     "--mmproj": "/weights/projector.gguf",
-    "--split-mode": "tensor"
+    "--split-mode": "layer"
   },
   "artifacts": [
     {
@@ -94,10 +94,10 @@
       "sha256": "701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917"
     },
     {
-      "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
-      "target": "/weights/mtp.gguf",
-      "bytes": 1369590656,
-      "sha256": "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e"
+      "path": "llm/z-lab/Qwen3.8-27B-DFlash2-GGUF/revisions/2d9571f8ce46e151f61c6499c99dee6079e1d610/Qwen3.8-27B-DFlash2-Q4_K_M.gguf",
+      "target": "/weights/dflash2.gguf",
+      "bytes": 1143006816,
+      "sha256": "1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd"
     },
     {
       "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/mmproj-F16.gguf",
@@ -131,18 +131,18 @@
     "quantization": "UD-Q6_K_XL",
     "mtp": {
       "enabled": true,
-      "type": "draft-mtp",
-      "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
-      "quantization": "Q4_0",
-      "max_draft_tokens": 3,
+      "type": "draft-dflash",
+      "revision": "2d9571f8ce46e151f61c6499c99dee6079e1d610",
+      "quantization": "Q4_K_M",
+      "max_draft_tokens": 5,
       "gpu_layers": "all",
       "device": "CUDA1",
       "key_cache_type": "q8_0",
       "value_cache_type": "q8_0",
-      "artifact_target": "/weights/mtp.gguf"
+      "artifact_target": "/weights/dflash2.gguf"
     },
     "capability_profile": {
-      "name": "qwen38-27b-golden-vision-tools-q6k-tensor-next-copy",
+      "name": "qwen38-27b-golden-vision-tools-q6k-tensor-next-dflash2",
       "text": true,
       "streaming": true,
       "vision": true,
@@ -153,8 +153,7 @@
       "prompt_cache_persistence": false
     },
     "deployment_warnings": [
-      "Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with UD-Q6_K_XL tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not been qualified on the production GPUs.",
-      "Experiment: adds the ngram-map-k4v lookup drafter, which takes precedence over MTP whenever the last 12 tokens recur in the context and then drafts up to 48 copied tokens; otherwise MTP drafts as before. Not yet benchmarked.",
+      "Experiment: the z-lab DFlash 2 block drafter for Qwen3.8-27B (Q4_K_M, block size 8, drafting up to 5 tokens per pass) replaces the MTP3 head. It runs layer split (60,40 across the RTX 3090 and RTX 4080 SUPER) because DFlash 2 aborts under --split-mode tensor (llama.cpp #28777, fix #27858 unmerged). Not yet benchmarked.",
       "160K is the total prompt, history, reasoning, and output capacity."
     ],
     "aliases": [
