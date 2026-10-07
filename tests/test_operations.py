@@ -281,6 +281,11 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
     def test_browser_switch_to_solo_and_back(self):
         result = self.run_switch(self.request('flash-next-solo-128k'))
         self.assertEqual(result['status'], 'succeeded')
+        loading = {**result, 'status': 'running', 'phase': 'loading'}
+        self.assertIn('Stopping Nighttime', public_operation(loading)['message'])
+        self.assertIn('Nighttime stays off', public_operation({**loading, 'nighttime': 'off'})['message'])
+        self.assertIn('starting Nighttime again', public_operation({**loading, 'nighttime': 'starts'})['message'])
+        self.assertIn('Nighttime stays loaded', public_operation({**loading, 'nighttime': 'stays'})['message'])
         self.assertIsNone(self.system.inspect('qwen38-nighttime'))
         self.assertEqual(self.web_state['status']['offline_roles'], ['everyday'])
         self.assertTrue(self.web_state['status']['ready'])

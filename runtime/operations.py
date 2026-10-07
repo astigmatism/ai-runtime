@@ -3,15 +3,18 @@ from contextlib import ExitStack
 import re
 import threading
 
-from .config import DAYTIME_PROFILES
+from .config import DAYTIME_PROFILES, is_exclusive, read
 from .system import lock, now
 
 OPERATION_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 PENDING = ('prepared', 'draining', 'applying', 'verifying', 'needs-attention')
 MESSAGES = {
     'checking': 'Checking the configuration, model files, and runtime.',
-    'draining': 'Waiting for existing requests to finish. New requests are paused for both models.',
+    'draining': 'Waiting for existing requests to finish. New requests are paused.',
     'loading': 'Loading Daytime. Nighttime stays loaded; new requests remain paused.',
+    'loading-stops-nighttime': 'Stopping Nighttime, then loading Daytime on all four text GPUs; new requests remain paused.',
+    'loading-starts-nighttime': 'Loading Daytime, then starting Nighttime again; new requests remain paused.',
+    'loading-nighttime-off': 'Loading Daytime. Nighttime stays off; new requests remain paused.',
     'verifying': 'Checking generation and model discovery before reopening requests.',
     'restoring': 'The switch did not complete. Restoring the previous configuration.',
     'succeeded': 'The selected configuration is ready. Requests are open.',
@@ -30,6 +33,8 @@ def public_operation(operation):
         return None
     result = {k: operation[k] for k in PUBLIC_FIELDS if k in operation}
     key = operation.get('error_code') or (operation['phase'] if operation['status'] == 'running' else operation['status'])
+    if key == 'loading' and operation.get('nighttime') in ('stops', 'starts', 'off'):
+        key = {'stops': 'loading-stops-nighttime', 'starts': 'loading-starts-nighttime', 'off': 'loading-nighttime-off'}[operation['nighttime']]
     result['message'] = MESSAGES.get(key, MESSAGES.get(operation['status'], 'Runtime status unavailable.'))
     return result
 
@@ -117,7 +122,12 @@ class Operations:
                         or self.controller.revision != request['expected_revision']
                         or active.get('bundle', {}).get('profile') != request['expected_profile']):
                     raise OperationError(409, 'stale-selection', 'The active profile or revision changed. Refresh before switching.')
-                operation = {'id': request['request_id'], 'request': dict(request),
+                # What the switch does to Nighttime, so progress says it truthfully: an exclusive
+                # configuration stops it, and leaving one starts it again.
+                solo = [is_exclusive(read(self.controller.config_dir / 'profiles' / (name + '.json')))
+                    for name in (request['expected_profile'], request['profile'])]
+                nighttime = {(False, False): 'stays', (False, True): 'stops', (True, False): 'starts', (True, True): 'off'}[tuple(solo)]
+                operation = {'id': request['request_id'], 'request': dict(request), 'nighttime': nighttime,
                     'from_profile': request['expected_profile'], 'target_profile': request['profile'],
                     'revision': request['expected_revision'], 'status': 'running', 'phase': 'checking', 'started_at': now()}
                 self.save(operation)
