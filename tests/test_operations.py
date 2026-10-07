@@ -295,19 +295,47 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         self.assertEqual(self.web_state['status']['offline_roles'], [])
         self.assertFalse(self.system.draining)
 
+    def nighttime_variant_registry(self):
+        """A copy of the configuration with a second Nighttime variant: the former draft-free Nighttime."""
+        import shutil, tempfile
+        from pathlib import Path
+        from runtime import config as runtime_config, operations as runtime_operations
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        config = Path(tmp.name) / 'config'; shutil.copytree(controller_fixture.ROOT / 'config', config)
+        night = json.loads((config / 'profiles/nighttime.json').read_text())
+        night.update(id='nighttime-plain', display_name='Qwen3.8 27B Abliterated Q6_K, no draft', variant_label='no draft', context_tokens=131072)
+        night.pop('draft_on_vision_gpu')
+        night['argument_order'] = [k for k in night['argument_order'] if not k.startswith('--spec-')]
+        night['arguments'] = {k: v for k, v in night['arguments'].items() if not k.startswith('--spec-')}
+        night['arguments']['--alias'] += '-plain'
+        night['artifacts'] = [a for a in night['artifacts'] if a['target'] != '/weights/mtp.gguf']
+        night['catalog']['mtp'] = {'enabled': False}
+        (config / 'profiles/nighttime-plain.json').write_text(json.dumps(night))
+        day = json.loads((config / 'profiles/qwen27b-q6k-with-nighttime.json').read_text())
+        day.update(id='qwen27b-q6k-with-nighttime-plain', nighttime='nighttime-plain')
+        (config / 'profiles/qwen27b-q6k-with-nighttime-plain.json').write_text(json.dumps(day))
+        profiles = (*runtime_config.DAYTIME_PROFILES, 'qwen27b-q6k-with-nighttime-plain')
+        for target, value in ((runtime_config, profiles), (runtime_operations, profiles)):
+            p = patch.object(target, 'DAYTIME_PROFILES', value); p.start(); self.addCleanup(p.stop)
+        p = patch.object(runtime_config, 'NIGHTTIME_PROFILES', ('nighttime', 'nighttime-plain')); p.start(); self.addCleanup(p.stop)
+        self.c.config_dir = config
+
     def test_browser_switch_between_nighttime_variants_recreates_only_nighttime(self):
+        self.nighttime_variant_registry()
         self.assertEqual(self.run_switch(self.request('qwen27b-q6k-with-nighttime'))['status'], 'succeeded')
         day, night = self.system.inspect('qwen38-daytime')['Id'], self.system.inspect('qwen38-nighttime')['Id']
-        result = self.run_switch(self.request('qwen27b-q6k-with-nighttime-mtp3'))
+        listed = self.c.status()['configurations']
+        self.assertEqual([x['profile'] for x in listed['always_included']], ['nighttime', 'nighttime-plain'])
+        result = self.run_switch(self.request('qwen27b-q6k-with-nighttime-plain'))
         self.assertEqual((result['status'], result['nighttime']), ('succeeded', 'changes'))
         self.assertIn('Restarting Nighttime', public_operation({**result, 'status': 'running', 'phase': 'loading'})['message'])
         self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)  # identical Daytime is preserved
         self.assertNotEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
-        argv = self.system.inspect('qwen38-nighttime')['Config']['Cmd']
-        self.assertEqual(argv[argv.index('--spec-draft-device') + 1], 'CUDA2')
+        self.assertNotIn('--spec-type', self.system.inspect('qwen38-nighttime')['Config']['Cmd'])
         back = self.run_switch(self.request('qwen27b-q6k-with-nighttime'))
         self.assertEqual((back['status'], back['nighttime']), ('succeeded', 'changes'))
-        self.assertNotIn('--spec-type', self.system.inspect('qwen38-nighttime')['Config']['Cmd'])
+        argv = self.system.inspect('qwen38-nighttime')['Config']['Cmd']
+        self.assertEqual(argv[argv.index('--spec-draft-device') + 1], 'CUDA2')
         self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)
         self.assertFalse(self.system.draining)
 

@@ -25,21 +25,24 @@ def vision_host(host=None):
 
 
 def host_for(profile):
-    # The exclusive profiles place their projector and MTP draft on the vision GPU, and so does a Nighttime
-    # variant that declares draft_on_vision_gpu.
-    night = read(ROOT / 'config/profiles' / (read(ROOT / 'config/profiles' / (profile + '.json')).get('nighttime', NIGHTTIME_PROFILE) + '.json'))
-    return vision_host() if profile in EXCLUSIVE or night.get('draft_on_vision_gpu') else BASELINE['host']
+    # The exclusive profiles place their projector and MTP draft on the vision GPU.
+    return vision_host() if profile in EXCLUSIVE else BASELINE['host']
 
 
 class ConfigurationTests(unittest.TestCase):
     def test_renamed_profiles_launch_exactly_the_backends_of_their_previous_names(self):
         # The 2026-10-07 consolidation renamed the kept configurations. Their backends and model aliases
         # (benchmark history) are unchanged, so switching from an old name to its new one recreates nothing.
+        # compose_sha256 is the whole backend set at the rename; Nighttime has since gained MTP3 (2026-10-07),
+        # so the Daytime service is what stays pinned for the paired configurations.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
         self.assertEqual(set(recorded), {'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k', 'flash-next-solo-160k'})
         for name, expected in recorded.items():
             with self.subTest(profile=name, previous=expected['previous_id']):
-                self.assertEqual(digest(render(ROOT / 'config', vision_host(), name)['compose']), expected['compose_sha256'])
+                compose = render(ROOT / 'config', vision_host(), name)['compose']
+                self.assertEqual(digest(compose['services']['coding']), expected['coding_service_sha256'])
+                if name in EXCLUSIVE:
+                    self.assertEqual(digest(compose), expected['compose_sha256'])
 
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,7 +57,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(result['catalog']['context_length'], 98304)
             self.assertEqual(result['catalog']['models'][0]['total_context_length'], 98304)
             self.assertEqual(result['manifest']['services'][0]['context_tokens'], 98304)
-            self.assertEqual(result['catalog']['models'][1]['context_length'], 131072)
+            self.assertEqual(result['catalog']['models'][1]['context_length'], 98304)
             self.assertEqual(result['catalog']['display_name'], 'Qwen3.8 27B Q8 (96K)')
 
     def test_gpu_groups_cannot_overlap(self):
@@ -107,7 +110,7 @@ class ConfigurationTests(unittest.TestCase):
                 catalog = bundle['catalog']
                 self.assertEqual((catalog['model'], catalog['quantization'], catalog['display_name']), (alias, quant, display))
                 self.assertEqual((catalog['context_length'], catalog['mtp']['max_draft_tokens'], catalog['mtp']['device']), (163840, 3, 'CUDA1'))
-                self.assertEqual(catalog['models'][1]['display_name'], 'Qwen3.8 27B Abliterated Q6_K (128K)')
+                self.assertEqual(catalog['models'][1]['display_name'], 'Qwen3.8 27B Abliterated Q6_K (96K)')
         # Q6_K differs from Q8 only in its main weights, alias, and catalog identity.
         q8_cfg, q6k_cfg = q8['compose']['services']['coding'], copy.deepcopy(q6k['compose']['services']['coding'])
         argv = q6k_cfg['command']; argv[argv.index('--alias') + 1] = 'qwen3.8-27b-q8_0-tensor-next'
@@ -176,52 +179,50 @@ class ConfigurationTests(unittest.TestCase):
                     render(config, vision_host(), name)
                 target.write_text(original)
 
-    def test_nighttime_mtp3_variant_adds_the_base_mtp_head_on_the_shared_vision_gpu(self):
+    def test_nighttime_runs_the_base_mtp3_head_on_the_shared_vision_gpu(self):
         night = read(ROOT / 'config/profiles/nighttime.json')
-        variant = read(ROOT / 'config/profiles/nighttime-mtp3.json')
-        for key in night.keys() - {'id', 'display_name', 'argument_order', 'arguments', 'artifacts', 'catalog', 'context_tokens'}:
-            self.assertEqual(variant[key], night[key])
-        self.assertEqual((variant['id'], variant['display_name'], variant['variant_label'], variant['draft_on_vision_gpu']),
-            ('nighttime-mtp3', 'Qwen3.8 27B Abliterated Q6_K, MTP3', 'MTP3', True))
-        # At 128K, speculative decoding needed another 564 MiB on the RTX 4080 than the pair had free.
-        self.assertEqual((night['context_tokens'], variant['context_tokens']), (131072, 98304))
         spec = {'--spec-type': 'draft-mtp', '--spec-draft-model': '/weights/mtp.gguf', '--spec-draft-n-max': '3',
             '--spec-draft-ngl': 'all', '--spec-draft-device': 'CUDA2', '--spec-draft-type-k': 'q8_0', '--spec-draft-type-v': 'q8_0'}
-        self.assertEqual(variant['arguments'], {**night['arguments'], '--alias': 'qwen3.8-27b-abliterated-q6_k-mtp3', **spec})
-        self.assertEqual([x for x in variant['argument_order'] if x not in spec], night['argument_order'])
+        self.assertEqual({k: night['arguments'][k] for k in spec}, spec)
+        self.assertEqual((night['display_name'], night['arguments']['--alias'], night['draft_on_vision_gpu']),
+            ('Qwen3.8 27B Abliterated Q6_K', 'qwen3.8-27b-abliterated-q6_k', True))
+        # At 128K, speculative decoding needed another 564 MiB on the RTX 4080 than the pair had free.
+        self.assertEqual(night['context_tokens'], 98304)
         head = next(a for a in read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime.json')['artifacts'] if a['target'] == '/weights/mtp.gguf')
-        self.assertEqual(variant['artifacts'], [*night['artifacts'], head])  # the same self-contained 27B MTP head Daytime uses
-        # The configuration that names it changes nothing about Daytime, so switching recreates only Nighttime.
-        q6k = read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime.json')
-        config = read(ROOT / 'config/profiles/qwen27b-q6k-with-nighttime-mtp3.json')
-        self.assertEqual({k: v for k, v in config.items() if k not in ('id', 'nighttime')}, {k: v for k, v in q6k.items() if k != 'id'})
-        self.assertEqual(config['nighttime'], 'nighttime-mtp3')
+        self.assertIn(head, night['artifacts'])  # the same self-contained 27B MTP head Daytime uses
         host = vision_host()
-        bundle = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime-mtp3')
-        self.assertEqual(bundle['nighttime_profile'], 'nighttime-mtp3')
-        self.assertNotIn('nighttime_profile', render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime'))
-        self.assertEqual(bundle['compose']['services']['coding'],
-            render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime')['compose']['services']['coding'])
-        everyday = bundle['compose']['services']['everyday']
-        argv = everyday['command']
-        for flag, value in {**spec, '--split-mode': 'tensor', '--device': 'CUDA0,CUDA1', '--mmproj-device': 'CUDA2'}.items():
-            self.assertEqual(argv[argv.index(flag) + 1], value)
-        self.assertEqual(everyday['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*host['gpu_ids']['nighttime'], VISION])
-        model = bundle['catalog']['models'][1]
-        self.assertEqual((model['model'], model['mtp']['device'], model['mtp']['max_draft_tokens'], model['display_name']),
-            ('qwen3.8-27b-abliterated-q6_k-mtp3', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K, MTP3 (96K)'))
-        with self.assertRaisesRegex(RuntimeError, 'requires a configured vision GPU'):
-            render(ROOT / 'config', BASELINE['host'], 'qwen27b-q6k-with-nighttime-mtp3')
+        for name in PAIRED:
+            with self.subTest(profile=name):
+                bundle = render(ROOT / 'config', host, name)
+                self.assertNotIn('nighttime_profile', bundle)
+                everyday = bundle['compose']['services']['everyday']
+                argv = everyday['command']
+                for flag, value in {**spec, '--split-mode': 'tensor', '--device': 'CUDA0,CUDA1', '--mmproj-device': 'CUDA2'}.items():
+                    self.assertEqual(argv[argv.index(flag) + 1], value)
+                self.assertEqual(everyday['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*host['gpu_ids']['nighttime'], VISION])
+                model = bundle['catalog']['models'][1]
+                self.assertEqual((model['model'], model['mtp']['device'], model['mtp']['max_draft_tokens'], model['display_name']),
+                    ('qwen3.8-27b-abliterated-q6_k', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K (96K)'))
+        # Without a vision GPU there is nowhere to put the draft: Nighttime runs without it rather than failing.
+        cpu = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-with-nighttime')
+        argv = cpu['compose']['services']['everyday']['command']
+        self.assertFalse([x for x in argv if x.startswith('--spec-')])
+        self.assertNotIn('/weights/mtp.gguf', [m['target'] for m in cpu['compose']['services']['everyday']['volumes']])
+        self.assertEqual(cpu['catalog']['models'][1]['mtp'], {'enabled': False})
+        # The transitional configuration is the 27B Q6_K configuration under its experiment name.
+        a = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime'); b = render(ROOT / 'config', host, 'qwen27b-q6k-with-nighttime-mtp3')
+        self.assertEqual(a['compose'], b['compose'])
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config_dir)
-            for name, change, message in [('nighttime-mtp3', {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU'),
-                    ('qwen27b-q6k-with-nighttime-mtp3', {'nighttime': 'nighttime-retired'}, 'unknown Nighttime profile'),
-                    ('flash-next-solo-128k', {'nighttime': 'nighttime'}, 'runs no Nighttime')]:
-                target = config_dir / 'profiles' / (name + '.json'); original = target.read_text()
-                definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
+            for name, change, message, target in [
+                    ('nighttime', {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU', 'qwen27b-q8-with-nighttime'),
+                    ('qwen27b-q8-with-nighttime', {'nighttime': 'nighttime-retired'}, 'unknown Nighttime profile', 'qwen27b-q8-with-nighttime'),
+                    ('flash-next-solo-128k', {'nighttime': 'nighttime'}, 'runs no Nighttime', 'flash-next-solo-128k')]:
+                path = config_dir / 'profiles' / (name + '.json'); original = path.read_text()
+                definition = read(path); definition.update(change); path.write_text(json.dumps(definition))
                 with self.subTest(profile=name), self.assertRaisesRegex(RuntimeError, message):
-                    render(config_dir, host, 'flash-next-solo-128k' if name == 'flash-next-solo-128k' else 'qwen27b-q6k-with-nighttime-mtp3')
-                target.write_text(original)
+                    render(config_dir, host, target)
+                path.write_text(original)
 
     def test_exclusive_profiles_require_vision_gpu_and_keep_the_model_on_text_gpus(self):
         with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
@@ -300,7 +301,6 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
             'qwen27b-q6k-with-nighttime-mtp3': 'qwen38-dual-836d571',
-            'nighttime-mtp3': 'qwen38-dual-836d571',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -321,7 +321,7 @@ class ConfigurationTests(unittest.TestCase):
                 '--cache-ram': '24576'}.items():
             with self.subTest(argument=flag):
                 self.assertEqual(night['arguments'][flag], value)
-        self.assertNotIn('--spec-type', night['arguments'])  # Nighttime has no MTP draft
+        self.assertEqual(night['arguments']['--spec-type'], 'draft-mtp')  # MTP3 since 2026-10-07, on the vision GPU
         for name in PAIRED:
             with self.subTest(profile=name):
                 argv = render(ROOT / 'config', host_for(name), name)['compose']['services']['everyday']['command']

@@ -2,11 +2,12 @@
   "id": "nighttime",
   "role": "everyday",
   "display_name": "Qwen3.8 27B Abliterated Q6_K",
+  "draft_on_vision_gpu": true,
   "engine": "qwen38-dual-836d571",
   "container_name": "qwen38-nighttime",
   "host_port": 18081,
   "gpu_group": "nighttime",
-  "context_tokens": 131072,
+  "context_tokens": 98304,
   "argument_order": [
     "--model",
     "--alias",
@@ -54,6 +55,13 @@
     "--perf",
     "--offline",
     "--log-verbosity",
+    "--spec-type",
+    "--spec-draft-model",
+    "--spec-draft-n-max",
+    "--spec-draft-ngl",
+    "--spec-draft-device",
+    "--spec-draft-type-k",
+    "--spec-draft-type-v",
     "--mmproj",
     "--no-mmproj-offload",
     "--mmproj-device"
@@ -71,7 +79,14 @@
     "--threads-batch": "4",
     "--batch-size": "512",
     "--ubatch-size": "128",
-    "--mmproj": "/weights/projector.gguf"
+    "--mmproj": "/weights/projector.gguf",
+    "--spec-type": "draft-mtp",
+    "--spec-draft-model": "/weights/mtp.gguf",
+    "--spec-draft-n-max": "3",
+    "--spec-draft-ngl": "all",
+    "--spec-draft-device": "CUDA2",
+    "--spec-draft-type-k": "q8_0",
+    "--spec-draft-type-v": "q8_0"
   },
   "artifacts": [
     {
@@ -85,6 +100,12 @@
       "target": "/weights/projector.gguf",
       "bytes": 927607328,
       "sha256": "b73b89b52c21e90468f0c61d1190cb22c3f229f9ddd2792e9eafd55302fabdd4"
+    },
+    {
+      "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
+      "target": "/weights/mtp.gguf",
+      "bytes": 1369590656,
+      "sha256": "50d9ce5a6da381bbcfb31061cf73df94a90e6faf8efeddee379a9cb8f1501c6e"
     }
   ],
   "container": {
@@ -109,7 +130,16 @@
     "revision": "efb07baa690a1bc7beb53ee067b4b57c7025b5e7",
     "quantization": "Q6_K",
     "mtp": {
-      "enabled": false
+      "enabled": true,
+      "type": "draft-mtp",
+      "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+      "quantization": "Q4_0",
+      "max_draft_tokens": 3,
+      "gpu_layers": "all",
+      "device": "CUDA2",
+      "key_cache_type": "q8_0",
+      "value_cache_type": "q8_0",
+      "artifact_target": "/weights/mtp.gguf"
     },
     "capability_profile": {
       "name": "qwen38-27b-abliterated-vision-tools-reasoning",
@@ -122,7 +152,9 @@
       "prompt_cache_volatile": true,
       "prompt_cache_persistence": false
     },
-    "deployment_warnings": [],
+    "deployment_warnings": [
+      "MTP3 speculative decoding (since 2026-10-07): the base Qwen3.8-27B MTP3 head (unsloth Q4_0), trained for the original model rather than the abliterated one, decoded a 16K planning prompt at 65.7 against 37.8 tokens per second (57% acceptance). The head runs on the shared RTX 3080 beside both projectors because the Nighttime pair has about 2 GB free; on a host without a vision GPU, Nighttime runs without it. The context is 96K because at 128K the speculative buffers did not fit on the RTX 4080."
+    ],
     "aliases": [
       "nighttime"
     ],

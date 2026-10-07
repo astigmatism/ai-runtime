@@ -17,12 +17,18 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
 
 | Configuration | Daytime model | Nighttime | GPUs |
 | --- | --- | --- | --- |
-| `qwen27b-q8-with-nighttime` | Qwen3.8 27B Q8, tensor-parallel (55,45), MTP3, 160K | Qwen3.8 27B Abliterated Q6_K, 128K | Daytime: RTX 3090 + RTX 4080 SUPER; Nighttime: RTX 4080 + RTX 3080 Ti; RTX 3080 shared for vision |
+| `qwen27b-q8-with-nighttime` | Qwen3.8 27B Q8, tensor-parallel (55,45), MTP3, 160K | Qwen3.8 27B Abliterated Q6_K, tensor-parallel (60,40), MTP3, 96K | Daytime: RTX 3090 + RTX 4080 SUPER; Nighttime: RTX 4080 + RTX 3080 Ti; RTX 3080 shared for vision |
 | `qwen27b-q6k-with-nighttime` | Qwen3.8 27B Unsloth UD-Q6_K_XL, otherwise as above, 160K | Same Nighttime | Same |
 | `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
 | `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
 
-The current speculative-decoding experiment is `qwen27b-q6k-with-nighttime-mtp3`. It is the 27B Q6_K configuration, with Nighttime running the base 27B MTP3 head (`nighttime-mtp3`), and it has not been benchmarked. A paired configuration chooses its Nighttime variant with `"nighttime"`, and switching between variants in the browser recreates only Nighttime. See [deployment](docs/deployment.md#speculative-decoding-experiments).
+Nighttime has run MTP3 since 2026-10-07, using the base 27B MTP head on the shared RTX 3080.
+- **Speed:** a 16K planning prompt decoded at 65.7 tokens per second, against 37.8 without a draft.
+- **Context:** 96K, because at 128K the speculative buffers did not fit on the RTX 4080.
+- **Hosts without a vision GPU:** Nighttime runs without the draft.
+- **Variants:** a paired configuration may name a different Nighttime variant with `"nighttime"`. Switching between variants in the browser recreates only Nighttime.
+
+See [speculative decoding experiments](docs/deployment.md#speculative-decoding-experiments). See [deployment](docs/deployment.md#speculative-decoding-experiments).
 
 `qwen27b-q8-with-nighttime` is the default when a host has no recorded release. Nighttime's RAM prompt cache is capped at 24 GiB; Daytime uses the shared 48 GiB. `primary` means the selected configuration; it is not a clock-based schedule.
 - **27B configurations:** each was benchmarked on a full Bench Studio coding session (2/2 passed), at about 26.1 (Q8) and 27.0 (Q6_K) steps per second.
@@ -79,9 +85,8 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | --- | --- |
 | `~/primary status` | Current pair, revision, and health |
 | `~/primary` | Ensure the selected pair is running |
-| `~/daytime` | Select Flash-Next at 128K; drain first and preserve Nighttime |
-| `~/local-ai-config.sh apply daytime-flash-f16` | Select the experimental F16 KV Flash-Next profile; drain first and preserve Nighttime |
-| `~/daytime-27b` | Select the saved 27B Q8 profile at 160K; preserve Nighttime |
+| `~/local-ai-config.sh apply qwen27b-q6k-with-nighttime` | Select a configuration by name; drain first, and stop or start Nighttime as the configuration requires |
+| `~/daytime`, `~/daytime-27b` | Retired configurations; they refuse and list the current names |
 | `~/local-ai-config.sh list` | List the supported configurations, generated from the profile registry |
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |

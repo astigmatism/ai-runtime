@@ -7,7 +7,6 @@
   "host_port": 18080,
   "gpu_group": "daytime",
   "context_tokens": 163840,
-  "nighttime": "nighttime-mtp3",
   "argument_order": [
     "--model",
     "--alias",

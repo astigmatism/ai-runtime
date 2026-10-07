@@ -26,11 +26,9 @@ class VisionTests(unittest.TestCase):
     def test_all_profiles_only_change_encoder_and_visibility(self):
         host = vision_host()
         gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')['compose']['services']['everyday']
-        # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests.
-        # Exclusive profiles, and configurations whose Nighttime variant puts its draft on the vision GPU,
-        # have no CPU-vision form; the latter are covered by the Nighttime variant tests.
-        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')
-                and read(ROOT / 'config/profiles' / (p + '.json')).get('nighttime', 'nighttime') == 'nighttime'):
+        # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests. Nighttime's MTP
+        # draft also lives on the vision GPU, so on a CPU-vision host it runs without the draft.
+        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
             self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)
@@ -46,6 +44,9 @@ class VisionTests(unittest.TestCase):
                 argv = restored['command']
                 argv[argv.index('--mmproj-offload')] = '--no-mmproj-offload'
                 argv[argv.index('--mmproj-device') + 1] = 'none'
+                if role == 'everyday':
+                    i = argv.index('--spec-type'); del argv[i:i + 14]  # seven draft flags and their values
+                    restored['volumes'] = [m for m in restored['volumes'] if m['target'] != '/weights/mtp.gguf']
                 self.assertEqual(restored, prior)
             for m in gpu['catalog']['models']:
                 self.assertEqual(m['mmproj_offload'], 'gpu')
@@ -53,7 +54,7 @@ class VisionTests(unittest.TestCase):
                 self.assertEqual(m['vision_gpu_uuid'], VISION)
                 self.assertEqual(len(m['text_gpu_uuids']), 2)
                 self.assertNotIn(VISION, m['text_gpu_uuids'])
-            self.assertEqual(cpu['artifacts'], gpu['artifacts'])
+            self.assertEqual(cpu['artifacts'], gpu['artifacts'])  # Nighttime's MTP head is the file Daytime also uses
 
     def test_overlap_invalid_uuid_and_ambiguous_cuda_order_are_rejected(self):
         bad = []

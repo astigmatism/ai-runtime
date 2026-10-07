@@ -9,13 +9,14 @@ from pathlib import Path
 # (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
     'flash-next-solo-160k',
-    # Speculative-decoding experiments (2026-10-07), each one change to the configuration it names.
+    # Transitional: identical to qwen27b-q6k-with-nighttime now that Nighttime runs MTP3 by default; it
+    # stays registered until the active configuration is switched off it.
     'qwen27b-q6k-with-nighttime-mtp3')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'
 # Nighttime variants a paired configuration may name with "nighttime"; NIGHTTIME_PROFILE is the default.
-NIGHTTIME_PROFILES = ('nighttime', 'nighttime-mtp3')
+NIGHTTIME_PROFILES = ('nighttime',)
 PAIR_GROUPS = ('daytime', 'nighttime')
 # An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
 EXCLUSIVE_GROUP = 'all'
@@ -253,8 +254,13 @@ def render(config_dir, host, profile):
         else:
             cuda_order, vision_device = vision_devices(host, definition['gpu_group'], options,
                 definition.get('draft_on_vision_gpu') is True), 'CUDA2'
-            require(cuda_order or definition.get('draft_on_vision_gpu') is not True,
-                name + ': a draft on the vision GPU requires a configured vision GPU (vision_gpu_id)')
+        draft_dropped = definition.get('draft_on_vision_gpu') is True and not cuda_order
+        if draft_dropped:
+            # Without a vision GPU there is no room for this profile's draft: it runs without
+            # speculative decoding instead (its own GPUs cannot hold the draft beside the model).
+            draft_flags = {key for key in options if key.startswith('--spec-')}
+            options = {k: v for k, v in options.items() if k not in draft_flags}
+            order = [k for k in order if k not in draft_flags]
         if cuda_order:
             options.pop('--no-mmproj-offload')
             options['--mmproj-offload'] = True
@@ -283,7 +289,8 @@ def render(config_dir, host, profile):
         gpu_ids.extend(text_devices)
         devices = [*text_devices, host['vision_gpu_id']] if cuda_order else list(text_devices)
         mounts, targets = [], {}
-        for artifact in definition['artifacts']:
+        draft_target = definition['catalog'].get('mtp', {}).get('artifact_target') if draft_dropped else None
+        for artifact in (a for a in definition['artifacts'] if a['target'] != draft_target):
             relative = Path(artifact['path'])
             require(not relative.is_absolute() and '..' not in relative.parts, 'Artifact path escapes model root')
             require(len(artifact['sha256']) == 64 and all(c in '0123456789abcdef' for c in artifact['sha256']),
@@ -314,6 +321,8 @@ def render(config_dir, host, profile):
                 'Split model is missing a declared shard mount')
         compose['services'][role] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
+        if draft_dropped:
+            entry['mtp'] = {'enabled': False}
         # LLM Router admits max_active_requests overlapping requests; every slot has the full window.
         entry.update(model=options['--alias'], context_length=ctx, total_context_length=ctx * slots,
             max_active_requests=slots, gpu_uuids=devices,
