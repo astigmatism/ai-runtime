@@ -194,6 +194,17 @@ def available_profiles(config_dir, host=None):
         'always_included': [describe(NIGHTTIME_PROFILE)]}
 
 
+def offline_services(config_dir, shared, host, exclusive):
+    """Services this configuration deliberately does not run, so the router can report them as
+    temporarily offline rather than unknown. An exclusive profile stops Nighttime."""
+    if not exclusive:
+        return []
+    night = read(Path(config_dir) / 'profiles' / (NIGHTTIME_PROFILE + '.json'))
+    summary = profile_summary(config_dir, NIGHTTIME_PROFILE, shared, host)
+    return [{'model': summary['model'], 'aliases': list(night['catalog'].get('aliases', [])),
+        'display_name': summary['display_name'], 'role': night['role'], 'reason': 'exclusive_configuration'}]
+
+
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
     require(profile in DAYTIME_PROFILES, 'Unknown or retired daytime profile')
@@ -289,11 +300,15 @@ def render(config_dir, host, profile):
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
             kv_cache={'unified': False, 'key_type': options['--cache-type-k'], 'value_type': options['--cache-type-v']},
             display_name=display_name(definition),
+            # Card names of the text GPUs, in the same order as text_gpu_uuids/gpu_uuids; the
+            # router publishes names and counts but never UUIDs.
+            gpu_names=gpu_names(host, definition),
             source='local-ai-runtime', updated_at=None)
         if cuda_order:
             entry.update(mmproj_offload='gpu', text_gpu_uuids=text_devices,
                 vision_gpu_uuid=host['vision_gpu_id'], vision_device=vision_device,
-                vision_gpu_shared=not exclusive, cuda_visible_devices=cuda_order)
+                vision_gpu_shared=not exclusive, cuda_visible_devices=cuda_order,
+                vision_gpu_name=host.get('vision_gpu_name'))
         if exclusive:
             entry['exclusive'] = True
         if entry['mtp'].get('enabled'):
@@ -319,7 +334,9 @@ def render(config_dir, host, profile):
             'gpu_device_ids': devices, 'mounts': mounts})
     require(len(gpu_ids) == 4 and len(set(gpu_ids)) == 4, 'Backends require four distinct GPUs')
     catalog = {**copy.deepcopy(models[0]), 'schema_version': 3,
-        'default_model': models[0]['model'], 'models': models}
+        'default_model': models[0]['model'], 'models': models,
+        'configuration': {'id': profile, 'exclusive': exclusive_profile},
+        'offline_services': offline_services(config_dir, shared, host, exclusive_profile)}
     bundle = {'schema_version': 1, 'profile': profile, 'compose': compose, 'catalog': catalog,
         'manifest': {'schema_version': 2, 'services': manifests},
         'artifacts': list(artifacts.values())}

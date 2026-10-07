@@ -261,6 +261,21 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.system.draining)
         self.assertFalse(read(self.state / 'router-maintenance.json')['reserved'])
 
+    def test_publication_identifies_the_configuration_even_for_an_older_bundle(self):
+        self.c.republish()
+        catalog = read(self.state / 'router/active-model.json')
+        self.assertEqual({k: catalog['configuration'][k] for k in ('id', 'exclusive', 'runtime_revision')},
+            {'id': 'qwen27b-q8-with-nighttime', 'exclusive': False, 'runtime_revision': 'a' * 40})
+        self.assertEqual(catalog['offline_services'], [])
+        # A previous release's bundle predates these fields; recovery still publishes an accurate id.
+        legacy = copy.deepcopy(self.bundle)
+        del legacy['catalog']['configuration'], legacy['catalog']['offline_services']
+        self.c.publish(legacy)
+        catalog = read(self.state / 'router/active-model.json')
+        self.assertEqual((catalog['configuration']['id'], catalog['configuration']['exclusive']),
+            ('qwen27b-q8-with-nighttime', False))
+        self.assertNotIn('offline_services', catalog)
+
     def test_configuration_change_outside_argv_still_reconciles_affected_service(self):
         proposed = copy.deepcopy(self.bundle)
         proposed['compose']['services']['coding']['logging']['options']['max-size'] = '30m'
@@ -295,6 +310,12 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertEqual(self.ups(), [('coding',)])
         self.assertNotEqual(self.system.inspect('qwen38-daytime')['Id'], day)
         self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo-tuned-mtp3'])
+        catalog = read(self.state / 'router/active-model.json')
+        self.assertEqual({k: catalog['configuration'][k] for k in ('id', 'exclusive', 'runtime_revision')},
+            {'id': 'flash-next-solo-128k', 'exclusive': True, 'runtime_revision': 'a' * 40})
+        self.assertTrue(catalog['configuration']['published_at'])
+        self.assertEqual([(s['aliases'], s['reason']) for s in catalog['offline_services']],
+            [(['nighttime'], 'exclusive_configuration')])
         self.assertEqual(events[-1], ('drain', False))
         tx = read(self.state / 'transaction.json')
         self.assertEqual((tx['phase'], tx['removed_backends']), ('succeeded', [self.NIGHT]))

@@ -361,11 +361,17 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(entry['engine_tag'], engine['tag'])
                 self.assertEqual(entry['backend_revision'], engine['revision'])
                 self.assertEqual(entry['exclusive'], name in EXCLUSIVE)
+                self.assertEqual(rendered['catalog']['configuration'], {'id': name, 'exclusive': name in EXCLUSIVE})
                 if name in EXCLUSIVE:
-                    # Nighttime is neither launched nor published while an exclusive profile is selected.
+                    # Nighttime is neither launched nor published while an exclusive profile is selected;
+                    # the router reports it as offline for this configuration instead of unknown.
                     self.assertEqual(list(rendered['compose']['services']), ['coding'])
                     self.assertEqual([m['model'] for m in rendered['catalog']['models']], [entry['model']])
+                    self.assertEqual(rendered['catalog']['offline_services'], [{'model': night['model'],
+                        'aliases': ['nighttime'], 'display_name': night['display_name'], 'role': 'everyday',
+                        'reason': 'exclusive_configuration'}])
                     continue
+                self.assertEqual(rendered['catalog']['offline_services'], [])
                 # The paired backend is identical whichever Daytime configuration is selected.
                 everyday = service_engine(rendered, 'everyday')
                 night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == night['model'])
@@ -374,6 +380,26 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(night['context_tokens'], night_entry['context_length'])
                 self.assertEqual(night['display_name'], night_entry['display_name'])
                 self.assertEqual(rendered['compose']['services']['everyday'], baseline_night)
+
+    def test_catalog_names_each_backends_text_gpus_and_vision_gpu(self):
+        host = vision_host()
+        names = host['gpu_names']
+        paired = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')['catalog']
+        coding, everyday = paired['models']
+        self.assertEqual(coding['gpu_names'], names['daytime'])
+        self.assertEqual(everyday['gpu_names'], names['nighttime'])
+        self.assertEqual(len(coding['gpu_names']), len(coding['text_gpu_uuids']))
+        self.assertEqual((coding['vision_gpu_name'], coding['vision_gpu_shared']), ('RTX 3080', True))
+        self.assertEqual(paired['configuration'], {'id': 'qwen27b-q8-with-nighttime', 'exclusive': False})
+        # The root coding projection carries the same names as its entry.
+        self.assertEqual(paired['gpu_names'], coding['gpu_names'])
+        [solo] = render(ROOT / 'config', host, 'flash-next-solo-128k')['catalog']['models']
+        self.assertEqual(solo['gpu_names'], [*names['daytime'], *names['nighttime']])
+        self.assertEqual((solo['vision_gpu_name'], solo['vision_gpu_shared']), ('RTX 3080', False))
+        # Without GPU vision the projector stays on the CPU and no vision card is named.
+        cpu = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-with-nighttime')['catalog']['models'][0]
+        self.assertNotIn('vision_gpu_name', cpu)
+        self.assertEqual(cpu['gpu_names'], BASELINE['host']['gpu_names']['daytime'])
 
     def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
         definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}

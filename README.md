@@ -98,6 +98,17 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 - `GET /healthz`: `200 {"ready": true}` only after startup reconciliation and verification and outside an active browser switch; otherwise `503`.
 - `GET /`, `/app.js`, `/style.css`: runtime UI. Other mutation endpoints/methods return `405`.
 
+### What the router learns from each publication
+
+The published catalog is the router's source for what clients may use. In addition to each model's context, slots, policy, and capability profile, the catalog includes these fields:
+
+- **`configuration`** (catalog root): `{id, exclusive, runtime_revision, published_at}`. It identifies the selected configuration and the controller revision that published it.
+- **`offline_services`** (catalog root): services this configuration deliberately stops. An exclusive configuration lists Nighttime (`{model, aliases, display_name, role, reason: "exclusive_configuration"}`). LLM Router answers requests for those IDs with `503 SERVICE_OFFLINE` instead of `404`. Paired configurations publish `[]`.
+- **`gpu_names`** (per entry): text GPU card names, in the same order as `text_gpu_uuids`/`gpu_uuids`.
+- **`vision_gpu_name`** (per entry): set when the projector runs on the vision GPU.
+
+LLM Router publishes names and counts, never UUIDs, paths, or backend URLs. It combines them with what each llama.cpp process reports (`/slots`, `/props`, `/v1/models`) and its own admission state, and serves the result at `GET /v1/router/capabilities`. Changes are pushed at `GET /v1/router/events`. A switch therefore reaches subscribers as: drain, the new catalog, ready. Routers that predate these fields ignore them. These fields change the rendered catalog, so the first update that includes them drains briefly and republishes. It recreates no backend.
+
 This is a trusted-LAN administration surface without a login: anyone who can reach it can switch profiles. The current bind address is preserved. JSON, same-origin checks, a CSRF token, and a Host allowlist protect browser requests; they are not user authentication. `RUNTIME_ALLOWED_HOSTS` in the existing Git-excluded `.env` accepts comma-separated hostnames/IPs without ports. It defaults to `RUNTIME_BIND_IP` and loopback addresses. Add any hostname used to open the page to this setting; unrecognized hosts return `421`. The direct HTTP listener does not trust forwarded origin headers.
 
 The runtime and updater locks cover admission through completion, including validation and recovery. No switch is queued. Operation receipts live in `.state/operations/` and contain private diagnostic errors; HTTP responses expose only safe status messages. A restarted controller reconciles receipts against the existing runtime transaction and never automatically retries an interrupted switch. Full failure diagnostics remain in the private transaction/operation journals and the CLI. Source-deployment results come from the Portal updater journal and are displayed separately from profile-switch results.

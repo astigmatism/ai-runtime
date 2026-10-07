@@ -266,6 +266,11 @@ class Controller:
                 'verified_at': now(), 'container_id': ci['Id'], 'started_at': ci['State']['StartedAt'],
                 'argv_sha256': hashlib.sha256(json.dumps(ci['Config']['Cmd']).encode()).hexdigest()}
         catalog.update(catalog['models'][0])
+        # Identify the live configuration for router clients. Bundles rendered before this field
+        # existed (a recovered previous release) still get an accurate id and exclusivity.
+        configuration = catalog.get('configuration') or {'id': bundle['profile'],
+            'exclusive': 'everyday' not in bundle['compose']['services']}
+        catalog['configuration'] = {**configuration, 'runtime_revision': self.revision, 'published_at': now()}
         require(not self.system.readonly, 'Publication forbidden in inspection mode')
         atomic_json(Path(self.host['router_state_dir']) / 'active-model.json', catalog)
         self.admin('reload-config', {})
