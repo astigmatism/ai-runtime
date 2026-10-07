@@ -8,7 +8,7 @@ from pathlib import Path
 # Selectable configurations. Paired profiles run on the Daytime pair beside Nighttime; exclusive
 # (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-    'flash-next-solo-160k', 'flash-next-solo-two-requests', 'daytime-flash-solo-tuned-mtp3-160k')
+    'flash-next-solo-160k', 'flash-next-solo-two-requests')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'

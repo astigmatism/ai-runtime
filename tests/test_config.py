@@ -34,7 +34,7 @@ class ConfigurationTests(unittest.TestCase):
         # The 2026-10-07 consolidation renamed the kept configurations. Their backends and model aliases
         # (benchmark history) are unchanged, so switching from an old name to its new one recreates nothing.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
-        self.assertEqual(set(recorded), set(DAYTIME_PROFILES) - {'daytime-flash-solo-tuned-mtp3-160k'})
+        self.assertEqual(set(recorded), set(DAYTIME_PROFILES))
         for name, expected in recorded.items():
             with self.subTest(profile=name, previous=expected['previous_id']):
                 self.assertEqual(digest(render(ROOT / 'config', vision_host(), name)['compose']), expected['compose_sha256'])
@@ -243,7 +243,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'flash-next-solo-two-requests': 'qwen38-dual-43fe9c6', 'daytime-flash-solo-tuned-mtp3-160k': 'qwen38-dual-43fe9c6',
+            'flash-next-solo-two-requests': 'qwen38-dual-43fe9c6',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, NIGHTTIME_PROFILE})
         for name, engine_name in expected.items():
@@ -313,7 +313,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'flash-next-solo-two-requests', 'daytime-flash-solo-tuned-mtp3-160k'))
+            'flash-next-solo-160k', 'flash-next-solo-two-requests'))
         self.assertEqual(PAIRED, DAYTIME_PROFILES[:2])
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         self.assertEqual([x['profile'] for x in registry['always_included']], [NIGHTTIME_PROFILE])
