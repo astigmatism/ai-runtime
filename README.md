@@ -11,27 +11,38 @@ cd ai-runtime
 
 This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and profile-switching UI/API, with a container CLI for recovery and administration.
 
-## Current profiles
+## Current configurations
 
-| Profile | Daytime model | Context | GPU pair |
+Choosing a configuration sets the Daytime model and whether Nighttime runs beside it. The status page lists both for every configuration.
+
+| Configuration | Daytime model | Nighttime | GPUs |
 | --- | --- | --- | --- |
-| `daytime` | Qwen3.8-Flash-Next AtomicChat AD-4.27bpw-Q4_K_M-M64, shared Q4_K_M MTP2 | 128K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-flash-f16` | Same Flash-Next model and MTP draft with F16 main-model KV cache and 1024 microbatch | 128K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-27b` | Saved Qwen3.8-27B Q8 with separate Q4 MTP3 draft | 160K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-27b-tensor-next` | `daytime-27b` (Q8) with tensor-parallel placement (`--split-mode tensor`, bandwidth-balanced 55,45) | 160K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-27b-q6k-tensor-next` | `daytime-27b-tensor-next` with Unsloth UD-Q6_K_XL main weights | 160K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-flash-next` | `daytime` (Flash-Next, layer split, same placement) on the newer `qwen38-dual-836d571` engine with the mainline ggml-org Q4_0 MTP2 head | 128K | RTX 3090 + RTX 4080 SUPER |
-| `daytime-flash-solo` | **Exclusive:** `daytime-flash-next` fully VRAM-resident on all four text GPUs (automatic fit, 1024 microbatch), projector and MTP2 draft on the vision GPU; **Nighttime is stopped** | 128K | RTX 3090 + RTX 4080 SUPER + RTX 4080 + RTX 3080 Ti (+ RTX 3080 vision/draft) |
-| `daytime-flash-solo-tuned` | **Exclusive:** the measured tuning winners: engine `qwen38-dual-43fe9c6`, a pinned whole-layer split, F16 K/V, a RAM-resident n-gram table, one host thread, MTP2; **Nighttime is stopped** | 128K | Same as `daytime-flash-solo` |
-| `daytime-flash-solo-tuned-mtp3` | **Recommended exclusive profile:** `daytime-flash-solo-tuned` with a three-token MTP draft; **Nighttime is stopped** | 128K | Same as `daytime-flash-solo` |
-| `daytime-flash-solo-tuned-mtp3-2slot` | **Exclusive, two requests at once:** `-tuned-mtp3` with two slots, q8_0 K/V, and a 512 microbatch; each request runs at about half speed while both are active; **Nighttime is stopped** | 2 × 128K | Same as `daytime-flash-solo` |
-| `daytime-flash-solo-tuned-mtp3-160k` | **Exclusive, long context:** `-tuned-mtp3` with a 160K window and q8_0 K/V; **Nighttime is stopped** | 160K | Same as `daytime-flash-solo` |
+| `qwen27b-q8-with-nighttime` | Qwen3.8 27B Q8, tensor-parallel (55,45), MTP3, 160K | Qwen3.8 27B Abliterated Q6_K, 128K | Daytime: RTX 3090 + RTX 4080 SUPER; Nighttime: RTX 4080 + RTX 3080 Ti; RTX 3080 shared for vision |
+| `qwen27b-q6k-with-nighttime` | Qwen3.8 27B Unsloth UD-Q6_K_XL, otherwise as above, 160K | Same Nighttime | Same |
+| `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
+| `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
+| `flash-next-solo-two-requests` | Same Flash-Next serving two requests at once, 128K each (q8_0 K/V, 512 microbatch) | Off | Same |
 
-Every paired Daytime choice includes Nighttime: Qwen3.8-27B Abliterated Q6_K, 128K, RTX 4080 + RTX 3080 Ti, tensor-parallel (`--split-mode tensor`, 60,40). Nighttime's RAM prompt cache is capped at 24 GiB; Daytime profiles use the shared 48 GiB. Each backend has one slot. `primary` means the selected Daytime configuration plus Nighttime; it is not a clock-based schedule. `daytime-flash-f16` is an experiment on the existing Flash-Next engine; its VRAM fit and throughput on the production GPUs have not been qualified. It does not include newer sparse-attention code. `daytime-flash-next` is an unqualified experiment that runs the same Flash-Next weights and placement on the newer engine, which carries the upstream qwen4exp fixes and optimizations since the Flash-Next branch; it keeps layer split (see [deployment](docs/deployment.md) for why tensor mode does not suit Flash-Next) and needs its MTP head provisioned on the host before it can be selected. The two tensor profiles were each benchmarked on full Bench Studio coding sessions (2/2 passed): about 26.1 (Q8) and 27.0 (Q6_K) steps per second, roughly 5% faster than the retired `8ea2902` engine.
+`qwen27b-q8-with-nighttime` is the default when a host has no recorded release. Nighttime's RAM prompt cache is capped at 24 GiB; Daytime uses the shared 48 GiB. `primary` means the selected configuration; it is not a clock-based schedule.
+- **27B configurations:** each was benchmarked on a full Bench Studio coding session (2/2 passed), at about 26.1 (Q8) and 27.0 (Q6_K) steps per second.
+- **Flash-Next solo configurations:** the whole model stays in VRAM on all four text GPUs. On a fixed session replay, `flash-next-solo-128k` decodes at about 94 tokens per second. With two concurrent requests, each runs at about half speed. Decode slows as a conversation's context fills, in every configuration: about 56 tokens per second at 64K and 36 at 120K.
+- **Selecting a solo configuration:** it drains both models, stops and removes Nighttime, and publishes a one-model catalog. Requests for Nighttime fail until a configuration with Nighttime is selected again. See [deployment](docs/deployment.md#exclusive-flash-next-solo-profiles) for placement, measurements, and recovery.
+- **Consolidation (2026-10-07):** the configurations were renamed and the superseded ones retired. Each kept configuration launches the same backend and model alias as before, so its Bench Studio history continues:
 
-The exclusive solo profiles were qualified on 2026-10-06. `daytime-flash-solo` passed a full Bench Studio coding session at 80.7 tokens per second. On a fixed session replay, `daytime-flash-solo-tuned-mtp3` decodes about 10% faster and prefills long prompts 7–12% faster (see [tuning results](docs/deployment.md#exclusive-flash-next-solo-profiles)). On two GPUs, Flash-Next keeps the experts of 31 of its 48 blocks in host RAM. That costs about 31.5 tokens per second of decode, and a median first token near 3.8 s, because every prompt streams those experts over PCIe. The solo profiles keep the whole model in VRAM instead. Selecting one drains both models, stops and removes Nighttime, and publishes a one-model catalog; requests for Nighttime fail until a paired profile is selected again, which recreates it. The vision GPU is not shared while a solo profile runs, so it also carries the MTP draft. See [deployment](docs/deployment.md#exclusive-flash-next-solo-profiles) for placement, qualification, and recovery.
+  | Old name | New name |
+  | --- | --- |
+  | `daytime-27b-tensor-next` | `qwen27b-q8-with-nighttime` |
+  | `daytime-27b-q6k-tensor-next` | `qwen27b-q6k-with-nighttime` |
+  | `daytime-flash-solo-tuned-mtp3` | `flash-next-solo-128k` |
+  | `daytime-flash-solo-tuned-mtp3-160k` | `flash-next-solo-160k` |
+  | `daytime-flash-solo-tuned-mtp3-2slot` | `flash-next-solo-two-requests` |
+- **Retired:**
+  - `daytime`, `daytime-flash-f16`, and `daytime-flash-next`: two-GPU Flash-Next at about 31 tokens per second.
+  - `daytime-27b`: layer-split Q8.
+  - `daytime-flash-solo` and `daytime-flash-solo-tuned`: superseded by MTP3.
+  - The `flash-next-mtp` engine they used is no longer referenced.
 
-The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Flash-Next uses revision `d1a92352cbd417fd840b4e765c0b82f5fe3d1d89` for `daytime` and `daytime-flash-f16`; Every Qwen3.8-27B backend (Nighttime, the saved 27B profile, and both tensor profiles) and the `daytime-flash-next` experiment use `836d57176dc699a726c55418e4f96b8ca628e1bf` (engine `qwen38-dual-836d571`); the original `8ea2902` engine is retired. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
+The initial migration preserves `qwen38-daytime`, `qwen38-nighttime`, the `local-ai-primary` backend Compose project, `local-ai-ollama_default`, loopback inference ports 18080/18081, existing model files, and each service's pinned llama.cpp image. Every Qwen3.8-27B backend (Nighttime and both 27B configurations) uses `836d57176dc699a726c55418e4f96b8ca628e1bf` (engine `qwen38-dual-836d571`). The Flash-Next solo configurations use `43fe9c64281ef735046adc025e9e7559a1f659a5` (engine `qwen38-dual-43fe9c6`). The original `8ea2902` engine and the Flash-Next branch engine `d1a92352c` are retired. The controller uses a separate Compose project, `local-ai-runtime`, and no GPUs.
 
 The September 16 source refresh imports the running Flash-Next configuration exactly, including its 33 model shards, CPU/GPU tensor overrides, lazy lookup-table reads, 2048 microbatch, CPU vision projector, and MTP draft on CUDA0. It preserves the saved 27B profile and keeps Swift retired. This source refresh does not itself deploy or migrate the running host controller.
 
@@ -48,7 +59,7 @@ Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials
 ### Where to change settings
 
 - `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and named engine identities.
-- `config/profiles/*.json`: one definition for each of the eleven Daytime choices and Nighttime. A profile with `"exclusive": true` and `"gpu_group": "all"` runs alone on both text pairs (Daytime then Nighttime UUIDs as CUDA0–CUDA3, vision GPU as CUDA4) and requires a configured `vision_gpu_id`. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts. A profile is selectable only when its id is listed in `DAYTIME_PROFILES` (`runtime/config.py`); the status page, `~/local-ai-config.sh list`, `~/local-ai-config.sh names`, and `--profile` all read that one registry.
+- `config/profiles/*.json`: one definition for each selectable configuration and Nighttime. A profile with `"exclusive": true` and `"gpu_group": "all"` runs alone on both text pairs (Daytime then Nighttime UUIDs as CUDA0–CUDA3, vision GPU as CUDA4) and requires a configured `vision_gpu_id`. Each selects an `engine` from the shared registry. Change `context_tokens` to update both launch flags, the manifest, and router discovery together. Per-profile `arguments` override shared arguments. `argument_order` preserves the exact invocation and must list each effective argument once; an ordered list for `--override-tensor` expands to repeated flags without losing placement rules. Model, projector, and draft metadata are derived from their actual argument paths and declared artifact mounts. A profile is selectable only when its id is listed in `DAYTIME_PROFILES` (`runtime/config.py`); the status page, `~/local-ai-config.sh list`, `~/local-ai-config.sh names`, and `--profile` all read that one registry.
 - `.state/host.json`: private host deployment settings, GPU UUIDs, model root, and router integration paths. Start with `config/host.example.json` for another machine. The migration imports Rosalina's existing settings automatically.
 
 All profiles support a shared vision GPU through Runtime's [versioned renderer and host configuration](docs/shared-vision.md). The source defines projector offload, CUDA ordering, placement validation, and catalog metadata; the host supplies hardware UUIDs. Rosalina uses the RTX 3080 as CUDA2 for vision in both backends. CPU vision remains the default when the optional setting is absent. Start with [the shared-vision host example](config/host.shared-vision.example.json) when configuring another such host; its UUIDs are synthetic placeholders, not live hardware.

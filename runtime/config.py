@@ -5,9 +5,12 @@ import json
 import re
 from pathlib import Path
 
-DAYTIME_PROFILES = ('daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-    'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-    'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-2slot', 'daytime-flash-solo-tuned-mtp3-160k')
+# Selectable configurations. Paired profiles run on the Daytime pair beside Nighttime; exclusive
+# (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
+DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
+    'flash-next-solo-160k', 'flash-next-solo-two-requests', 'daytime-flash-solo-tuned-mtp3-160k')
+# Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
+DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'
 PAIR_GROUPS = ('daytime', 'nighttime')
 # An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
@@ -175,7 +178,7 @@ def profile_summary(config_dir, name, shared, host=None):
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
-        'exclusive': is_exclusive(definition)}
+        'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1)}
 
 
 def available_profiles(config_dir, host=None):

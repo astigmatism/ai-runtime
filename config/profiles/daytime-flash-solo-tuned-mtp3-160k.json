@@ -1,7 +1,7 @@
 {
   "id": "daytime-flash-solo-tuned-mtp3-160k",
   "role": "coding",
-  "display_name": "FlashNext Solo Tuned MTP3",
+  "display_name": "Retiring: Qwen3.8 Flash-Next",
   "engine": "qwen38-dual-43fe9c6",
   "container_name": "qwen38-daytime",
   "host_port": 18080,

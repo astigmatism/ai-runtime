@@ -1,7 +1,7 @@
 {
   "id": "nighttime",
   "role": "everyday",
-  "display_name": "Nighttime",
+  "display_name": "Qwen3.8 27B Abliterated Q6_K",
   "engine": "qwen38-dual-836d571",
   "container_name": "qwen38-nighttime",
   "host_port": 18081,

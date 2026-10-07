@@ -1,0 +1,22 @@
+{
+ "qwen27b-q8-with-nighttime": {
+  "previous_id": "daytime-27b-tensor-next",
+  "compose_sha256": "5e8c9a79ad3ba30b69155fbffc8517ae0a5edf2bf61aabac44279175be4f18c7"
+ },
+ "qwen27b-q6k-with-nighttime": {
+  "previous_id": "daytime-27b-q6k-tensor-next",
+  "compose_sha256": "ec4d339c9f338d6e72a1452ef83e07719edabaa111712801d1cae709f19fe866"
+ },
+ "flash-next-solo-128k": {
+  "previous_id": "daytime-flash-solo-tuned-mtp3",
+  "compose_sha256": "f77bc39dbb1332c0d9ed7c13c155053d1f412f81f3189f1d51f850436af35596"
+ },
+ "flash-next-solo-160k": {
+  "previous_id": "daytime-flash-solo-tuned-mtp3-160k",
+  "compose_sha256": "edd8c0398d6d9b5079827ce1c96808c435d5709cb949d6c78469c5982949bbb7"
+ },
+ "flash-next-solo-two-requests": {
+  "previous_id": "daytime-flash-solo-tuned-mtp3-2slot",
+  "compose_sha256": "e703ed1b07187b6aaabd1d2b07d6f3fdf39d124b6404a836a30227fb022ec6a0"
+ }
+}

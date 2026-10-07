@@ -26,7 +26,7 @@ class OperationFixture:
         if self.ops.worker:
             self.ops.worker.join(3)
 
-    def request(self, profile='daytime-27b'):
+    def request(self, profile='qwen27b-q6k-with-nighttime'):
         return {'profile': profile, 'request_id': str(uuid.uuid4()),
             'expected_profile': self.c.load('active.json')['bundle']['profile'], 'expected_revision': self.c.revision}
 
@@ -50,7 +50,7 @@ class OperationFixture:
 class OperationTests(OperationFixture, unittest.TestCase):
     def test_switches_both_directions_and_noop_preserve_nighttime(self):
         night = self.system.inspect('qwen38-nighttime')['Id']
-        for profile in ('daytime-27b', 'daytime', 'daytime'):
+        for profile in ('qwen27b-q6k-with-nighttime', 'qwen27b-q8-with-nighttime', 'qwen27b-q8-with-nighttime'):
             result = self.run_switch(self.request(profile))
             self.assertEqual(result['status'], 'succeeded')
             self.assertEqual(self.c.desired()['profile'], profile)
@@ -61,18 +61,18 @@ class OperationTests(OperationFixture, unittest.TestCase):
     def test_flash_f16_browser_switch_and_failed_load_restore_original(self):
         night = self.system.inspect('qwen38-nighttime')['Id']
         original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
-        result = self.run_switch(self.request('daytime-flash-f16'))
+        result = self.run_switch(self.request('qwen27b-q6k-with-nighttime'))
         self.assertEqual(result['status'], 'succeeded')
-        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-f16')
-        self.assertEqual(self.web_state['status']['profile'], 'daytime-flash-f16')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q6k-with-nighttime')
+        self.assertEqual(self.web_state['status']['profile'], 'qwen27b-q6k-with-nighttime')
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
-        self.assertEqual(self.run_switch(self.request('daytime'))['status'], 'succeeded')
+        self.assertEqual(self.run_switch(self.request('qwen27b-q8-with-nighttime'))['status'], 'succeeded')
         self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
 
         self.system.fail_reconcile = True
-        failure = self.run_switch(self.request('daytime-flash-f16'))
+        failure = self.run_switch(self.request('qwen27b-q6k-with-nighttime'))
         self.assertEqual(failure['status'], 'recovered')
-        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q8-with-nighttime')
         self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
         self.assertFalse(self.system.draining)
@@ -98,7 +98,7 @@ class OperationTests(OperationFixture, unittest.TestCase):
         for filename in ('runtime.lock', 'update.lock'):
             with self.assertRaises(RuntimeError):
                 with lock(self.state / filename): pass
-        with self.assertRaises(RuntimeError): self.c.transition('daytime')
+        with self.assertRaises(RuntimeError): self.c.transition('qwen27b-q8-with-nighttime')
         with self.assertRaises(OperationError) as error: self.ops.start(self.request())
         self.assertEqual(error.exception.status, 409)
         self.assertEqual(self.system.events, [])
@@ -119,7 +119,7 @@ class OperationTests(OperationFixture, unittest.TestCase):
         duplicate, created = restarted.start(request)
         self.assertFalse(created); self.assertEqual(duplicate, result)
         self.assertEqual(events, self.system.events)
-        request['profile'] = 'daytime'
+        request['profile'] = 'qwen27b-q8-with-nighttime'
         with self.assertRaises(OperationError): restarted.start(request)
 
     def test_duplicate_while_running_returns_same_receipt(self):
@@ -136,7 +136,7 @@ class OperationTests(OperationFixture, unittest.TestCase):
             with self.subTest(request=request), self.assertRaises(OperationError) as error:
                 self.ops.start(request)
             self.assertEqual(error.exception.status, 400)
-        for key, value in [('expected_profile', 'daytime-27b'), ('expected_revision', 'b'*40)]:
+        for key, value in [('expected_profile', 'qwen27b-q6k-with-nighttime'), ('expected_revision', 'b'*40)]:
             with self.assertRaises(OperationError) as error: self.ops.start({**self.request(), key: value})
             self.assertEqual(error.exception.code, 'stale-selection')
         self.assertIsNone(self.ops.latest())
@@ -179,7 +179,7 @@ class OperationTests(OperationFixture, unittest.TestCase):
         self.system.fail_reconcile = True
         result = self.run_switch()
         self.assertEqual(result['status'], 'recovered')
-        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q8-with-nighttime')
         self.assertFalse(self.system.draining)
 
     def test_failed_recovery_stays_drained_until_explicit_cli_recovery(self):
@@ -195,7 +195,7 @@ class OperationTests(OperationFixture, unittest.TestCase):
         self.assertFalse(self.system.draining)
 
     def test_browser_switch_refuses_nighttime_changes_even_after_admission(self):
-        desired = self.c.desired('daytime-27b')
+        desired = self.c.desired('qwen27b-q6k-with-nighttime')
         desired['compose']['services']['everyday']['logging']['options']['max-size'] = '31m'
         with patch.object(self.c, 'desired', return_value=desired):
             result = self.run_switch()
@@ -215,8 +215,8 @@ class OperationTests(OperationFixture, unittest.TestCase):
 
     def receipt(self, phase='checking'):
         request = self.request()
-        op = {'id': request['request_id'], 'request': request, 'from_profile': 'daytime',
-            'target_profile': 'daytime-27b', 'revision': self.c.revision, 'status': 'running', 'phase': phase, 'started_at': now()}
+        op = {'id': request['request_id'], 'request': request, 'from_profile': 'qwen27b-q8-with-nighttime',
+            'target_profile': 'qwen27b-q6k-with-nighttime', 'revision': self.c.revision, 'status': 'running', 'phase': phase, 'started_at': now()}
         self.ops.save(op); self.c.save('latest-operation.json', {'id': op['id']})
         return op
 
@@ -253,9 +253,9 @@ class OperationTests(OperationFixture, unittest.TestCase):
 
     def test_older_health_poll_cannot_overwrite_newer_snapshot(self):
         self.run_switch()
-        old = {'ready': True, 'profile': 'daytime', 'updated_at': '2020-01-01T00:00:00Z'}
+        old = {'ready': True, 'profile': 'qwen27b-q8-with-nighttime', 'updated_at': '2020-01-01T00:00:00Z'}
         self.ops.publish_status(old)
-        self.assertEqual(self.web_state['status']['profile'], 'daytime-27b')
+        self.assertEqual(self.web_state['status']['profile'], 'qwen27b-q6k-with-nighttime')
 
     def test_live_health_is_rechecked_after_cached_admission(self):
         self.system.containers['qwen38-nighttime']['Image'] = 'unexpected'
@@ -279,29 +279,29 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
     HOST = controller_fixture.ExclusiveProfileTests.HOST
 
     def test_browser_switch_to_solo_and_back(self):
-        result = self.run_switch(self.request('daytime-flash-solo'))
+        result = self.run_switch(self.request('flash-next-solo-128k'))
         self.assertEqual(result['status'], 'succeeded')
         self.assertIsNone(self.system.inspect('qwen38-nighttime'))
         self.assertEqual(self.web_state['status']['offline_roles'], ['everyday'])
         self.assertTrue(self.web_state['status']['ready'])
-        self.assertEqual(self.run_switch(self.request('daytime-flash-solo-tuned-mtp3'))['status'], 'succeeded')
-        self.assertEqual(self.run_switch(self.request('daytime'))['status'], 'succeeded')
+        self.assertEqual(self.run_switch(self.request('flash-next-solo-160k'))['status'], 'succeeded')
+        self.assertEqual(self.run_switch(self.request('qwen27b-q8-with-nighttime'))['status'], 'succeeded')
         self.assertTrue(self.system.inspect('qwen38-nighttime')['State']['Running'])
         self.assertEqual(self.web_state['status']['offline_roles'], [])
         self.assertFalse(self.system.draining)
 
     def test_failed_solo_browser_switch_reports_recovered_with_nighttime_restored(self):
         self.system.failed_generations = 1
-        result = self.run_switch(self.request('daytime-flash-solo'))
+        result = self.run_switch(self.request('flash-next-solo-128k'))
         self.assertEqual(result['status'], 'recovered')
-        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q8-with-nighttime')
         self.assertTrue(self.system.inspect('qwen38-nighttime')['State']['Running'])
         self.assertFalse(self.system.draining)
 
     def test_paired_browser_switch_still_refuses_nighttime_changes(self):
-        desired = self.c.desired('daytime-27b')
+        desired = self.c.desired('qwen27b-q6k-with-nighttime')
         desired['compose']['services']['everyday']['logging']['options']['max-size'] = '31m'
         with patch.object(self.c, 'desired', return_value=desired):
-            result = self.run_switch(self.request('daytime-27b'))
+            result = self.run_switch(self.request('qwen27b-q6k-with-nighttime'))
         self.assertEqual(result['status'], 'failed')
         self.assertFalse(any(e[0] == 'docker' for e in self.system.events))

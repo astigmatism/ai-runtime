@@ -11,7 +11,7 @@ from runtime.compat import dispatch
 
 class StatusTests(unittest.TestCase):
     def setUp(self):
-        self.state = {'status': {'ready': False, 'profile': 'daytime'}}
+        self.state = {'status': {'ready': False, 'profile': 'qwen27b-q8-with-nighttime'}}
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(None, self.state))
         thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
         self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
@@ -42,20 +42,23 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn('innerHTML', urllib.request.urlopen(self.base + '/app.js').read().decode())
 
     def test_status_passes_the_configuration_registry_through_unchanged(self):
-        self.state['status']['configurations'] = {'active': 'daytime', 'selectable':
-            [{'profile': 'daytime'}, {'profile': 'daytime-27b'}], 'always_included': [{'profile': 'nighttime'}]}
+        self.state['status']['configurations'] = {'active': 'qwen27b-q8-with-nighttime', 'selectable':
+            [{'profile': 'qwen27b-q8-with-nighttime'}, {'profile': 'qwen27b-q6k-with-nighttime'}], 'always_included': [{'profile': 'nighttime'}]}
         with urllib.request.urlopen(self.base + '/api/status') as response:
             self.assertEqual(json.load(response)['configurations'], self.state['status']['configurations'])
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
-        self.assertEqual(dispatch(['daytime']), ['apply', '--profile', 'daytime'])
-        self.assertEqual(dispatch(['daytime-27b']), ['apply', '--profile', 'daytime-27b'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'daytime-flash-f16']),
-            ['apply', '--profile', 'daytime-flash-f16'])
-        self.assertEqual(dispatch(['daytime-27b', 'status']), ['status', '--profile', 'daytime-27b'])
+        # The legacy home commands for retired configurations name the current ones instead of guessing.
+        for retired in ('daytime', 'daytime-27b'):
+            with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-solo-128k'): dispatch([retired])
+        self.assertEqual(dispatch(['flash-next-solo-160k']), ['apply', '--profile', 'flash-next-solo-160k'])
+        self.assertEqual(dispatch(['qwen27b-q6k-with-nighttime']), ['apply', '--profile', 'qwen27b-q6k-with-nighttime'])
+        self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-with-nighttime']),
+            ['apply', '--profile', 'qwen27b-q6k-with-nighttime'])
+        self.assertEqual(dispatch(['qwen27b-q6k-with-nighttime', 'status']), ['status', '--profile', 'qwen27b-q6k-with-nighttime'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['daytime-swift'])
         self.assertEqual(dispatch(['nighttime']), ['apply'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'daytime']), ['render', '--profile', 'daytime'])
+        self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'qwen27b-q8-with-nighttime']), ['render', '--profile', 'qwen27b-q8-with-nighttime'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['primary', 'rollback'])
 
 

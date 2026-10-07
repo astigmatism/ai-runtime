@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 
-from .config import read, render, require
+from .config import DAYTIME_PROFILES, read, render, require
 from .system import atomic_json, lock, now
 from .update import Updater
 
@@ -67,6 +67,10 @@ class Migration:
             self.home / '.local-ai-selected-profile.json']
 
     def prepare(self):
+        # The one-time migration from the legacy primary deployment completed on 2026-09-22; the
+        # legacy Daytime profiles it reproduces are retired, so it can no longer be prepared.
+        require(all(profile in DAYTIME_PROFILES for profile in LEGACY_DAYTIME_PROFILES),
+            'The legacy migration is complete and its source profiles (' + ', '.join(LEGACY_DAYTIME_PROFILES) + ') are retired')
         revision = self.updater.source_preflight()
         require(not (self.primary / 'runtime-owner.json').exists(), 'Runtime migration is already installed')
         selected = read(self.primary / 'profiles/selected.json')['selected']

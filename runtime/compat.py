@@ -18,7 +18,7 @@ def dispatch(argv):
         raise RuntimeError('Use list, status, apply, validate, plan, or active-check; historical restore commands are retired')
     profile_args = ['--profile', profile] if profile in DAYTIME_PROFILES else []
     if profile not in (*DAYTIME_PROFILES, 'primary', 'nighttime', 'daytime-256', 'nighttime-256'):
-        raise RuntimeError('Unknown or retired profile')
+        raise RuntimeError('Unknown or retired profile ' + repr(profile) + '; current configurations: ' + ', '.join(DAYTIME_PROFILES))
     return [action, *profile_args]
 
 

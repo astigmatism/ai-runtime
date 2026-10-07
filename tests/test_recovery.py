@@ -19,7 +19,7 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'runtime'; state = root / '.state'
             active = {'revision': 'a' * 40, 'image': 'local/controller:current',
-                      'bundle': {'profile': 'daytime-27b'}}
+                      'bundle': {'profile': 'qwen27b-q6k-with-nighttime'}}
             atomic_json(state / 'active.json', active)
             atomic_json(state / 'host.json', {'model_root': '/models'})
             (state / 'router-token').write_text('synthetic-private-value')
@@ -97,8 +97,9 @@ class RecoveryTests(unittest.TestCase):
 
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
-        self.assertEqual(len(artifacts), 42)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 179538157024)
+        # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
+        self.assertEqual(len(artifacts), 41)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 177631005088)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

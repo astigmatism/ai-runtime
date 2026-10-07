@@ -12,7 +12,8 @@ from pathlib import Path
 import time
 import uuid
 
-from .config import NIGHTTIME_PROFILE, available_profiles, digest, read, render, require, service_engine
+from .config import (DAYTIME_PROFILES, DEFAULT_PROFILE, NIGHTTIME_PROFILE, available_profiles, digest, read, render,
+    require, service_engine)
 from .system import System, atomic_json, lock, now
 
 
@@ -45,7 +46,10 @@ class Controller:
 
     def desired(self, profile=None):
         current = self.load('active.json', {})
-        selected = profile or current.get('bundle', {}).get('profile') or self.host.get('initial_profile', 'daytime')
+        initial = self.host.get('initial_profile')
+        # A host's initial_profile may name a configuration later retired; start the default instead.
+        selected = profile or current.get('bundle', {}).get('profile') or (
+            initial if initial in DAYTIME_PROFILES else DEFAULT_PROFILE)
         return render(self.config_dir, self.host, selected)
 
     def backend_url(self, cfg):

@@ -1,7 +1,7 @@
 {
-  "id": "daytime-27b-tensor-next",
+  "id": "qwen27b-q6k-with-nighttime",
   "role": "coding",
-  "display_name": "Daytime-27B Q8 Tensor Next",
+  "display_name": "Qwen3.8 27B Q6_K",
   "engine": "qwen38-dual-836d571",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
@@ -67,7 +67,7 @@
   ],
   "arguments": {
     "--model": "/weights/main.gguf",
-    "--alias": "qwen3.8-27b-q8_0-tensor-next",
+    "--alias": "qwen3.8-27b-ud-q6_k_xl-tensor-next",
     "--n-gpu-layers": "66",
     "--tensor-split": "55,45",
     "--device": "CUDA1,CUDA0",
@@ -88,10 +88,10 @@
   },
   "artifacts": [
     {
-      "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-Q8_0.gguf",
+      "path": "llm/Qwen3.8-27B-GGUF/fallbacks/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-Q6_K_XL.gguf",
       "target": "/weights/main.gguf",
-      "bytes": 29047086048,
-      "sha256": "a680f44a06920e5d689774823782006aa3acc8db95750323373b24139b67e348"
+      "bytes": 25299061664,
+      "sha256": "701d8fa9ed214ab21bfc130cd2a7df19ca89bbef7713e2dfb19f3c63696aa917"
     },
     {
       "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/MTP/mtp-Qwen3.8-27B-Q4_0.gguf",
@@ -128,7 +128,7 @@
     "backend_url": "http://qwen38-daytime:8080",
     "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
     "mmproj_revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
-    "quantization": "Q8_0",
+    "quantization": "UD-Q6_K_XL",
     "mtp": {
       "enabled": true,
       "type": "draft-mtp",
@@ -142,7 +142,7 @@
       "artifact_target": "/weights/mtp.gguf"
     },
     "capability_profile": {
-      "name": "qwen38-27b-golden-vision-tools-tensor-next",
+      "name": "qwen38-27b-golden-vision-tools-q6k-tensor-next",
       "text": true,
       "streaming": true,
       "vision": true,
@@ -153,7 +153,7 @@
       "prompt_cache_persistence": false
     },
     "deployment_warnings": [
-      "Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with Q8_0 tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not been qualified on the production GPUs.",
+      "Newer pinned llama.cpp engine (qwen38-dual-836d571, 836d571 of 2026-10-03) with UD-Q6_K_XL tensor-parallel placement: load, VRAM headroom at full 160K context, and throughput have not been qualified on the production GPUs.",
       "160K is the total prompt, history, reasoning, and output capacity."
     ],
     "aliases": [

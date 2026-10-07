@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from runtime.config import read, render
+from runtime.config import read
 from runtime.migration import Migration, WRAPPERS, legacy_deploy_guard
 from runtime.system import atomic_json
 
@@ -49,26 +49,18 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(candidate.call_count, 1)
             self.assertFalse((migration.state / 'inspection.json').exists())
 
-    def test_changed_saved_profile_blocks_preparation_before_private_state_writes(self):
+    def test_completed_legacy_migration_refuses_before_private_state_writes(self):
+        # The legacy daytime/daytime-27b profiles it reproduced are retired, so preparation stops first.
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve() / 'home'; root = home / 'apps/local-ai-runtime'
             root.mkdir(parents=True); shutil.copytree(ROOT / 'config', root / 'config')
-            primary = home / 'apps/local-ai-primary'
-            host = copy.deepcopy(HOST)
-            host.update(model_root=str(home / 'ai/models'), uid=os.getuid(), gid=os.getgid())
-            current = render(root / 'config', host, 'daytime')['compose']
-            saved = render(root / 'config', host, 'daytime-27b')['compose']
-            atomic_json(primary / 'compose.json', current)
-            atomic_json(primary / 'profiles/selected.json', {'selected': 'daytime'})
-            atomic_json(primary / 'profiles/daytime/compose.json', current)
-            saved['services']['coding']['command'].append('--changed-after-import')
-            atomic_json(primary / 'profiles/daytime-27b/compose.json', saved)
-            stack = home / 'apps/local-ai-ollama-stack'; stack.mkdir()
+            stack = home / 'apps/local-ai-ollama-stack'; stack.mkdir(parents=True)
             (stack / '.env').write_text('ADMIN_TOKEN=synthetic-token\n')
             migration = Migration(root, home)
-            with patch.object(migration.updater, 'source_preflight', return_value='a' * 40):
-                with self.assertRaisesRegex(RuntimeError, 'daytime-27b: saved profile differs'):
+            with patch.object(migration.updater, 'source_preflight', return_value='a' * 40) as preflight:
+                with self.assertRaisesRegex(RuntimeError, 'legacy migration is complete'):
                     migration.prepare()
+            preflight.assert_not_called()
             self.assertFalse((root / '.env').exists())
             self.assertFalse((root / '.state/host.json').exists())
             self.assertFalse((root / '.state/router-token').exists())

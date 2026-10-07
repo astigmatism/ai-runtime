@@ -26,15 +26,5 @@
         "RTX 3080 Ti"
       ]
     }
-  },
-  "profiles": {
-    "daytime": {
-      "compose_sha256": "f692c9821ef08bffce808a2066762fb2e3105a53dc6de69f2645afda126a12c7",
-      "catalog_sha256": "5ccf0149d631878213c8ec93f7ff68bb599cb50659c1c33915fb0410a89a74af"
-    },
-    "daytime-27b": {
-      "compose_sha256": "07888647f24ec11a53f2907d79ae4337fa75aa24a6b428c0ab4a07cb798b3476",
-      "catalog_sha256": "ca63d254ff9ecd4467800a6fe63c69b45ea0359f05a26aa0487ac018f87d1802"
-    }
   }
 }

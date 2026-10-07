@@ -6,8 +6,33 @@ const node = (tag, text = '', cls = '') => {
   if (cls) element.className = cls;
   return element;
 };
-const profileName = profile => ({daytime: 'Daytime', 'daytime-flash-f16': 'FlashNext F16 KV', 'daytime-27b': 'Daytime-27B', 'daytime-27b-tensor-next': 'Daytime-27B Q8 Tensor Next', 'daytime-27b-q6k-tensor-next': 'Daytime-27B Q6_K Tensor Next', 'daytime-flash-next': 'FlashNext Next Engine', 'daytime-flash-solo': 'FlashNext Solo 4-GPU', 'daytime-flash-solo-tuned': 'FlashNext Solo Tuned', 'daytime-flash-solo-tuned-mtp3': 'FlashNext Solo Tuned MTP3', nighttime: 'Nighttime'})[profile] || profile || 'Unknown configuration';
-const modelName = model => ({'qwen3.8-flash-next-ad4.27': 'Flash-Next', 'qwen3.8-flash-next-ad4.27-next': 'Flash-Next · next engine', 'qwen3.8-flash-next-ad4.27-solo': 'Flash-Next · solo 4-GPU', 'qwen3.8-flash-next-ad4.27-solo-tuned': 'Flash-Next · solo 4-GPU · tuned', 'qwen3.8-flash-next-ad4.27-solo-tuned-mtp3': 'Flash-Next · solo 4-GPU · tuned · MTP3', 'qwen3.8-27b-q8_0': '27B Q8', 'qwen3.8-27b-q8_0-tensor-next': '27B Q8 · Tensor · next engine', 'qwen3.8-27b-ud-q6_k_xl-tensor-next': '27B UD-Q6_K_XL · Tensor · next engine', 'qwen3.8-27b-abliterated-q6_k': '27B Abliterated'})[model] || model || 'Model unavailable';
+// Names come from the configuration registry in /api/status, so the page never needs a code change
+// when a configuration is added or renamed.
+const configurations = () => status?.configurations?.selectable || [];
+const nighttime = () => status?.configurations?.always_included?.[0];
+const configFor = profile => configurations().find(c => c.profile === profile);
+const profileName = profile => configFor(profile)?.display_name || profile || 'Unknown configuration';
+const gpuList = names => names?.length ? names.join(' + ') : 'GPUs unavailable';
+// Only added where a display name does not already say how many requests run at once.
+const slotsText = (slots, name = '') => slots > 1 && !/request/i.test(name) ? ` · ${slots} requests at once` : '';
+function configTitle(config) {
+  return `${config.display_name}${config.exclusive ? ' · Nighttime off' : ' + Nighttime'}`;
+}
+function configRows(config) {
+  const night = nighttime();
+  return [
+    ['Daytime', `${config.display_name}${slotsText(config.parallel_slots, config.display_name)} · ${gpuList(config.gpu_names)}`],
+    ['Nighttime', config.exclusive ? 'Off while this configuration uses its GPUs'
+      : night ? `${night.display_name} · ${gpuList(night.gpu_names)}` : 'Unavailable']];
+}
+function switchImpact(target) {
+  const current = configFor(status?.profile);
+  if (!target || !current) return 'Existing requests finish first. New requests pause during the switch.';
+  const night = !target.exclusive && !current.exclusive ? 'Nighttime stays loaded.'
+    : target.exclusive && current.exclusive ? 'Nighttime stays off.'
+    : target.exclusive ? 'Nighttime will be stopped while this configuration runs.' : 'Nighttime will be started again.';
+  return `Existing requests finish first. New requests pause during the switch. ${night}`;
+}
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
 const phaseNames = {checking: 'Check', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
 const phases = Object.keys(phaseNames);
@@ -56,7 +81,7 @@ function uuid() {
 }
 function renderRegistry() {
   const configs = status?.configurations?.selectable || [];
-  const signature = JSON.stringify(configs);
+  const signature = JSON.stringify([configs, nighttime()]);
   if (signature !== registrySignature) {
     registrySignature = signature;
     el('config-list').replaceChildren();
@@ -65,7 +90,12 @@ function renderRegistry() {
       const input = node('input'); input.type = 'radio'; input.name = 'profile'; input.value = config.profile;
       input.addEventListener('change', () => { selected = input.value; actionError=''; tellError(''); updateControls(); });
       const text = node('span', '', 'profile-label');
-      text.append(node('strong', profileName(config.profile)), node('small', `${modelName(config.model)} · ${context(config.context_tokens)}${config.exclusive ? ' · stops Nighttime' : ''}`));
+      text.append(node('strong', configTitle(config)));
+      for (const [role, detail] of configRows(config)) {
+        const row = node('small', '', 'profile-row');
+        row.append(node('span', role, 'profile-role'), node('span', detail));
+        text.append(row);
+      }
       const marker = node('span', '', 'profile-state'); marker.dataset.profile = config.profile;
       label.append(input, text, marker); el('config-list').append(label);
     }
@@ -84,6 +114,7 @@ function updateControls() {
     marker.classList.toggle('previous', previous);
   }
   const active = selected === status?.profile;
+  el('impact').textContent = active ? '' : switchImpact(configFor(selected));
   el('apply').disabled = blocked || active || !selected;
   el('apply').textContent = submitting ? 'Starting switch…' : running() ? 'Switch in progress' : !connected ? 'Status unavailable' : active ? `${profileName(selected)} is active` : `Switch to ${profileName(selected)}`;
   el('switch-reason').textContent = requestUnknown ? 'Checking whether the request was accepted. It will not be sent again automatically.' : running() ? '' : !connected ? 'Reconnect to view the current runtime before switching.' : status?.switching?.reason || '';
@@ -103,11 +134,11 @@ function renderTopology() {
     const group = daytime ? 'day' : 'night';
     const changing = daytime && running() && ['loading','verifying','restoring'].includes(operation.phase);
     const bubble = node('article', '', `model-bubble ${group}${(!service.healthy || changing) ? ' unavailable' : ''}`); bubble.dataset.model = group;
-    const title = changing ? `${profileName(operation.from_profile)} → ${profileName(operation.target_profile)}` : daytime ? profileName(status.profile) : 'Nighttime';
-    bubble.append(node('h3', title), node('p', `${modelName(service.model)} · ${context(service.context_tokens)}`));
+    const slots = daytime ? configFor(status.profile)?.parallel_slots : 1;
+    const label = service.name || service.model || 'Model unavailable';
+    bubble.append(node('h3', daytime ? 'Daytime' : 'Nighttime'), node('p', `${label}${slotsText(slots, label)}`));
     if (changing) {
-      const target = status.configurations?.selectable?.find(c => c.profile === operation.target_profile);
-      bubble.querySelector('p').textContent = operation.phase === 'restoring' ? 'Restoring the previous configuration' : `${modelName(target?.model)} · ${context(target?.context_tokens)}`;
+      bubble.querySelector('p').textContent = operation.phase === 'restoring' ? `Restoring ${profileName(operation.from_profile)}` : `Loading ${profileName(operation.target_profile)}`;
     }
     let health = !connected ? 'Status unavailable' : changing ? `${operation.phase === 'restoring' ? 'Restoring' : operation.phase === 'verifying' ? 'Verifying' : 'Loading'} · not ready` : service.healthy ? admissionsPaused() ? 'Loaded · new requests paused' : 'Ready' : 'Unavailable';
     if (!service.vision_gpu_id) health += ' · CPU vision';
@@ -122,7 +153,7 @@ function renderTopology() {
   if (status?.offline_roles?.includes('everyday')) {
     // Not a connected model: an exclusive Daytime profile holds Nighttime's GPUs.
     const offline = node('article', '', 'model-bubble night unavailable');
-    offline.append(node('h3', 'Nighttime'), node('p', 'Offline while an exclusive profile holds its GPUs'), node('p', 'Not running', 'model-health'));
+    offline.append(node('h3', 'Nighttime'), node('p', `${nighttime()?.display_name || 'Nighttime'} is off while ${profileName(status.profile)} uses its GPUs`), node('p', 'Not running', 'model-health'));
     graph.append(offline);
   }
   if (shared) graph.append(gpuNode(shared.vision_gpu_name || 'Vision GPU', shared.exclusive ? 'Vision + MTP draft' : 'Shared vision', 'shared vision-node'));
@@ -257,7 +288,7 @@ el('switch-form').addEventListener('submit',async event => {
   event.preventDefault();
   if (el('apply').disabled) return;
   const target = status?.configurations?.selectable?.find(c => c.profile === selected);
-  if (target?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs. Nighttime will be stopped until you switch to a paired profile. Continue?`)) return;
+  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs, so Nighttime will be stopped until you choose a configuration that includes it. Continue?`)) return;
   submitting=true; actionError=''; tellError(''); updateControls(); clearTimeout(timer);
   const request = pending && pending.profile===selected && pending.expected_profile===status.profile && pending.expected_revision===status.deployed_revision ? pending : {profile:selected,request_id:uuid(),expected_profile:status.profile,expected_revision:status.deployed_revision};
   remember(request);

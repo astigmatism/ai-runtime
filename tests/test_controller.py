@@ -101,7 +101,7 @@ class ControllerTests(unittest.TestCase):
         self.state = Path(self.tmp.name); host = copy.deepcopy(self.HOST)
         host['router_state_dir'] = str(self.state / 'router')
         atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
-        self.bundle = render(ROOT / 'config', host, 'daytime')
+        self.bundle = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')
         self.system = FakeSystem(self.bundle)
         self.c = Controller(ROOT / 'config', self.state, 'a' * 40, self.system)
         self.active = {'revision': 'a' * 40, 'image': 'old-image', 'bundle': self.bundle}
@@ -118,31 +118,16 @@ class ControllerTests(unittest.TestCase):
 
     def test_switching_engines_preserves_nighttime_and_persists_selection(self):
         night = self.system.inspect('qwen38-nighttime')['Id']
-        result = self.c.transition('daytime-27b')
+        result = self.c.transition('qwen27b-q6k-with-nighttime')
         self.assertEqual(result['changed_roles'], ['coding'])
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
-        self.assertEqual(self.c.desired()['profile'], 'daytime-27b')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q6k-with-nighttime')
         self.assertTrue(self.c.transition()['already_active'])
-        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding'])
-        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
-
-    def test_switching_to_flash_f16_and_back_changes_only_daytime(self):
-        night = self.system.inspect('qwen38-nighttime')['Id']
-        original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
-        result = self.c.transition('daytime-flash-f16')
-        self.assertEqual(result['changed_roles'], ['coding'])
-        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-f16')
-        self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
-        candidate = self.system.inspect('qwen38-daytime')['Config']['Cmd']
-        for flag in ('--cache-type-k', '--cache-type-v'):
-            self.assertEqual(candidate[candidate.index(flag) + 1], 'f16')
-        self.assertEqual(candidate[candidate.index('--ubatch-size') + 1], '1024')
-        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding'])
-        self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
+        self.assertEqual(self.c.transition('qwen27b-q8-with-nighttime')['changed_roles'], ['coding'])
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
 
     def test_wrong_engine_is_detected_only_on_affected_backend(self):
-        self.system.containers['qwen38-daytime']['Image'] = service_engine(self.bundle, 'everyday')['image_id']
+        self.system.containers['qwen38-daytime']['Image'] = 'sha256:' + 'f' * 64  # not the pinned engine
         observed = self.c.observe(self.bundle)
         self.assertIn('image', observed['coding']['differences'])
         self.assertTrue(observed['everyday']['healthy'])
@@ -162,7 +147,7 @@ class ControllerTests(unittest.TestCase):
     def test_launch_change_recreates_only_daytime_after_drain(self):
         self.propose_daytime_change()
         night = self.system.inspect('qwen38-nighttime')['Id']
-        result = self.c.transition('daytime')
+        result = self.c.transition('qwen27b-q8-with-nighttime')
         self.assertEqual(result['changed_roles'], ['coding'])
         self.assertEqual(self.system.inspect('qwen38-nighttime')['Id'], night)
         self.assertFalse(self.system.draining)
@@ -170,7 +155,7 @@ class ControllerTests(unittest.TestCase):
         self.assertLess(events.index(('drain', True)), next(i for i, x in enumerate(events) if x[0] == 'docker'))
         self.assertLess(next(i for i, x in enumerate(events) if x[0] == 'generation'), events.index(('publish',)))
         self.assertEqual(events[-1], ('drain', False))
-        self.assertEqual(read(self.state / 'active.json')['bundle']['profile'], 'daytime')
+        self.assertEqual(read(self.state / 'active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
 
     def test_busy_router_queue_or_direct_slot_aborts_before_recreation(self):
         self.propose_daytime_change()
@@ -178,7 +163,7 @@ class ControllerTests(unittest.TestCase):
             with self.subTest(attribute=attribute):
                 setattr(self.system, attribute, 1)
                 with patch('runtime.controller.time.monotonic', side_effect=[0, 0, 301]):
-                    with self.assertRaisesRegex(RuntimeError, 'Drain timed out'): self.c.transition('daytime')
+                    with self.assertRaisesRegex(RuntimeError, 'Drain timed out'): self.c.transition('qwen27b-q8-with-nighttime')
                 self.assertFalse(any(e[0] == 'docker' for e in self.system.events))
                 self.assertFalse(self.system.draining)
                 self.assertEqual(read(self.state / 'active.json'), self.active)
@@ -188,7 +173,7 @@ class ControllerTests(unittest.TestCase):
         self.propose_daytime_change()
         self.system.fail_reconcile = True
         before = {k: v['Id'] for k, v in self.system.containers.items()}
-        with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('daytime')
+        with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('qwen27b-q8-with-nighttime')
         self.assertEqual({k: v['Id'] for k, v in self.system.containers.items()}, before)
         self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
         self.assertFalse(self.system.draining)
@@ -196,7 +181,7 @@ class ControllerTests(unittest.TestCase):
     def test_failed_recovery_keeps_drain_and_blocks_new_operations(self):
         self.propose_daytime_change()
         self.system.generation_fails = True
-        with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'): self.c.transition('daytime')
+        with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'): self.c.transition('qwen27b-q8-with-nighttime')
         self.assertTrue(self.system.draining)
         self.assertEqual(read(self.state / 'transaction.json')['phase'], 'needs-attention')
         with self.assertRaisesRegex(RuntimeError, 'interrupted'): self.c.transition()
@@ -206,7 +191,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_foreign_drain_is_never_cleared(self):
         self.system.draining = True; self.system.reason = 'another owner'
-        with self.assertRaisesRegex(RuntimeError, 'Another operation owns'): self.c.transition('daytime')
+        with self.assertRaisesRegex(RuntimeError, 'Another operation owns'): self.c.transition('qwen27b-q8-with-nighttime')
         self.assertNotIn(('drain', False), self.system.events)
 
     def test_shared_lock_blocks_cli_and_startup(self):
@@ -216,7 +201,7 @@ class ControllerTests(unittest.TestCase):
     def test_adoption_refuses_profile_mismatch(self):
         self.propose_daytime_change()
         (self.state / 'active.json').unlink()
-        with self.assertRaisesRegex(RuntimeError, 'exact match'): self.c.transition('daytime', adopt=True)
+        with self.assertRaisesRegex(RuntimeError, 'exact match'): self.c.transition('qwen27b-q8-with-nighttime', adopt=True)
         self.assertNotIn(('drain', True), self.system.events)
 
     def test_readonly_system_refuses_docker_and_http_mutation(self):
@@ -232,38 +217,34 @@ class ControllerTests(unittest.TestCase):
 
     def test_status_lists_every_configuration_and_marks_the_live_one(self):
         configs = self.c.status()['configurations']
-        self.assertEqual(configs['active'], 'daytime')
-        self.assertEqual([x['profile'] for x in configs['selectable']],
-            ['daytime', 'daytime-27b', 'daytime-flash-f16', 'daytime-27b-tensor-next',
-             'daytime-27b-q6k-tensor-next', 'daytime-flash-next', 'daytime-flash-solo', 'daytime-flash-solo-tuned',
-             'daytime-flash-solo-tuned-mtp3', 'daytime-flash-solo-tuned-mtp3-2slot', 'daytime-flash-solo-tuned-mtp3-160k'])
-        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[6:]))
-        self.assertEqual(configs['selectable'][6]['display_name'], 'FlashNext Solo 4-GPU (128K)')
-        self.assertEqual(configs['selectable'][6]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
-        self.assertIn('FlashNext F16 KV', configs['selectable'][2]['display_name'])
-        self.assertEqual(configs['selectable'][3]['display_name'], 'Daytime-27B Q8 Tensor Next (160K)')
-        self.assertEqual(configs['selectable'][4]['display_name'], 'Daytime-27B Q6_K Tensor Next (160K)')
-        self.assertEqual(configs['selectable'][4]['context_tokens'], 163840)
-        self.assertEqual(configs['selectable'][5]['display_name'], 'FlashNext Next Engine (128K)')
-        self.assertEqual(configs['selectable'][5]['engine'], 'qwen38-dual-836d571')
+        self.assertEqual(configs['active'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual([x['profile'] for x in configs['selectable']], list(DAYTIME_PROFILES))
+        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']], list(DAYTIME_PROFILES[2:]))
+        self.assertEqual([x['display_name'] for x in configs['selectable'][:5]], ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Q6_K (160K)',
+            'Qwen3.8 Flash-Next (128K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next, two requests at once (128K)'])
+        self.assertEqual([x['parallel_slots'] for x in configs['selectable'][:5]], [1, 1, 1, 1, 2])
+        self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
+        self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
+        self.assertEqual(configs['selectable'][2]['engine'], 'qwen38-dual-43fe9c6')
         self.assertEqual([x['profile'] for x in configs['always_included']], ['nighttime'])
+        self.assertEqual(configs['always_included'][0]['display_name'], 'Qwen3.8 27B Abliterated Q6_K (128K)')
         self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
         self.assertEqual(configs['always_included'][0]['gpu_names'], HOST['gpu_names']['nighttime'])
         self.assertNotIn('synthetic-token', json.dumps(configs))
         self.assertNotIn(HOST['model_root'], json.dumps(configs))
-        self.c.transition('daytime-27b')
-        self.assertEqual(self.c.status()['configurations']['active'], 'daytime-27b')
+        self.c.transition('qwen27b-q6k-with-nighttime')
+        self.assertEqual(self.c.status()['configurations']['active'], 'qwen27b-q6k-with-nighttime')
         (self.state / 'active.json').unlink()  # Before adoption nothing is live, but the registry is still listable.
         pre_migration = self.c.status()
         self.assertFalse(pre_migration['ready'])
-        self.assertEqual(pre_migration['configurations']['active'], 'daytime')
+        self.assertEqual(pre_migration['configurations']['active'], 'qwen27b-q8-with-nighttime')
         self.assertEqual(len(pre_migration['configurations']['selectable']), len(DAYTIME_PROFILES))
 
     def test_unreadable_registry_never_hides_the_health_of_the_pair(self):
         with patch('runtime.controller.available_profiles', side_effect=RuntimeError('registry exploded')):
             status = self.c.status()
         self.assertTrue(status['ready'])
-        self.assertEqual(status['configurations']['active'], 'daytime')
+        self.assertEqual(status['configurations']['active'], 'qwen27b-q8-with-nighttime')
         self.assertEqual(status['configurations']['selectable'], [])
         self.assertEqual(status['configurations']['always_included'], [])
         self.assertIn('registry exploded', status['configurations']['error'])
@@ -272,7 +253,7 @@ class ControllerTests(unittest.TestCase):
     def test_router_reservation_blocks_profile_changes_until_verified_completion(self):
         self.c.router_maintenance(True)
         self.assertTrue(self.system.draining)
-        with self.assertRaisesRegex(RuntimeError, 'reserves the runtime'): self.c.transition('daytime')
+        with self.assertRaisesRegex(RuntimeError, 'reserves the runtime'): self.c.transition('qwen27b-q8-with-nighttime')
         self.c.republish()
         self.c.router_maintenance(False)
         self.assertFalse(self.system.draining)
@@ -300,7 +281,7 @@ class ExclusiveProfileTests(unittest.TestCase):
 
     def test_switch_to_solo_removes_nighttime_before_loading_and_publishes_one_model(self):
         day = self.system.inspect('qwen38-daytime')['Id']
-        result = self.c.transition('daytime-flash-solo')
+        result = self.c.transition('flash-next-solo-128k')
         self.assertEqual(result['changed_roles'], ['coding'])
         self.assertIsNone(self.system.inspect(self.NIGHT))
         events = self.system.events
@@ -311,7 +292,7 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertLess(drain, stop); self.assertLess(stop, remove); self.assertLess(remove, load)
         self.assertEqual(self.ups(), [('coding',)])
         self.assertNotEqual(self.system.inspect('qwen38-daytime')['Id'], day)
-        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo'])
+        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo-tuned-mtp3'])
         self.assertEqual(events[-1], ('drain', False))
         tx = read(self.state / 'transaction.json')
         self.assertEqual((tx['phase'], tx['removed_backends']), ('succeeded', [self.NIGHT]))
@@ -327,20 +308,20 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertTrue(self.c.transition()['already_active'])
         # Moving between exclusive profiles has nothing to remove and never starts Nighttime.
         self.system.events.clear()
-        self.assertEqual(self.c.transition('daytime-flash-solo-tuned-mtp3')['changed_roles'], ['coding'])
+        self.assertEqual(self.c.transition('flash-next-solo-160k')['changed_roles'], ['coding'])
         self.assertFalse(any(e[0] == 'docker' and e[1][0] in ('stop', 'rm') for e in self.system.events))
         self.assertEqual(self.ups(), [('coding',)])
         self.assertIsNone(self.system.inspect(self.NIGHT))
 
     def test_switch_back_from_solo_starts_daytime_before_nighttime(self):
         original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
-        self.c.transition('daytime-flash-solo')
+        self.c.transition('flash-next-solo-128k')
         self.system.events.clear()
-        self.assertEqual(self.c.transition('daytime')['changed_roles'], ['coding', 'everyday'])
+        self.assertEqual(self.c.transition('qwen27b-q8-with-nighttime')['changed_roles'], ['coding', 'everyday'])
         self.assertEqual(self.ups(), [('coding',), ('everyday',)])
         self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
         self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
-        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27', 'qwen3.8-27b-abliterated-q6_k'])
+        self.assertEqual(self.published(), ['qwen3.8-27b-q8_0-tensor-next', 'qwen3.8-27b-abliterated-q6_k'])
         status = self.c.status()
         self.assertTrue(status['ready']); self.assertEqual(status['offline_roles'], [])
         self.assertEqual(status['services'][0]['gpu_names'], self.HOST['gpu_names']['daytime'])
@@ -348,12 +329,12 @@ class ExclusiveProfileTests(unittest.TestCase):
     def test_failed_solo_load_restores_nighttime_and_the_pair(self):
         day = self.system.inspect('qwen38-daytime')['Id']
         self.system.failed_ups = 1
-        with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('daytime-flash-solo')
+        with self.assertRaisesRegex(RuntimeError, 'Simulated load failure'): self.c.transition('flash-next-solo-128k')
         self.assertEqual(self.ups(), [('coding',), ('everyday',)])
         self.assertEqual(self.system.inspect('qwen38-daytime')['Id'], day)
         self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
         self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
-        self.assertEqual(self.c.desired()['profile'], 'daytime')
+        self.assertEqual(self.c.desired()['profile'], 'qwen27b-q8-with-nighttime')
         self.assertEqual(len(self.published()), 2)
         self.assertFalse(self.system.draining)
         self.assertTrue(self.c.status()['ready'])
@@ -361,7 +342,7 @@ class ExclusiveProfileTests(unittest.TestCase):
     def test_rejected_solo_restores_daytime_before_recreating_nighttime(self):
         original = self.system.inspect('qwen38-daytime')['Config']['Cmd']
         self.system.failed_generations = 1
-        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('daytime-flash-solo')
+        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('flash-next-solo-128k')
         self.assertEqual(self.ups(), [('coding',), ('coding',), ('everyday',)])
         self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], original)
         self.assertTrue(self.system.inspect(self.NIGHT)['State']['Running'])
@@ -369,19 +350,19 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertTrue(self.c.status()['ready'])
 
     def test_failed_return_to_the_pair_removes_new_nighttime_and_restores_solo(self):
-        self.c.transition('daytime-flash-solo')
+        self.c.transition('flash-next-solo-128k')
         solo = self.system.inspect('qwen38-daytime')['Config']['Cmd']
         self.system.events.clear(); self.system.failed_generations = 1
-        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('daytime')
+        with self.assertRaisesRegex(RuntimeError, 'Simulated acceptance failure'): self.c.transition('qwen27b-q8-with-nighttime')
         self.assertEqual(self.ups(), [('coding',), ('everyday',), ('coding',)])
         self.assertIsNone(self.system.inspect(self.NIGHT))
         self.assertEqual(self.system.inspect('qwen38-daytime')['Config']['Cmd'], solo)
         self.assertEqual(read(self.state / 'transaction.json')['phase'], 'recovered')
-        self.assertEqual(self.c.desired()['profile'], 'daytime-flash-solo')
-        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo'])
+        self.assertEqual(self.c.desired()['profile'], 'flash-next-solo-128k')
+        self.assertEqual(self.published(), ['qwen3.8-flash-next-ad4.27-solo-tuned-mtp3'])
 
     def test_two_slot_backend_is_verified_by_slot_count_and_per_slot_context(self):
-        self.c.transition('daytime-flash-solo-tuned-mtp3-2slot')
+        self.c.transition('flash-next-solo-two-requests')
         self.assertTrue(self.c.status()['ready'])
         bundle = self.c.desired(); name = 'qwen38-daytime'
         argv = self.system.containers[name]['Config']['Cmd']
@@ -389,8 +370,8 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertIn('slot context', self.c.observe(bundle)['coding']['differences'])
 
     def test_nighttime_beside_an_exclusive_profile_is_drift_and_is_removed(self):
-        pair = render(ROOT / 'config', self.HOST, 'daytime')
-        self.c.transition('daytime-flash-solo')
+        pair = render(ROOT / 'config', self.HOST, 'qwen27b-q8-with-nighttime')
+        self.c.transition('flash-next-solo-128k')
         solo = self.c.desired()
         self.system.install('everyday', pair['compose']['services']['everyday'])
         self.assertIn('competing Nighttime backend running', self.c.observe(solo)['coding']['differences'])
@@ -405,19 +386,25 @@ class ArtifactTests(unittest.TestCase):
     def test_each_pinned_engine_is_validated_before_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); atomic_json(root / 'host.json', HOST)
-            bundle = render(ROOT / 'config', HOST, 'daytime')
+            bundle = render(ROOT / 'config', HOST, 'qwen27b-q8-with-nighttime')
             bundle['artifacts'] = []
             for role in ('coding', 'everyday'):
                 with self.subTest(role=role):
                     system = FakeSystem(bundle)
                     system.engines = copy.deepcopy(system.engines)
-                    system.engines[service_engine(bundle, role)['tag']]['image_id'] = 'wrong-image'
+                    # The pair shares one engine image, so each role gets its own wrong-image copy of it.
+                    tag = service_engine(bundle, role)['tag']
+                    bundle_role = copy.deepcopy(bundle)
+                    other = [s for s in bundle_role['manifest']['services'] if s['role'] == role][0]
+                    other['engine'] = {**other['engine'], 'tag': tag + '-' + role}
+                    bundle_role['compose']['services'][role]['image'] = tag + '-' + role
+                    system.engines[tag + '-' + role] = {**system.engines[tag], 'image_id': 'wrong-image'}
                     c = Controller(ROOT / 'config', root, 'a' * 40, system)
                     with self.assertRaisesRegex(RuntimeError, role + ': pinned inference engine'):
-                        c.validate(bundle)
+                        c.validate(bundle_role)
 
     def test_previous_single_engine_manifest_remains_readable_for_recovery(self):
-        bundle = render(ROOT / 'config', HOST, 'daytime-27b')
+        bundle = render(ROOT / 'config', HOST, 'qwen27b-q6k-with-nighttime')
         engine = service_engine(bundle, 'coding')
         for service in bundle['manifest']['services']: service.pop('engine')
         bundle['manifest'].update(schema_version=1, engine=engine)
@@ -429,7 +416,7 @@ class ArtifactTests(unittest.TestCase):
             root = Path(tmp); model = root / 'model.gguf'; model.write_bytes(b'good')
             host = copy.deepcopy(HOST); host['model_root'] = str(root)
             atomic_json(root / 'host.json', host)
-            bundle = render(ROOT / 'config', host, 'daytime')
+            bundle = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')
             bundle['artifacts'] = [{'source': str(model), 'bytes': 4, 'sha256': hashlib.sha256(b'good').hexdigest()}]
             c = Controller(ROOT / 'config', root, 'a' * 40, FakeSystem(bundle))
             self.assertTrue(c.validate(bundle)['all_checksums_verified'])

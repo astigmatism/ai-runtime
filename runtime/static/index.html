@@ -20,10 +20,11 @@
     <p class="diagram-key"><span class="key-line"></span> Text model <span class="key-line vision"></span> Vision <span class="secondary">Health refers to model services</span></p>
   </section>
   <section id="configurations" class="switch-section" aria-labelledby="switch-title">
-    <h2 id="switch-title">Switch Daytime configuration</h2>
+    <h2 id="switch-title">Choose a configuration</h2>
+    <p class="secondary">Each configuration chooses the Daytime model and whether Nighttime runs beside it.</p>
     <form id="switch-form">
-      <fieldset id="profile-options" disabled><legend class="sr-only">Daytime configuration</legend><div id="config-list"></div></fieldset>
-      <p class="impact">Existing requests finish first. New requests pause for both models.<br>Nighttime stays loaded.</p>
+      <fieldset id="profile-options" disabled><legend class="sr-only">Configuration</legend><div id="config-list"></div></fieldset>
+      <p id="impact" class="impact"></p>
       <button id="apply" type="submit" disabled>Connecting…</button>
       <p id="switch-reason" class="secondary"></p>
     </form>

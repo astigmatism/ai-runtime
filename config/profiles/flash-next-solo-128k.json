@@ -1,7 +1,7 @@
 {
-  "id": "daytime-flash-solo-tuned",
+  "id": "flash-next-solo-128k",
   "role": "coding",
-  "display_name": "FlashNext Solo 4-GPU Tuned",
+  "display_name": "Qwen3.8 Flash-Next",
   "engine": "qwen38-dual-43fe9c6",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
@@ -69,7 +69,7 @@
   ],
   "arguments": {
     "--model": "/weights/Qwen3.8-Flash-Next-AD-4.27bpw-Q4_K_M-M64-00001-of-00033.gguf",
-    "--alias": "qwen3.8-flash-next-ad4.27-solo-tuned",
+    "--alias": "qwen3.8-flash-next-ad4.27-solo-tuned-mtp3",
     "--device": "CUDA1,CUDA2,CUDA3,CUDA0",
     "--lazy-mode": "off",
     "--threads": "1",
@@ -85,7 +85,7 @@
     ],
     "--spec-type": "draft-mtp",
     "--spec-draft-model": "/weights/mtp.gguf",
-    "--spec-draft-n-max": "2",
+    "--spec-draft-n-max": "3",
     "--spec-draft-ngl": "all",
     "--spec-draft-device": "CUDA4",
     "--spec-draft-type-k": "q8_0",
@@ -333,7 +333,7 @@
       "type": "draft-mtp",
       "revision": "052beeaca7bec4a303e59cc7bc630c4f3a1b845d",
       "quantization": "Q4_0",
-      "max_draft_tokens": 2,
+      "max_draft_tokens": 3,
       "gpu_layers": "all",
       "device": "CUDA4",
       "key_cache_type": "q8_0",
@@ -341,7 +341,7 @@
       "artifact_target": "/weights/mtp.gguf"
     },
     "capability_profile": {
-      "name": "qwen38-flash-next-ad427-solo-tuned-128k",
+      "name": "qwen38-flash-next-ad427-solo-tuned-mtp3-128k",
       "text": true,
       "streaming": true,
       "vision": true,

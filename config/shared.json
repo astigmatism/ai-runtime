@@ -26,16 +26,6 @@
       ],
       "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
       "runtime_base_digest": "sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867"
-    },
-    "flash-next-mtp": {
-      "repository": "https://github.com/ggml-org/llama.cpp.git",
-      "revision": "d1a92352cbd417fd840b4e765c0b82f5fe3d1d89",
-      "image_id": "sha256:eef9b614dd6e715ecada157b2d1b1c4cc76cbd0a2bf4f17361294e070d1449ad",
-      "cuda_architectures": [
-        "86",
-        "89"
-      ],
-      "tag": "local/llama.cpp:flash-next-mtp-d1a92352c-86-89"
     }
   },
   "container_defaults": {
