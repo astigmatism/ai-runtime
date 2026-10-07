@@ -179,6 +179,10 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
   | 155K | 34.5 | 942 (165 s cold) |
 
 - **128K headroom check:** `-tuned-mtp3` completed a cold 130K prefill without errors.
+- **Routed two-slot acceptance** (LLM Router `a2f3406`, 2026-10-07), with no backend restart:
+  - Discovery advertised `active_request_limit: 2` at 131,072 tokens each. Three short requests ran two at a time, and the third queued.
+  - Two concurrent 60K cold prompts both completed (141 s for both).
+  - A 120K prompt alongside a 32K prompt both completed. Free VRAM afterwards was at least 0.8 GiB on each text GPU.
 
 ## Recover an interrupted update
 
