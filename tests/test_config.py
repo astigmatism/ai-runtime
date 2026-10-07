@@ -334,8 +334,8 @@ class ConfigurationTests(unittest.TestCase):
         # Two 128K slots: the KV pool is sized for both, each request still sees 128K.
         self.assertEqual([argv[argv.index(f) + 1] for f in ('--parallel', '--ctx-size', '--kv-unified-per-slot')], ['2', '262144', '131072'])
         model = bundle['catalog']['models'][0]
-        self.assertEqual((model['context_length'], model['total_context_length'], model['max_active_requests'],
-            model['backend_parallel_slots']), (131072, 131072, 1, 2))
+        # LLM Router (a2f3406 and later) admits two overlapping requests; each slot has the full window.
+        self.assertEqual((model['context_length'], model['total_context_length'], model['max_active_requests']), (131072, 262144, 2))
         self.assertEqual(bundle['manifest']['services'][0]['parallel_slots'], 2)
         wide = read(ROOT / 'config/profiles/daytime-flash-solo-tuned-mtp3-160k.json')
         # F16 K/V at 160K left the RTX 4080 without room for the indexer top-k scratch and aborted a prefill.

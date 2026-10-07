@@ -154,7 +154,7 @@ Host CPU use (2026-10-06): the first tuned profiles kept the shared `--threads 1
 
 Concurrency and context experiments:
 - **Two slots.** A profile may set `"parallel_slots": 2`, and only exclusive profiles may. The renderer then passes `--parallel 2`, sizes `--ctx-size` for both slots, and keeps `--kv-unified-per-slot` and the catalog `context_length` at the per-request window. The controller verifies the slot count and each slot's context.
-- **The router still admits one request.** The catalog keeps `max_active_requests: 1` (LLM Router accepts only one active request per resident model) and records `backend_parallel_slots`. Until the router contract changes, the second slot can be measured only directly on the backend.
+- **Router admission follows the slots.** The catalog publishes `max_active_requests` as the slot count and `total_context_length` as the window times the slots. LLM Router `a2f3406` and later admits two overlapping requests for such a resident and queues the next. An older router rejects a two-slot catalog, and the switch then recovers to the previous profile.
 - **`daytime-flash-solo-tuned-mtp3-2slot`:** two 128K slots with q8_0 K/V, so the pool uses the same KV memory as one F16 slot, and a 512 microbatch. At microbatch 1024, a cold 32K prefill in one slot while the other decoded hit the same RTX 4080 `top_k` out-of-memory abort as F16 at 160K.
 - **`daytime-flash-solo-tuned-mtp3-160k`:** the tuned profile with a 160K window and q8_0 K/V. With F16 K/V at 160K, the RTX 4080 kept about 0.8 GiB free, and a cold 32K–98K prefill aborted the backend. The CUDA out-of-memory error (`cuMemCreate`) came from the VMM pool in `top_k` (CUB argsort) for the sparse-attention indexer, scratch that the compute-buffer reservation does not include. Docker restarted the container, and no other backend was affected.
 
@@ -168,7 +168,6 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
 
 - **Why the second request is not free.** The low GPU utilization does not translate into a free second stream. Every step carries both sequences' MTP verification batches through the same four-stage layer pipeline and the per-sequence draft passes, so each request runs at about 55% of its solo speed and median prompt time rises 25–45%.
 - **Prefill blocks the other slot.** A cold 32K prefill in one slot (37 s at 892 tokens per second) held the other slot to about 2 streamed tokens per second for its duration, with gaps of up to 2.5 s.
-- **Two slots are not routable yet.** LLM Router admits one request per resident model, so routing two requests also needs a router contract and release change.
 - **160K window (q8_0 K/V), no cost from the allocation itself.** Replay decode was 88.5 tokens per second, and prefill was 1236 / 1128 / 1030 tokens per second at 8K / 32K / 98K, matching the 128K F16 profile within its noise.
 - **The cost of long context comes from using it,** with either window:
 

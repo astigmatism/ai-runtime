@@ -354,7 +354,7 @@
     },
     "deployment_warnings": [
       "Exclusive profile: Nighttime is stopped and removed while this profile is active; requests for it fail until a paired Daytime profile is selected.",
-      "Two backend slots of 128K each with q8_0 K/V and a 512 microbatch. At microbatch 1024, a cold 32K prefill in one slot while the other decoded ran the RTX 4080 out of memory in the indexer top-k scratch. LLM Router still admits one request at a time; the second slot is reachable only directly on the backend for measurement until the router contract allows two.",
+      "Two backend slots of 128K each with q8_0 K/V and a 512 microbatch; LLM Router admits two overlapping requests. While both run, each is roughly half its solo speed, and a long cold prompt in one slot nearly stalls the other. At microbatch 1024, a cold 32K prefill beside a decode ran the RTX 4080 out of memory in the indexer top-k scratch.",
       "128K is the total prompt, history, reasoning, and output capacity."
     ],
     "aliases": [

@@ -276,10 +276,9 @@ def render(config_dir, host, profile):
                 'Split model is missing a declared shard mount')
         compose['services'][role] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
-        entry.update(model=options['--alias'], context_length=ctx, total_context_length=ctx,
-            # LLM Router admits one active request per resident model; a second backend slot is not
-            # routed until the router contract allows it.
-            max_active_requests=1, gpu_uuids=devices,
+        # LLM Router admits max_active_requests overlapping requests; every slot has the full window.
+        entry.update(model=options['--alias'], context_length=ctx, total_context_length=ctx * slots,
+            max_active_requests=slots, gpu_uuids=devices,
             model_path=targets[options['--model']], mmproj_path=targets[options['--mmproj']],
             backend_revision=engine['revision'], fit_target=options['--fit'],
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
@@ -292,8 +291,6 @@ def render(config_dir, host, profile):
                 vision_gpu_shared=not exclusive, cuda_visible_devices=cuda_order)
         if exclusive:
             entry['exclusive'] = True
-        if slots > 1:
-            entry['backend_parallel_slots'] = slots
         if entry['mtp'].get('enabled'):
             target = entry['mtp'].pop('artifact_target')
             require(target == options['--spec-draft-model'] and target in targets,
