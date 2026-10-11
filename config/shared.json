@@ -26,6 +26,56 @@
       ],
       "build_base_digest": "sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66",
       "runtime_base_digest": "sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867"
+    },
+    "strata-7695859aa13a": {
+      "image_id": "sha256:8d852ef69ad61cd8a173483cd2c1992d2e4d0de3eb7fe550d041b5cb198fee29",
+      "tag": "local/strata:7695859aa13a",
+      "revision": "7695859aa13afb248bdb4d36f9b2e95707db079d",
+      "release": "v0.1.43",
+      "repository": "https://github.com/Niko1221/Strata",
+      "cuda_architectures": [
+        "86",
+        "89"
+      ],
+      "build_base_digest": "sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
+      "runtime_base_digest": "sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
+      "interface": "environment",
+      "readiness_wait_seconds": 3600,
+      "environment": {
+        "--family": "FAMILY",
+        "--quant": "MODEL",
+        "--kv": "KV",
+        "--kv-streaming": "KV_STREAMING",
+        "--vision": "VISION",
+        "--gpus": "GPUS",
+        "--layer-split": "LAYER_SPLIT",
+        "--low-ram": "LOW_RAM",
+        "--host": "HOST",
+        "--port": "PORT"
+      },
+      "model_directory": "GGUF_DIR",
+      "context_environment": "CONTEXT",
+      "container_defaults": {
+        "entrypoint": [
+          "./docker-entrypoint.sh"
+        ],
+        "read_only": false,
+        "ulimits": {
+          "core": 0
+        },
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:8080/health"
+          ],
+          "interval": "30s",
+          "timeout": "5s",
+          "retries": 8,
+          "start_period": "3600s"
+        }
+      }
     }
   },
   "container_defaults": {

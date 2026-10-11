@@ -98,8 +98,9 @@ class RecoveryTests(unittest.TestCase):
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
-        self.assertEqual(len(artifacts), 41)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 177631005088)
+        # The Strata trial adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all.
+        self.assertEqual(len(artifacts), 44)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 271313589312)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

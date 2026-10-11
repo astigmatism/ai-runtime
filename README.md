@@ -21,6 +21,7 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
 | `qwen27b-q6k-with-nighttime` | Qwen3.8 27B Unsloth UD-Q6_K_XL, otherwise as above, 160K | Same Nighttime | Same |
 | `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
 | `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
+| `flash-next-strata-160k` | **Trial:** the same window on the same cards, served by Strata `v0.1.43` from Unsloth UD-IQ4_XS (4-bit, 94 GB), text only | Off | The four text GPUs; the RTX 3080 is not in the container |
 
 Nighttime has run MTP3 since 2026-10-07, using the base 27B MTP head on the shared RTX 3080.
 - **Speed:** a 16K planning prompt decoded at 65.7 tokens per second, against 37.8 without a draft.
@@ -33,6 +34,7 @@ See [speculative decoding experiments](docs/deployment.md#speculative-decoding-e
 `qwen27b-q8-with-nighttime` is the default when a host has no recorded release. Nighttime's RAM prompt cache is capped at 24 GiB; Daytime uses the shared 48 GiB. `primary` means the selected configuration; it is not a clock-based schedule.
 - **27B configurations:** each was benchmarked on a full Bench Studio coding session (2/2 passed), at about 26.1 (Q8) and 27.0 (Q6_K) steps per second.
 - **Flash-Next solo configurations:** the whole model stays in VRAM on all four text GPUs. On a fixed session replay, `flash-next-solo-128k` decodes at about 94 tokens per second. Decode slows as a conversation's context fills, in every configuration: about 56 tokens per second at 64K and 36 at 120K.
+- **The Strata trial:** `flash-next-strata-160k` is selectable by name only and carries no aliases, so nothing routes to it unless the exact model name is asked for; it is the one backend that is not llama.cpp, and it is configured by the environment instead of an argument vector. Selecting it, and switching back, are the owner's acts. See [deployment](docs/deployment.md#strata-trial-profile-flash-next-strata-160k).
 - **Selecting a solo configuration:** it drains both models, stops and removes Nighttime, and publishes a one-model catalog. Requests for Nighttime fail until a configuration with Nighttime is selected again. See [deployment](docs/deployment.md#exclusive-flash-next-solo-profiles) for placement, measurements, and recovery.
 - **Consolidation (2026-10-07):** the configurations were renamed and the superseded ones retired. Each kept configuration launches the same backend and model alias as before, so its Bench Studio history continues:
 

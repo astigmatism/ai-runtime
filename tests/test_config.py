@@ -5,8 +5,8 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, NIGHTTIME_PROFILES, available_profiles, digest, read,
-    render, service_engine)
+from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, NIGHTTIME_PROFILES, available_profiles, digest,
+    engine_interface, read, render, service_engine)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -15,6 +15,15 @@ VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 # profile is paired with the unchanged Nighttime backend.
 EXCLUSIVE = tuple(n for n in DAYTIME_PROFILES if read(ROOT / 'config/profiles' / (n + '.json')).get('exclusive'))
 PAIRED = tuple(n for n in DAYTIME_PROFILES if n not in EXCLUSIVE)
+ENGINES = read(ROOT / 'config/shared.json')['engines']
+# The one profile that is not llama.cpp. Its engine is configured by the environment, so the
+# catalog fields that describe a flag the engine was handed (KV types, --fit, the host-RAM prompt
+# cache budget) are not published for it, and it carries no aliases.
+TRIAL = 'flash-next-strata-160k'
+
+
+def interface_of(profile):
+    return engine_interface(ENGINES[read(ROOT / 'config/profiles' / (profile + '.json'))['engine']])
 
 
 def vision_host(host=None):
@@ -272,7 +281,8 @@ class ConfigurationTests(unittest.TestCase):
         night = read(ROOT / 'config/profiles' / (NIGHTTIME_PROFILE + '.json'))
         self.assertEqual(night['arguments']['--cache-ram'], '24576')
         self.assertIn('--cache-ram', night['argument_order'])
-        for name in DAYTIME_PROFILES:
+        # Only the flag-configured engines are given a cache budget at all, so only they publish one.
+        for name in [n for n in DAYTIME_PROFILES if interface_of(n) == 'argv']:
             with self.subTest(profile=name):
                 rendered = render(ROOT / 'config', host_for(name), name)
                 self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
@@ -284,11 +294,12 @@ class ConfigurationTests(unittest.TestCase):
                     self.assertEqual(argv.count('--cache-ram'), 1)
                     self.assertEqual(argv[argv.index('--cache-ram') + 1], expected)
 
-    def test_every_backend_uses_one_of_two_pinned_engines(self):
+    def test_every_backend_uses_one_of_the_pinned_engines(self):
         engines = read(ROOT / 'config/shared.json')['engines']
         # The Flash-Next branch engine retired with the paired Flash-Next profiles; the 27B pair and
-        # Nighttime use 836d571, and the Flash-Next solo profiles use 43fe9c6.
-        self.assertEqual(set(engines), {'qwen38-dual-836d571', 'qwen38-dual-43fe9c6'})
+        # Nighttime use 836d571, the Flash-Next solo profiles use 43fe9c6, and the Strata trial is the
+        # only non-llama.cpp engine in the house.
+        self.assertEqual(set(engines), {'qwen38-dual-836d571', 'qwen38-dual-43fe9c6', 'strata-7695859aa13a'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
@@ -297,6 +308,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
+            'flash-next-strata-160k': 'strata-7695859aa13a',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -366,7 +378,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k'))
+            'flash-next-solo-160k', 'flash-next-strata-160k'))
         self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         # Every Nighttime variant a configuration names is listed, the default first.
@@ -511,3 +523,75 @@ class RegistryTests(unittest.TestCase):
             with self.subTest(profile=name):
                 with self.assertRaisesRegex(RuntimeError, expected):
                     self.registry_with(name, mutate)
+
+
+class EnvironmentEngineTests(unittest.TestCase):
+    """The trial engine is configured by the environment instead of an argument vector."""
+
+    def bundle(self):
+        return render(ROOT / 'config', host_for(TRIAL), TRIAL)
+
+    def test_every_argument_is_either_an_environment_variable_or_house_metadata(self):
+        definition = read(ROOT / 'config/profiles' / (TRIAL + '.json'))
+        engine = ENGINES[definition['engine']]
+        self.assertEqual(engine_interface(engine), 'environment')
+        for key in definition['argument_order']:
+            with self.subTest(argument=key):
+                if key in ('--alias', '--model'):
+                    self.assertNotIn(key, engine['environment'])
+                else:
+                    self.assertIn(key, engine['environment'])
+
+    def test_the_service_is_rendered_from_its_own_arguments_and_mounts(self):
+        definition = read(ROOT / 'config/profiles' / (TRIAL + '.json'))
+        service = self.bundle()['compose']['services']['coding']
+        self.assertEqual(service['command'], [])
+        self.assertEqual(service['entrypoint'], ['./docker-entrypoint.sh'])
+        self.assertIs(service['read_only'], False)
+        environment = service['environment']
+        for key, variable in ENGINES[definition['engine']]['environment'].items():
+            with self.subTest(argument=key):
+                self.assertEqual(environment[variable], str(definition['arguments'][key]))
+        # The folder the engine reads is the folder the shards are mounted in, and the window is the
+        # profile's context: neither is a value a profile could quietly disagree with.
+        self.assertEqual(environment['GGUF_DIR'], str(Path(definition['arguments']['--model']).parent))
+        self.assertEqual(environment['CONTEXT'], str(definition['context_tokens']))
+        self.assertEqual(environment['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
+        self.assertEqual(service['ulimits']['memlock'], -1)
+        # Only the engine's own workspace is writable; every model file stays a read-only bind.
+        writable = [x['target'] for x in service['volumes'] if not x['read_only']]
+        self.assertEqual(writable, ['/data'])
+        self.assertEqual([x['target'] for x in service['volumes'] if x['read_only']],
+            [x['target'] for x in definition['artifacts']])
+
+    def test_the_trial_is_published_without_aliases_or_llama_cpp_only_claims(self):
+        bundle = self.bundle()
+        entry = bundle['catalog']['models'][0]
+        definition = read(ROOT / 'config/profiles' / (TRIAL + '.json'))
+        self.assertEqual(entry['model'], definition['arguments']['--alias'])
+        self.assertEqual(entry['aliases'], [])
+        self.assertEqual(entry['context_length'], definition['context_tokens'])
+        self.assertEqual(entry['total_context_length'], definition['context_tokens'])
+        self.assertEqual(entry['input_modalities'], ['text'])
+        self.assertIs(entry['capability_profile']['vision'], False)
+        self.assertIs(entry['capability_profile']['nsfw'], False)
+        # The house contract still holds: no server-side output ceiling, and the full window.
+        self.assertEqual(entry['output_policy'], 'unrestricted')
+        # Nothing is claimed about caches and projectors this engine was never given.
+        for field in ('kv_cache', 'fit_target', 'global_ram_prompt_cache_mib', 'mmproj_path', 'vision_gpu_uuid'):
+            with self.subTest(field=field):
+                self.assertNotIn(field, entry)
+        # The RTX 3080 stays out of the container entirely.
+        self.assertNotIn(VISION, entry['gpu_uuids'])
+        self.assertEqual(len(entry['gpu_uuids']), 4)
+        self.assertTrue(any('not been attested' in warning for warning in entry['deployment_warnings']))
+
+    def test_the_engine_identity_is_pinned(self):
+        engine = ENGINES[read(ROOT / 'config/profiles' / (TRIAL + '.json'))['engine']]
+        self.assertEqual(engine['revision'], '7695859aa13afb248bdb4d36f9b2e95707db079d')
+        self.assertEqual(engine['tag'], 'local/strata:7695859aa13a')
+        self.assertEqual(engine['release'], 'v0.1.43')
+        self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
+        self.assertEqual(engine['cuda_architectures'], ['86', '89'])
+        self.assertEqual(engine['interface'], 'environment')
+        self.assertGreater(engine['readiness_wait_seconds'], 450)

@@ -7,8 +7,10 @@ from pathlib import Path
 
 # Selectable configurations. Paired profiles run on the Daytime pair beside Nighttime; exclusive
 # (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
+# The Strata entry is a trial: it is selectable by name only and carries no aliases, so selecting
+# something else never routes to it and it never shadows the active profile.
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-    'flash-next-solo-160k')
+    'flash-next-solo-160k', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'
@@ -172,6 +174,123 @@ def exclusive_devices(host, options, text):
     return [*text, vision], vision_cuda
 
 
+def engine_interface(engine):
+    """How a backend takes its configuration: the llama.cpp argument vector, or a declared
+    environment.
+
+    Every engine in this house so far is llama.cpp: it is configured by a long argv, its shared
+    argument vocabulary in shared.json, and a fixed set of flags the controller and the router
+    policy read out of it. An engine that configures itself from the environment (Strata's
+    container entrypoint reads env variables and writes its own config file) declares
+    "interface": "environment" plus the argument-to-variable map, and is then rendered from its
+    own profile arguments alone: the llama.cpp vocabulary does not apply to it, and neither do the
+    llama.cpp-only catalog fields the controller used to insist on. The llama.cpp path is
+    untouched by this: an engine without an interface is rendered exactly as before.
+    """
+    interface = engine.get('interface', 'argv')
+    require(interface in ('argv', 'environment'), 'Unknown engine interface: ' + str(interface))
+    if interface == 'environment':
+        require(isinstance(engine.get('environment'), dict) and engine['environment'],
+            'An environment-configured engine must map its arguments to environment variables')
+    return interface
+
+
+def environment_service(name, definition, engine, shared, host, root, ctx, slots, exclusive):
+    """One service, its catalog entry, and its mounts for an engine configured from the environment.
+
+    The profile still states its settings in the house's "--flag value" form, so a profile reads the
+    same whichever engine it selects and the same validation applies; the engine entry says which
+    variable each flag becomes. Only flags the engine maps reach the container, and a mapped flag
+    whose value the renderer cannot state as a string is a refusal rather than a silent drop.
+    """
+    options = dict(definition['arguments'])
+    order = list(definition['argument_order'])
+    require(len(order) == len(set(order)) and set(order) == set(options),
+        name + ': argument_order must contain every effective argument exactly once')
+    environment = {}
+    model_argument = engine.get('model_argument', '--model')
+    for key in order:
+        value = options[key]
+        require(isinstance(value, (str, int, float)) or value is True, name + ': invalid engine argument ' + key)
+        variable = engine['environment'].get(key)
+        if variable is None:
+            # Two arguments are not settings the engine is told about directly: --alias is this
+            # house's discovery name, and the model path becomes a variable only as the folder
+            # derived from it, so a mount and an engine setting cannot disagree about which
+            # revision is being served.
+            require(key in ('--alias', model_argument), name + ': argument ' + key +
+                ' has no environment variable in engine ' + definition['engine'])
+            continue
+        require(variable not in environment, name + ': two arguments map to ' + variable)
+        environment[variable] = '' if value is True else str(value)
+    model_target = options[model_argument]
+    require(model_target in [a['target'] for a in definition['artifacts']],
+        name + ': the model argument must reference a declared artifact mount')
+    split_model = re.fullmatch(r'(.+)-(\d{5})-of-(\d{5})\.gguf', model_target.rsplit('/', 1)[-1])
+    require(split_model is not None, name + ': an environment-configured model must be a GGUF shard set')
+    prefix, first, total = split_model.groups()
+    require(int(first) == 1 and 0 < int(total) <= 99999, 'Split model must start at shard one')
+    require(all(f'{prefix}-{i:05d}-of-{total}.gguf' in
+        [a['target'].rsplit('/', 1)[-1] for a in definition['artifacts']] for i in range(1, int(total) + 1)),
+        'Split model is missing a declared shard mount')
+    # Where the engine looks for GGUF files it already has: the folder holding the shards. It is
+    # derived from the model path instead of being written twice, so the mount and the engine can
+    # not disagree about which revision is being served.
+    if engine.get('model_directory'):
+        environment[engine['model_directory']] = model_target.rsplit('/', 1)[0]
+    if engine.get('context_environment'):
+        environment[engine['context_environment']] = str(ctx * slots)
+    text_devices = text_gpus(host, definition)
+    mounts, targets = [], {}
+    for artifact in definition['artifacts']:
+        relative = Path(artifact['path'])
+        require(not relative.is_absolute() and '..' not in relative.parts, 'Artifact path escapes model root')
+        require(len(artifact['sha256']) == 64 and all(c in '0123456789abcdef' for c in artifact['sha256']),
+            'Invalid artifact SHA-256')
+        source = str(root / relative)
+        require(artifact['target'] not in targets, 'Duplicate artifact mount')
+        targets[artifact['target']] = source
+        mounts.append({'type': 'bind', 'source': source, 'target': artifact['target'],
+            'read_only': True, 'bind': {'create_host_path': False}})
+    workspace = definition.get('workspace')
+    if workspace:
+        relative = Path(workspace['path'])
+        require(not relative.is_absolute() and '..' not in relative.parts and relative.parts,
+            'Workspace path escapes model root')
+        require(workspace['target'].startswith('/') and workspace['target'] != '/',
+            'Workspace mount target must be an absolute path')
+        mounts.append({'type': 'bind', 'source': str(root / relative), 'target': workspace['target'],
+            'read_only': False, 'bind': {'create_host_path': False}})
+    cfg = copy.deepcopy(engine.get('container_defaults', {}))
+    cfg.update(copy.deepcopy(definition['container']))
+    # What the profile states about the environment comes first: the engine's own settings are the
+    # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
+    environment = {**cfg.get('environment', {}), **environment}
+    cfg.update(image=engine['tag'], container_name=definition['container_name'], command=[],
+        environment=environment,
+        user=f"{host['uid']}:{host['gid']}", volumes=mounts,
+        ports=[f"127.0.0.1:{definition['host_port']}:8080"],
+        deploy={'resources': {'reservations': {'devices': [{
+            'driver': 'nvidia', 'device_ids': text_devices, 'capabilities': ['gpu']}]}}})
+    require(cfg.get('read_only') is False,
+        name + ': an environment-configured engine writes its own configuration and needs a writable root')
+    require(cfg.get('environment', {}).get('CUDA_VISIBLE_DEVICES'),
+        name + ': the container-visible GPU list must be stated, since the engine numbers cards itself')
+    entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
+    # Same rule as the llama.cpp path: the router never infers this from a model name.
+    require(type(entry['capability_profile'].get('nsfw')) is bool,
+        name + ': capability_profile.nsfw must be declared true or false')
+    entry.update(model=options['--alias'], context_length=ctx,
+        total_context_length=ctx * slots, max_active_requests=slots, gpu_uuids=text_devices,
+        model_path=targets[model_target], backend_revision=engine['revision'],
+        display_name=display_name(definition), gpu_names=gpu_names(host, definition),
+        source='local-ai-runtime', updated_at=None)
+    if exclusive:
+        entry['exclusive'] = True
+    require_open_generation_policy(name, entry)
+    return cfg, entry, mounts, targets, text_devices
+
+
 def profile_summary(config_dir, name, shared, host=None):
     """Public facts about one profile, derived without Docker, network, or artifact I/O.
 
@@ -182,10 +301,13 @@ def profile_summary(config_dir, name, shared, host=None):
     definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
     require(definition.get('id') == name, name + ': profile file id differs from its filename')
     require(definition['engine'] in shared['engines'], name + ': unknown engine ' + str(definition['engine']))
+    engine = shared['engines'][definition['engine']]
     tokens = definition['context_tokens']
     require_router_context(tokens)
-    options = {**shared['arguments'], **definition['arguments']}
-    engine = shared['engines'][definition['engine']]
+    # The shared llama.cpp vocabulary says nothing about an engine that configures itself from the
+    # environment, so it is only merged for the engines that actually receive it.
+    options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
+        else dict(definition['arguments'])
     return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
@@ -219,6 +341,22 @@ def offline_services(config_dir, shared, host, exclusive):
         'display_name': summary['display_name'], 'role': night['role'], 'reason': 'exclusive_configuration'}]
 
 
+def require_open_generation_policy(name, entry):
+    """The router contract every served model is published under, whichever engine serves it.
+
+    No server-side output ceiling and no reasoning budget: the controller verifies the live
+    backend really runs unbounded, and the router refuses a catalog that narrows either. It reads
+    only published catalog fields, so it holds for an engine that is not llama.cpp too.
+    """
+    require(entry['output_policy'] == 'unrestricted' and entry['default_output_tokens'] is None
+        and entry['max_output_tokens'] is None and entry['server_default_output_tokens'] == -1,
+        'Catalog must preserve unrestricted output policy')
+    require(entry['reasoning_policy']['default_level'] == 'default' and all(
+        level.get('default_output_tokens') is None and level.get('max_output_tokens') is None
+        and (not level['enabled'] or level['reasoning_budget_tokens'] == -1)
+        for level in entry['reasoning_policy']['levels'].values()), 'Catalog reasoning policy differs')
+
+
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
     require(profile in DAYTIME_PROFILES, 'Unknown or retired daytime profile')
@@ -240,6 +378,27 @@ def render(config_dir, host, profile):
         ctx = definition['context_tokens']
         require_router_context(ctx)
         slots = parallel_slots(definition)
+        if engine_interface(engine) == 'environment':
+            # A non-llama.cpp backend is rendered from its own profile arguments and the engine's
+            # variable map: nothing in the llama.cpp vocabulary, its artifact-only mount list, or its
+            # per-slot KV flags applies to it, and pretending otherwise would silently drop settings
+            # the engine needs. Everything the router and the controller still have to agree on —
+            # image identity, mounts, ports, the GPU reservation, the discovery entry — is stated here
+            # in the same shape as the llama.cpp path.
+            cfg, entry, mounts, targets, devices = environment_service(name, definition, engine, shared,
+                host, root, ctx, slots, exclusive_profile)
+            for artifact in definition['artifacts']:
+                source = str(root / Path(artifact['path']))
+                artifacts[source] = {**artifact, 'source': source}
+            gpu_ids.extend(devices)
+            compose['services'][role] = cfg
+            models.append(entry)
+            manifests.append({'role': role, 'container_name': cfg['container_name'],
+                'engine': copy.deepcopy(engine), 'model_alias': entry['model'], 'context_tokens': ctx,
+                'parallel_slots': slots, 'display_name': entry['display_name'],
+                'recommended_argv': [], 'recommended_environment': dict(cfg['environment']),
+                'gpu_device_ids': devices, 'mounts': mounts})
+            continue
         options = {**shared['arguments'], **definition['arguments']}
         require(options.get('--parallel') == '1', name + ': unsupported policy change: --parallel')
         # context_tokens is the per-request (per-slot) window; separate KV per slot sums to the total.
@@ -351,13 +510,7 @@ def render(config_dir, host, profile):
             entry['mtp'].update(max_draft_tokens=int(options['--spec-draft-n-max']),
                 gpu_layers=options['--spec-draft-ngl'], device=options['--spec-draft-device'],
                 key_cache_type=options['--spec-draft-type-k'], value_cache_type=options['--spec-draft-type-v'])
-        require(entry['output_policy'] == 'unrestricted' and entry['default_output_tokens'] is None
-            and entry['max_output_tokens'] is None and entry['server_default_output_tokens'] == -1,
-            'Catalog must preserve unrestricted output policy')
-        require(entry['reasoning_policy']['default_level'] == 'default' and all(
-            level.get('default_output_tokens') is None and level.get('max_output_tokens') is None
-            and (not level['enabled'] or level['reasoning_budget_tokens'] == -1)
-            for level in entry['reasoning_policy']['levels'].values()), 'Catalog reasoning policy differs')
+        require_open_generation_policy(name, entry)
         models.append(entry)
         manifests.append({'role': role, 'container_name': cfg['container_name'],
             'engine': copy.deepcopy(engine),

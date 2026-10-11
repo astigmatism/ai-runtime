@@ -134,7 +134,7 @@ class Controller:
                 restart_count=ci['RestartCount'], image_id=ci['Image'])
             for valid, reason in [
                 (ci['Image'] == engine['image_id'], 'image'),
-                (ci['Config']['Cmd'] == cfg['command'], 'arguments'),
+                ((ci['Config']['Cmd'] or []) == (cfg.get('command') or []), 'arguments'),
                 (ci['Config']['Entrypoint'] == cfg['entrypoint'], 'entrypoint'),
                 (ci['Config']['User'] == cfg['user'], 'user'),
                 (ci['HostConfig']['ReadonlyRootfs'] == cfg['read_only'], 'read-only root'),
@@ -155,7 +155,7 @@ class Controller:
                     or requests[0].get('Count') != 0 or requests[0].get('Capabilities') != [['gpu']]):
                 reasons.append('GPU reservation contract')
             mounts = {(x['Source'], x['Destination'], x['RW']) for x in ci['Mounts'] if x['Type'] == 'bind'}
-            if mounts != {(x['source'], x['target'], False) for x in cfg['volumes']}:
+            if mounts != {(x['source'], x['target'], not x.get('read_only', True)) for x in cfg['volumes']}:
                 reasons.append('model mounts')
             host_port = cfg['ports'][0].split(':')[1]
             if ci['HostConfig']['PortBindings'] != {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': host_port}]}:
@@ -167,9 +167,15 @@ class Controller:
                 try:
                     health = self.system.http(self.backend_url(cfg) + '/health', timeout=3)
                     slots = self.system.http(self.backend_url(cfg) + '/slots', timeout=3)
-                    argv = cfg['command']
-                    expected_ctx = int(argv[argv.index('--kv-unified-per-slot') + 1])
-                    expected_slots = int(argv[argv.index('--parallel') + 1])
+                    service = next(x for x in bundle['manifest']['services'] if x['role'] == role)
+                    if engine.get('interface') == 'environment':
+                        # Both /health and /slots answer in llama.cpp's shape, but there is no argument
+                        # vector to read the window from: the published configuration is the reference.
+                        expected_ctx, expected_slots = service['context_tokens'], service['parallel_slots']
+                    else:
+                        argv = cfg['command']
+                        expected_ctx = int(argv[argv.index('--kv-unified-per-slot') + 1])
+                        expected_slots = int(argv[argv.index('--parallel') + 1])
                     if len(slots) != expected_slots or any(s['n_ctx'] != expected_ctx for s in slots):
                         reasons.append('slot context')
                     result['healthy'] = health.get('status') == 'ok' and not reasons
@@ -236,9 +242,14 @@ class Controller:
             path = self.compose_path(bundle)
             batches = [[role] for role in sorted(roles, key=lambda role: role != 'coding')] if sequential else [roles]
             for batch in batches:
+                # Engines that prepare their own state before they answer the first health check
+                # (Strata builds its expert pack and installs its draft layer on a fresh workspace)
+                # name their own bounded readiness window; everything else keeps the usual one.
+                wait = max([service_engine(bundle, role).get('readiness_wait_seconds', 450)
+                    for role in batch])
                 self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path),
-                    'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', '450', *batch,
-                    timeout=510)
+                    'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', str(wait), *batch,
+                    timeout=wait + 60)
         observed = self.observe(bundle)
         require(all(s['healthy'] for s in observed.values()), 'Backend identity/readiness verification failed')
         return observed
@@ -246,6 +257,18 @@ class Controller:
     def acceptance(self, bundle, roles):
         for role in roles:
             cfg = bundle['compose']['services'][role]
+            if service_engine(bundle, role).get('interface') == 'environment':
+                # The native /completion probe belongs to llama.cpp; the same bounded-generation check
+                # runs against the OpenAI chat dialect every engine in this house has to serve. A
+                # reasoning model may spend its whole budget on thinking, so either channel counts.
+                answer = self.system.http(self.backend_url(cfg) + '/v1/chat/completions', {
+                    'messages': [{'role': 'user', 'content': 'Complete the word: O'}],
+                    'max_tokens': 8, 'temperature': 0, 'stream': False}, timeout=120)
+                choices = answer.get('choices') or []
+                message = (choices[0].get('message') or {}) if choices else {}
+                said = ' '.join(message.get(key) or '' for key in ('content', 'reasoning_content')).strip()
+                require(bool(said), 'Bounded generation acceptance failed for ' + role)
+                continue
             answer = self.system.http(self.backend_url(cfg) + '/completion', {
                 'prompt': 'Complete the word: O', 'n_predict': 8, 'temperature': 0,
                 'stream': False, 'cache_prompt': False}, timeout=90)
@@ -261,6 +284,14 @@ class Controller:
             service = next(x for x in bundle['manifest']['services'] if x['model_alias'] == entry['model'])
             ci = self.system.inspect(service['container_name'])
             entry['updated_at'] = now()
+            if service_engine(bundle, service['role']).get('interface') == 'environment':
+                # No argument vector to read an output ceiling from: this engine has none, and what
+                # was inspected is its environment, so the record says so instead of naming argv.
+                entry['runtime_output_policy'] = {'verification': 'docker-inspect-env',
+                    'engine_sets_no_output_ceiling': True, 'verified_at': now(), 'container_id': ci['Id'],
+                    'started_at': ci['State']['StartedAt'],
+                    'env_sha256': hashlib.sha256(json.dumps(sorted(ci['Config'].get('Env') or [])).encode()).hexdigest()}
+                continue
             entry['runtime_output_policy'] = {'n_predict': -1, 'reasoning_budget': -1,
                 'reasoning_effort': 'default', 'verification': 'docker-inspect-argv',
                 'verified_at': now(), 'container_id': ci['Id'], 'started_at': ci['State']['StartedAt'],
