@@ -5,8 +5,8 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import (DAYTIME_PROFILES, NIGHTTIME_PROFILE, NIGHTTIME_PROFILES, available_profiles, digest,
-    engine_interface, read, render, service_engine)
+from runtime.config import (CONTAINER_CONTRACT, DAYTIME_PROFILES, NIGHTTIME_PROFILE, NIGHTTIME_PROFILES,
+    available_profiles, digest, engine_interface, merge_settings, read, render, service_engine)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -586,6 +586,31 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(len(entry['gpu_uuids']), 4)
         self.assertTrue(any('not been attested' in warning for warning in entry['deployment_warnings']))
 
+
+    def test_the_trial_service_keeps_the_house_container_settings(self):
+        """Attempt one of this switch died on KeyError: 'restart'.
+
+        The engine entry declares its own container_defaults and they replaced the shared ones, so the
+        trial service arrived with no restart policy, no init, no logging and no pull policy. The merge
+        is the fix; this is the test that would have caught it, stating both halves: what the house
+        provides and what the engine is allowed to narrow.
+        """
+        shared = read(ROOT / 'config/shared.json')['container_defaults']
+        cfg = self.bundle()['compose']['services']['coding']
+        for key in CONTAINER_CONTRACT:
+            with self.subTest(setting=key):
+                self.assertIsNotNone(cfg.get(key))
+        self.assertEqual(cfg['pull_policy'], shared['pull_policy'])
+        self.assertEqual(cfg['restart'], shared['restart'])
+        self.assertIs(cfg['init'], shared['init'])
+        self.assertEqual(cfg['logging'], shared['logging'])
+        # What the engine narrowed still survives the merge.
+        self.assertEqual(cfg['entrypoint'], ['./docker-entrypoint.sh'])
+        self.assertIs(cfg['read_only'], False)
+        self.assertEqual(cfg['healthcheck']['start_period'], '3600s')
+        self.assertEqual(cfg['healthcheck']['retries'], 8)
+        self.assertEqual(cfg['ulimits'], {'core': 0, 'memlock': -1})
+        self.assertEqual(cfg['stop_grace_period'], '180s')
     def test_the_engine_identity_is_pinned(self):
         engine = ENGINES[read(ROOT / 'config/profiles' / (TRIAL + '.json'))['engine']]
         self.assertEqual(engine['revision'], '7695859aa13afb248bdb4d36f9b2e95707db079d')
@@ -595,3 +620,27 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
         self.assertGreater(engine['readiness_wait_seconds'], 450)
+
+
+class ContainerContractTests(unittest.TestCase):
+    """How a backend runs here is set by the house, so a merge must not be able to lose it."""
+
+    def test_partial_blocks_merge_instead_of_replacing_them(self):
+        base = {'restart': 'unless-stopped', 'ulimits': {'core': 0},
+            'healthcheck': {'interval': '15s', 'retries': 4}, 'tmpfs': ['/tmp'],
+            'logging': {'driver': 'json-file', 'options': {'max-size': '25m'}}}
+        merged = merge_settings(base, {'ulimits': {'memlock': -1},
+            'healthcheck': {'start_period': '3600s'}, 'tmpfs': ['/run']})
+        self.assertEqual(merged['ulimits'], {'core': 0, 'memlock': -1})
+        self.assertEqual(merged['healthcheck'], {'interval': '15s', 'retries': 4, 'start_period': '3600s'})
+        # A list is the override's own statement, never appended to what it inherits.
+        self.assertEqual(merged['tmpfs'], ['/run'])
+        self.assertEqual(merged['restart'], 'unless-stopped')
+        self.assertEqual(base['ulimits'], {'core': 0}, 'merge must not mutate what it inherited from')
+
+    def test_every_service_carries_the_house_container_settings(self):
+        for name in DAYTIME_PROFILES:
+            for role, cfg in render(ROOT / 'config', host_for(name), name)['compose']['services'].items():
+                for key in CONTAINER_CONTRACT:
+                    with self.subTest(profile=name, role=role, setting=key):
+                        self.assertIsNotNone(cfg.get(key))

@@ -195,6 +195,36 @@ def engine_interface(engine):
     return interface
 
 
+def merge_settings(base, override):
+    """Layer container settings on top of the ones they inherit, so an override may name part of a block.
+
+    Dict values are merged key by key and everything else is replaced whole: a profile that adds one
+    ulimit must not have to restate the ones it inherits, and a list such as tmpfs, a command or a
+    mount list is the profile's own, never appended to the defaults.
+    """
+    merged = copy.deepcopy(base)
+    for key, value in copy.deepcopy(override).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_settings(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+# Every rendered service carries these. They are how a backend runs here rather than what it serves:
+# never pulled at deploy time, restarted under it, given a real pid one, kept to its own log files and
+# core-dump limits, and watched by a healthcheck. The controller's drift check reads most of them
+# directly, so a service rendered without one is a configuration bug that has to surface as a
+# configuration error - not as a KeyError partway through a profile switch.
+CONTAINER_CONTRACT = ('pull_policy', 'entrypoint', 'restart', 'read_only', 'init', 'ulimits',
+    'healthcheck', 'logging')
+
+
+def require_container_contract(role, cfg):
+    missing = [key for key in CONTAINER_CONTRACT if cfg.get(key) is None]
+    require(not missing, 'Service {} is missing container settings: {}'.format(role, ', '.join(missing)))
+
+
 def environment_service(name, definition, engine, shared, host, root, ctx, slots, exclusive):
     """One service, its catalog entry, and its mounts for an engine configured from the environment.
 
@@ -261,8 +291,12 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
             'Workspace mount target must be an absolute path')
         mounts.append({'type': 'bind', 'source': str(root / relative), 'target': workspace['target'],
             'read_only': False, 'bind': {'create_host_path': False}})
-    cfg = copy.deepcopy(engine.get('container_defaults', {}))
-    cfg.update(copy.deepcopy(definition['container']))
+    # Three layers deep-merged, in this order: the house defaults, what this engine narrows, what the
+    # profile states. Replace-semantics here is the trial's first switch failure - an engine entry that
+    # declared only its entrypoint, root, ulimits and healthcheck silently arrived with no restart
+    # policy, no init, no logging and no pull policy, and the observer crashed on the missing key.
+    cfg = merge_settings(shared['container_defaults'], engine.get('container_defaults', {}))
+    cfg = merge_settings(cfg, definition['container'])
     # What the profile states about the environment comes first: the engine's own settings are the
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}
@@ -391,6 +425,7 @@ def render(config_dir, host, profile):
                 source = str(root / Path(artifact['path']))
                 artifacts[source] = {**artifact, 'source': source}
             gpu_ids.extend(devices)
+            require_container_contract(role, cfg)
             compose['services'][role] = cfg
             models.append(entry)
             manifests.append({'role': role, 'container_name': cfg['container_name'],
@@ -475,6 +510,7 @@ def render(config_dir, host, profile):
             require(int(first) == 1 and 0 < int(total) <= 99999, 'Split model must start at shard one')
             require(all(f'{prefix}-{i:05d}-of-{total}.gguf' in targets for i in range(1, int(total) + 1)),
                 'Split model is missing a declared shard mount')
+        require_container_contract(role, cfg)
         compose['services'][role] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
         # Router clients select models by this flag ("most capable NSFW model"); every profile

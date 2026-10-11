@@ -31,6 +31,11 @@ class FakeSystem:
         self.active_count = 0; self.queued_count = 0; self.direct_busy = False
         self.generation_fails = False; self.fail_reconcile = False; self.serial = 0
         self.failed_ups = 0; self.failed_generations = 0  # fail only the next N loads or acceptances
+        # A backend configured by the environment has no argument vector to read its window or its
+        # served name from, so the fake reads them the way the controller does: from the published
+        # configuration. slot_context simulates a backend that came up on another window.
+        self.services = {x['container_name']: x for x in bundle['manifest']['services']}
+        self.slot_context = None
         self.engines = {s['engine']['tag']: s['engine'] for s in bundle['manifest']['services']}
         shared = read(ROOT / 'config/shared.json')
         self.engines.update({e['tag']: e for e in shared['engines'].values()})
@@ -42,11 +47,27 @@ class FakeSystem:
         self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.engines[cfg['image']]['image_id'],
             'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z'}, 'RestartCount': 0,
             'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'], 'User': cfg['user'], 'Env': [k + '=' + v for k, v in cfg.get('environment', {}).items()]},
-            'HostConfig': {'ReadonlyRootfs': True, 'RestartPolicy': {'Name': 'unless-stopped'},
+            'HostConfig': {'ReadonlyRootfs': cfg.get('read_only', True), 'RestartPolicy': {'Name': 'unless-stopped'},
                 'Init': True, 'DeviceRequests': [{'Driver': 'nvidia', 'Count': 0, 'Capabilities': [['gpu']], 'DeviceIDs': cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']}],
                 'PortBindings': {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': cfg['ports'][0].split(':')[1]}]}},
-            'Mounts': [{'Type': 'bind', 'Source': v['source'], 'Destination': v['target'], 'RW': False} for v in cfg['volumes']],
+            'Mounts': [{'Type': 'bind', 'Source': v['source'], 'Destination': v['target'],
+                    'RW': not v.get('read_only', True)} for v in cfg['volumes']],
             'NetworkSettings': {'Networks': {'local-ai-ollama_default': {'Aliases': cfg['networks']['router']['aliases']}}}}
+
+    def window_of(self, name, ci):
+        argv = ci['Config']['Cmd']
+        return (int(argv[argv.index('--kv-unified-per-slot') + 1]) if '--kv-unified-per-slot' in argv
+            else self.services[name]['context_tokens'])
+
+    def slots_of(self, name, ci):
+        argv = ci['Config']['Cmd']
+        return (int(argv[argv.index('--parallel') + 1]) if '--parallel' in argv
+            else self.services[name]['parallel_slots'])
+
+    def alias_of(self, name, ci):
+        argv = ci['Config']['Cmd']
+        return (argv[argv.index('--alias') + 1] if '--alias' in argv
+            else self.services[name]['model_alias'])
 
     def inspect(self, name): return copy.deepcopy(self.containers.get(name))
 
@@ -71,10 +92,11 @@ class FakeSystem:
         if url.endswith('/runtime-state'):
             return {'runtime': {'draining': self.draining, 'drain_reason': self.reason,
                     'active_count': self.active_count, 'queued_count': self.queued_count},
-                'models': [{'id': ci['Config']['Cmd'][ci['Config']['Cmd'].index('--alias') + 1],
+                'models': [{'id': self.alias_of(name, ci),
                     'x_ollama_router': {'health': {'available': True}, 'output_policy': 'unrestricted',
-                        'context_window': int(ci['Config']['Cmd'][ci['Config']['Cmd'].index('--kv-unified-per-slot') + 1]),
-                        'default_output_tokens': None, 'max_output_tokens': None}} for ci in self.containers.values()]}
+                        'context_window': self.window_of(name, ci),
+                        'default_output_tokens': None, 'max_output_tokens': None}}
+                    for name, ci in self.containers.items()]}
         if url.endswith('/runtime-drain'):
             self.events.append(('drain', body['enabled'])); self.draining = body['enabled']; self.reason = body['reason']; return {}
         if url.endswith('/reload-config'):
@@ -82,9 +104,10 @@ class FakeSystem:
         name = url.split('/')[2].split(':')[0]
         if url.endswith('/health'): return {'status': 'ok'}
         if url.endswith('/slots'):
-            ci = self.containers[name]; argv = ci['Config']['Cmd']
-            return [{'n_ctx': int(argv[argv.index('--kv-unified-per-slot') + 1]), 'is_processing': self.direct_busy}
-                for _ in range(int(argv[argv.index('--parallel') + 1]))]
+            ci = self.containers[name]
+            return [{'id': i, 'n_ctx': self.slot_context or self.window_of(name, ci),
+                    'is_processing': self.direct_busy, 'n_prompt_tokens': 0}
+                for i in range(self.slots_of(name, ci))]
         if url.endswith('/completion'):
             self.events.append(('generation', name))
             if self.generation_fails or self.failed_generations:
@@ -451,3 +474,84 @@ class ArtifactTests(unittest.TestCase):
             self.assertTrue(c.validate(bundle)['all_checksums_verified'])
             model.write_bytes(b'evil')
             with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'): c.validate(bundle)
+
+
+class EnvironmentEngineObservationTests(unittest.TestCase):
+    """The trial's first switch attempt died in this pass, so it has to degrade and never throw.
+
+    It failed with KeyError: 'restart' after the artifact checks had hashed all 93 GB and before any
+    container was touched: the generated service dictionary for that backend had lost the keys the
+    shared container defaults provide, and the observer read every one of them strictly. A bundle that
+    cannot satisfy a comparison must produce a drift reason the operator can read.
+    """
+
+    PROFILE = 'flash-next-strata-160k'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name)
+        host = copy.deepcopy(HOST)
+        host['router_state_dir'] = str(self.state / 'router')
+        atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
+        self.bundle = render(ROOT / 'config', host, self.PROFILE)
+        self.system = FakeSystem(self.bundle)
+        self.c = Controller(ROOT / 'config', self.state, 'a' * 40, self.system)
+
+    def test_the_trial_backend_observes_clean(self):
+        observed = self.c.observe(self.bundle)
+        self.assertEqual(observed['coding']['differences'], [])
+        self.assertTrue(observed['coding']['healthy'])
+        self.assertNotIn('slot_window', observed['coding'])
+        self.assertNotIn('health_error', observed['coding'])
+
+    def test_a_service_dictionary_missing_a_setting_drifts_instead_of_crashing(self):
+        for key, reason in [('restart', 'restart policy'), ('init', 'init'),
+                ('entrypoint', 'entrypoint'), ('user', 'user'), ('read_only', 'read-only root'),
+                ('deploy', 'GPU assignment'), ('volumes', 'model mounts'),
+                ('ports', 'port bindings'), ('networks', 'router network')]:
+            # An absent command and an empty one mean the same thing to the comparison, so that key is
+            # deliberately not in this list: the trial's engine takes its settings from the environment.
+            damaged = copy.deepcopy(self.bundle)
+            damaged['compose']['services']['coding'].pop(key)
+            with self.subTest(setting=key):
+                observed = self.c.observe(damaged)
+                self.assertIn(reason, observed['coding']['differences'])
+                self.assertFalse(observed['coding']['healthy'])
+
+    def test_a_backend_that_came_up_on_another_window_says_so_with_its_number(self):
+        """Strata reports the window the engine loaded with, which need not be the one asked for.
+
+        An empty slot list is a backend still loading and a smaller window is permanent, and both
+        would otherwise sit out the whole health timeout looking identical.
+        """
+        self.system.slot_context = 131072
+        observed = self.c.observe(self.bundle)
+        self.assertIn('slot context', observed['coding']['differences'])
+        self.assertFalse(observed['coding']['healthy'])
+        contracted = self.bundle['manifest']['services'][0]['context_tokens']
+        self.assertEqual(observed['coding']['slot_window']['contracted'], contracted)
+        self.assertEqual(observed['coding']['slot_window']['reported_context'], [131072])
+
+    def test_the_llama_path_observes_exactly_as_before(self):
+        # The guarded reads and the merge sit under both engine shapes; the backends running today are
+        # observed with no drift and no new reasons.
+        for profile in ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime',
+                'flash-next-solo-128k', 'flash-next-solo-160k'):
+            with self.subTest(profile=profile):
+                definition = read(ROOT / 'config/profiles' / (profile + '.json'))
+                host = vision_host() if definition.get('exclusive') else copy.deepcopy(HOST)
+                system = FakeSystem(render(ROOT / 'config', host, profile))
+                controller = Controller(ROOT / 'config', self.state, 'a' * 40, system)
+                observed = controller.observe(system.bundle)
+                self.assertEqual({role: x['differences'] for role, x in observed.items()},
+                    {role: [] for role in observed})
+
+    def test_the_trial_renders_the_same_whether_the_host_names_a_vision_gpu(self):
+        """The production host pins the RTX 3080 as the vision card; the trial host never has one.
+
+        Its engine was built without a vision encoder and takes its cards from its own list, so the
+        two must agree - otherwise the switch would be the place where that difference showed up.
+        """
+        plain = json.dumps(render(ROOT / 'config', copy.deepcopy(HOST), self.PROFILE), sort_keys=True)
+        with_vision = json.dumps(render(ROOT / 'config', vision_host(), self.PROFILE), sort_keys=True)
+        self.assertEqual(plain, with_vision)

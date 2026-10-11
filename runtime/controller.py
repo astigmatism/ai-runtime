@@ -132,20 +132,24 @@ class Controller:
                 continue
             result.update(id=ci['Id'], started_at=ci['State']['StartedAt'],
                 restart_count=ci['RestartCount'], image_id=ci['Image'])
+            # Every expectation is read with .get(): a service dictionary that lost a key is a
+            # configuration fault, and the operator needs to see which setting drifted, not a crash in
+            # the middle of a switch. A missing key never matches, so it falls through as a reason.
             for valid, reason in [
                 (ci['Image'] == engine['image_id'], 'image'),
-                ((ci['Config']['Cmd'] or []) == (cfg.get('command') or []), 'arguments'),
-                (ci['Config']['Entrypoint'] == cfg['entrypoint'], 'entrypoint'),
-                (ci['Config']['User'] == cfg['user'], 'user'),
-                (ci['HostConfig']['ReadonlyRootfs'] == cfg['read_only'], 'read-only root'),
-                (ci['HostConfig']['RestartPolicy']['Name'] == cfg['restart'], 'restart policy'),
-                (ci['HostConfig'].get('Init') == cfg['init'], 'init'),
+                ((ci['Config'].get('Cmd') or []) == (cfg.get('command') or []), 'arguments'),
+                (ci['Config'].get('Entrypoint') == cfg.get('entrypoint'), 'entrypoint'),
+                (ci['Config'].get('User') == cfg.get('user'), 'user'),
+                (ci['HostConfig'].get('ReadonlyRootfs') == cfg.get('read_only'), 'read-only root'),
+                (ci['HostConfig'].get('RestartPolicy', {}).get('Name') == cfg.get('restart'), 'restart policy'),
+                (ci['HostConfig'].get('Init') == cfg.get('init'), 'init'),
                 (ci['HostConfig'].get('Privileged', False) is False, 'privileged mode')]:
                 if not valid:
                     reasons.append(reason)
-            requests = ci['HostConfig']['DeviceRequests'] or []
-            expected_ids = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
-            if len(requests) != 1 or requests[0]['DeviceIDs'] != expected_ids:
+            requests = ci['HostConfig'].get('DeviceRequests') or []
+            reserved = cfg.get('deploy', {}).get('resources', {}).get('reservations', {})
+            expected_ids = (reserved.get('devices') or [{}])[0].get('device_ids')
+            if len(requests) != 1 or requests[0].get('DeviceIDs') != expected_ids:
                 reasons.append('GPU assignment')
             expected_cuda = cfg.get('environment', {}).get('CUDA_VISIBLE_DEVICES')
             live_env = dict(item.split('=', 1) for item in ci['Config'].get('Env', []) if '=' in item)
@@ -154,14 +158,19 @@ class Controller:
             if expected_cuda and (len(requests) != 1 or requests[0].get('Driver') != 'nvidia'
                     or requests[0].get('Count') != 0 or requests[0].get('Capabilities') != [['gpu']]):
                 reasons.append('GPU reservation contract')
-            mounts = {(x['Source'], x['Destination'], x['RW']) for x in ci['Mounts'] if x['Type'] == 'bind'}
-            if mounts != {(x['source'], x['target'], not x.get('read_only', True)) for x in cfg['volumes']}:
+            mounts = {(x.get('Source'), x.get('Destination'), x.get('RW'))
+                for x in ci.get('Mounts') or [] if x.get('Type') == 'bind'}
+            if mounts != {(x.get('source'), x.get('target'), not x.get('read_only', True))
+                    for x in cfg.get('volumes') or []}:
                 reasons.append('model mounts')
-            host_port = cfg['ports'][0].split(':')[1]
-            if ci['HostConfig']['PortBindings'] != {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': host_port}]}:
+            ports = cfg.get('ports') or []
+            host_port = ports[0].split(':')[1] if ports else None
+            if not host_port or ci['HostConfig'].get('PortBindings') != {
+                    '8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': host_port}]}:
                 reasons.append('port bindings')
-            connection = ci['NetworkSettings']['Networks'].get(network, {})
-            if not connection or not set(cfg['networks']['router']['aliases']).issubset(connection.get('Aliases') or []):
+            connection = (ci.get('NetworkSettings') or {}).get('Networks', {}).get(network, {})
+            aliases = ((cfg.get('networks') or {}).get('router') or {}).get('aliases') or []
+            if not aliases or not connection or not set(aliases).issubset(connection.get('Aliases') or []):
                 reasons.append('router network')
             if result['running']:
                 try:
@@ -176,10 +185,21 @@ class Controller:
                         argv = cfg['command']
                         expected_ctx = int(argv[argv.index('--kv-unified-per-slot') + 1])
                         expected_slots = int(argv[argv.index('--parallel') + 1])
-                    if len(slots) != expected_slots or any(s['n_ctx'] != expected_ctx for s in slots):
+                    reported = [x.get('n_ctx') for x in slots if isinstance(x, dict)] if isinstance(slots, list) else None
+                    if (not isinstance(slots, list) or len(slots) != expected_slots
+                            or len(reported) != expected_slots
+                            or any(x != expected_ctx for x in reported)):
+                        # What the backend answered goes in the record: a window smaller than the one the
+                        # profile contracted for is permanent and needs reading, while an empty slot list
+                        # is a backend that is still loading. Both look the same as a waiting engine
+                        # otherwise, and the switch would sit out the whole health timeout to find out.
+                        result['slot_window'] = {'contracted': expected_ctx, 'slots': expected_slots,
+                            'reported_context': reported, 'loaded': health.get('loaded')
+                                if isinstance(health, dict) else None}
                         reasons.append('slot context')
-                    result['healthy'] = health.get('status') == 'ok' and not reasons
-                    result['processing'] = any(x.get('is_processing', False) for x in slots)
+                    result['healthy'] = isinstance(health, dict) and health.get('status') == 'ok' and not reasons
+                    result['processing'] = isinstance(slots, list) and any(
+                        x.get('is_processing', False) for x in slots if isinstance(x, dict))
                 except Exception:
                     result['health_error'] = 'Backend readiness unavailable'
             observed[role] = result
