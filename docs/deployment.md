@@ -323,6 +323,8 @@ now, or on a schedule that does not need anyone at the keyboard.
 | A drain deadline passes before any backend was replaced | The operation refuses and has touched nothing. A generation on a backend's own port is legitimate work, and backing away costs nothing yet. |
 | A deployment fails after replacing a backend | The previous release is restored through the same finalize path a healthy boot uses: recreate, verify health and generation, republish the catalog, undrain, write the receipt. |
 | That restoration fails too | The next attempt is scheduled on a capped backoff (30s, 60s, 2m, 5m, 10m, 15m) and the controller's supervision loop takes it up. Attempts continue until the service comes back. |
+| The router rejects a newly published catalog | Publication restores the prior catalog before backend recovery checks drain ownership. The failed catalog must not disable the admin API that recovery uses. |
+| The router admin API fails before restoration can begin | The failure advances the retry count and backoff, including failures while checking drain ownership. |
 
 The failure is never left as a condition to notice. `.state/restoration.json` is the durable action:
 the profile to bring back, how many attempts have run, the reason, `next_attempt_at`, and the phases

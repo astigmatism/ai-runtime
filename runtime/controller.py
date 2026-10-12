@@ -656,17 +656,33 @@ class Controller:
             'exclusive': 'everyday' not in bundle['compose']['services']}
         catalog['configuration'] = {**configuration, 'runtime_revision': self.revision, 'published_at': now()}
         require(not self.system.readonly, 'Publication forbidden in inspection mode')
-        atomic_json(Path(self.host['router_state_dir']) / 'active-model.json', catalog)
-        self.admin('reload-config', {})
-        state = self.admin('runtime-state')
-        models = state.get('models', [])
-        expected = {m['model']: m['context_length'] for m in catalog['models']}
-        require({m['id'] for m in models} == set(expected) and all(
-            m['x_ollama_router']['health']['available'] and m['x_ollama_router']['output_policy'] == 'unrestricted'
-            and m['x_ollama_router']['context_window'] == expected[m['id']]
-            and m['x_ollama_router'].get('default_output_tokens') is None
-            and m['x_ollama_router'].get('max_output_tokens') is None for m in models),
-            'Router catalog/readiness verification failed')
+        catalog_path = Path(self.host['router_state_dir']) / 'active-model.json'
+        previous_catalog = read(catalog_path) if catalog_path.exists() else None
+        try:
+            atomic_json(catalog_path, catalog)
+            self.admin('reload-config', {})
+            state = self.admin('runtime-state')
+            models = state.get('models', [])
+            expected = {m['model']: m['context_length'] for m in catalog['models']}
+            require({m['id'] for m in models} == set(expected) and all(
+                m['x_ollama_router']['health']['available'] and m['x_ollama_router']['output_policy'] == 'unrestricted'
+                and m['x_ollama_router']['context_window'] == expected[m['id']]
+                and m['x_ollama_router'].get('default_output_tokens') is None
+                and m['x_ollama_router'].get('max_output_tokens') is None for m in models),
+                'Router catalog/readiness verification failed')
+        except BaseException:
+            # An unsupported catalog can break runtime-state itself. Restore the exact prior
+            # catalog before recovery asks who owns the drain; leave admissions and release
+            # receipts alone until backend recovery verifies the previous release.
+            if previous_catalog is not None:
+                atomic_json(catalog_path, previous_catalog)
+                try:
+                    self.admin('reload-config', {})
+                except Exception:
+                    pass  # The original failure remains the diagnostic; recovery will retry.
+            else:
+                catalog_path.unlink(missing_ok=True)
+            raise
 
     def set_drain(self, enabled, transaction):
         return self.admin('runtime-drain', {'enabled': enabled,
@@ -794,6 +810,17 @@ class Controller:
     def _restore_locked(self, operation_id=None, progress=lambda phase: None):
         """Caller must hold runtime.lock for the whole restoration, as every transition does."""
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
+        before = self.restoration()
+        try:
+            return self._restore_attempt_locked(operation_id, progress)
+        except Exception as error:
+            # Failures before recover_locked (including an unreadable router admin API) must
+            # advance the retry timer too. A recovery failure already scheduled its own retry.
+            if self.restoration() == before and self.last_known_good() is not None:
+                self.schedule_restoration(error, self.load('transaction.json', {}))
+            raise
+
+    def _restore_attempt_locked(self, operation_id=None, progress=lambda phase: None):
         transaction = self.load('transaction.json', {})
         if transaction.get('phase') in PENDING_PHASES:
             if self.owns_drain(transaction):

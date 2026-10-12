@@ -356,6 +356,73 @@ class RestorationTests(unittest.TestCase):
             self.c.restore_last_known_good()
         self.assertFalse(self.c.restoration_pending())
 
+    def test_rejected_catalog_cannot_disable_the_admin_api_needed_for_recovery(self):
+        """The router accepts reload but rejects runtime-state for backend_kind=strata.
+
+        Its admin API reads the published file on every call. Leaving that file in place
+        after rejection prevents recovery from even checking ownership of the drain.
+        """
+        self.c.publish(self.bundle)
+        target = render(ROOT / 'config', self.c.host, 'flash-next-strata-160k')
+        for service in target['manifest']['services']:
+            self.system.services[service['container_name']] = service
+        catalog_path = Path(self.c.host['router_state_dir']) / 'active-model.json'
+        http = self.system.http
+        rejected = []
+
+        def router(url, *args, **kwargs):
+            if url.endswith('/runtime-state'):
+                catalog = json.loads(catalog_path.read_text())
+                if catalog['backend_kind'] == 'strata':
+                    rejected.append(True)
+                    raise RuntimeError('Unsupported active backend kind: strata')
+            return http(url, *args, **kwargs)
+
+        with patch.object(self.system, 'http', side_effect=router), \
+                patch.object(self.c, 'preparation_needed', return_value=False), \
+                patch.object(self.c, '_record_warm_boot'):
+            with self.assertRaisesRegex(RuntimeError, 'Unsupported active backend kind: strata'):
+                self.c.transition(target['profile'])
+            self.assertTrue(self.c.serving())
+        self.assertTrue(rejected, 'the candidate catalog must actually reach the router')
+        self.assertFalse(self.system.draining)
+        self.assertEqual(set(self.system.containers), set(BOTH))
+        self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
+        self.assertEqual(self.c.load('active.json'), self.active)
+        self.assertEqual(json.loads(catalog_path.read_text())['backend_kind'], 'llama_cpp')
+        self.assertFalse(self.c.restoration_pending())
+
+    def test_router_failure_before_recovery_advances_the_retry_schedule(self):
+        self.strand_the_backend()
+        self.c.schedule_restoration('Initial failure')
+        first = self.c.restoration()
+        self.c.save('transaction.json', {'id': 'stranded', 'phase': 'needs-attention'})
+        http = self.system.http
+
+        def unavailable(url, *args, **kwargs):
+            if url.endswith('/runtime-state'):
+                raise RuntimeError('Router admin unavailable')
+            return http(url, *args, **kwargs)
+
+        with patch.object(self.system, 'http', side_effect=unavailable):
+            self.make_restoration_due()
+            started = self.ops.restore_if_due()
+            self.wait_for_worker()
+        retry = self.c.restoration()
+        self.assertEqual(retry['attempts'], first['attempts'] + 1)
+        self.assertEqual(retry['last_error'], 'Router admin unavailable')
+        self.assertFalse(self.c.restoration_due())
+        self.assertEqual(self.ops.read(started['id'])['status'], 'needs-attention')
+
+    def test_catalog_reload_failure_preserves_the_prior_catalog(self):
+        self.c.publish(self.bundle)
+        catalog_path = Path(self.c.host['router_state_dir']) / 'active-model.json'
+        previous = json.loads(catalog_path.read_text())
+        with patch.object(self.c, 'admin', side_effect=RuntimeError('Reload unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'Reload unavailable'):
+                self.c.publish(self.bundle)
+        self.assertEqual(json.loads(catalog_path.read_text()), previous)
+
     def test_a_reserved_router_or_pending_release_blocks_the_restoration(self):
         atomic_json(self.state / 'router-maintenance.json', {'reserved': True})
         self.assertIn('router deployment', self.ops.restore_blockers())
