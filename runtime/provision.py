@@ -17,6 +17,7 @@ Two measurements, because they cost different things:
 The receipt they leave behind is what ``Controller.switchable`` insists on before a switch.
 """
 import copy
+import glob
 import os
 import shutil
 import time
@@ -47,7 +48,34 @@ def workspace_target(cfg, provision):
 
 
 def ready_files(workspace, provision):
+    """The declared paths, or patterns, whose existence says the engine has finished building.
+
+    A pattern is not a shortcut here: the engine names the file it finishes with after the family it
+    was told to use — ``config/strata-unsloth-ud-iq4_xs.json`` for the Unsloth quant, ``strata-qwen-``
+    for the other family — and a literal that quietly stops matching is worse than no check at all.
+    The trial's build run waited for a file the engine had already written under a name nobody had
+    written down, and then kept watching while the engine went on to load a model its cards had no
+    room for. The quant stays literal, because that is the part the profile is about; the family
+    moves with the arguments the profile already states.
+    """
     return [workspace / name for name in provision.get('ready_files', [])]
+
+
+def matching(files):
+    """The paths that satisfy the declaration, patterns resolved against what is on disk."""
+    found = []
+    for entry in files:
+        text = str(entry)
+        if any(mark in text for mark in '*?'):
+            found.extend(sorted(glob.glob(text)))
+        elif entry.is_file():
+            found.append(text)
+    return found
+
+
+def workspace_ready(files):
+    """True when every declared file, or pattern, has something behind it."""
+    return len(matching(files)) >= len(files)
 
 
 def published_port(cfg, offset=0):
@@ -227,7 +255,7 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
         while True:
             elapsed = time.monotonic() - started
             answer = probe(system, name, port)
-            workspace = all(target.is_file() for target in files)
+            workspace = workspace_ready(files)
             sample = {'seconds': round(elapsed, 1), 'workspace': workspace, 'health': answer is not None}
             if answer:
                 sample['health_via'] = answer[0]
@@ -255,7 +283,9 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
         system.docker('compose', *project, 'down', '--remove-orphans', '-t', str(stop), check=False)
     found = {'seconds': round(time.monotonic() - started, 1), 'reached': reached,
         'workspace_ready': any(s['workspace'] for s in samples),
-        'samples': samples}
+        # Which file the engine actually finished with, in its own words: the name is the evidence
+        # that the declaration still describes what the engine does.
+        'ready_paths': matching(files), 'samples': samples}
     if reached.startswith('exited'):
         found['container_log'] = words
     return found
@@ -300,7 +330,8 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
     receipt['measured_at'] = now()
     run = {'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'], 'container': name,
         'port': port, 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
-        'free_bytes_after': free_bytes(workspace), 'samples': result['samples']}
+        'free_bytes_after': free_bytes(workspace), 'ready_paths': result['ready_paths'],
+        'samples': result['samples']}
     if result.get('container_log') is not None:
         # The engine's own reason for refusing to start goes into the receipt with the run it came
         # from: the container that printed it is torn down before anyone reads the file, and this is

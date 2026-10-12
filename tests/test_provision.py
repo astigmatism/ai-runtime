@@ -16,7 +16,7 @@ from unittest.mock import patch
 import test_controller as fixture
 from runtime.config import read, render
 from runtime.controller import Controller
-from runtime.provision import measurement, throwaway, workspace_target
+from runtime.provision import matching, measurement, ready_files, throwaway, workspace_ready, workspace_target
 from runtime.system import atomic_json
 
 PROFILE = 'flash-next-strata-160k'
@@ -122,7 +122,8 @@ class ProvisionTests(unittest.TestCase):
         if self.poll_number >= 2:
             ready = self.workspace / 'config'
             ready.mkdir(parents=True, exist_ok=True)
-            (ready / 'strata-ud-iq4_xs.json').write_text('{}')
+            # The name the engine actually writes, for the family the profile names.
+            (ready / 'strata-unsloth-ud-iq4_xs.json').write_text('{}')
 
     def receipt(self, **values):
         engine = self.c.provisioning(self.bundle)[1]
@@ -187,6 +188,26 @@ class ProvisionTests(unittest.TestCase):
         environment = self.bundle['compose']['services']['coding']['environment']
         self.assertEqual(environment['FAMILY'], 'unsloth')
         self.assertEqual(environment['MODEL'], 'UD-IQ4_XS')
+
+    def test_the_ready_file_is_named_for_the_family_the_engine_was_given(self):
+        """A literal file name rots the day the arguments change, and it rots as a silent wait.
+
+        The engine finished its whole build on the trial host in under ten minutes and wrote
+        ``config/strata-unsloth-ud-iq4_xs.json``; the declaration still asked for the name the other
+        family would have used, so the run kept watching a workspace that was already finished, and
+        the engine went on to load a model its cards had no room for and died. The quant stays
+        literal because that is what the profile is about; the family follows the arguments.
+        """
+        provision = self.c.provisioning(self.bundle)[2]
+        self.assertEqual([Path(name).name for name in provision['ready_files']],
+            ['strata-*-ud-iq4_xs.json'])
+        declared = ready_files(self.workspace, provision)
+        self.assertFalse(workspace_ready(declared))
+        (self.workspace / 'config').mkdir(parents=True, exist_ok=True)
+        (self.workspace / 'config' / 'strata-unsloth-ud-iq4_xs.json').write_text('{}')
+        self.assertTrue(workspace_ready(declared))
+        self.assertEqual([Path(path).name for path in matching(declared)],
+            ['strata-unsloth-ud-iq4_xs.json'])
 
     def test_a_container_that_refuses_to_start_is_not_waited_out(self):
         """A setup error printed once is a finding, not two hours of ``workspace=False``.

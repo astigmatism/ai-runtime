@@ -44,7 +44,7 @@
       "readiness_wait_seconds": 3600,
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-ud-iq4_xs.json"],
+        "ready_files": ["config/strata-*-ud-iq4_xs.json"],
         "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed."
       },
       "environment": {
