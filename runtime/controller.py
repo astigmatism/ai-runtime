@@ -357,6 +357,12 @@ class Controller:
                 continue
             result.update(id=ci['Id'], started_at=ci['State']['StartedAt'],
                 restart_count=ci['RestartCount'], image_id=ci['Image'])
+            if not result['running']:
+                # A stopped container answers nothing, and every identity check above passes for it:
+                # without this line the observer would report it unhealthy with no reason at all,
+                # which is exactly the record the 18:47 trial left — an engine that died mid-load
+                # reads as "nothing wrong", and the switch's window is never the answer to "why".
+                reasons.append('container not running')
             # Every expectation is read with .get(): a service dictionary that lost a key is a
             # configuration fault, and the operator needs to see which setting drifted, not a crash in
             # the middle of a switch. A missing key never matches, so it falls through as a reason.
@@ -555,8 +561,27 @@ class Controller:
                 time.sleep(READINESS_POLL_SECONDS)
                 observed = self.observe(bundle)
         bad = [(role, s) for role, s in observed.items() if not s['healthy']]
+        for role, s in bad:
+            # The record must carry the witness while the container still exists: restoration
+            # removes it, and an engine that stopped by itself has no health and no slots left to
+            # explain why. Its exit code and its own last words are the only account of the
+            # failure, so they are read here, before anything can delete them.
+            ci = self.system.inspect(s.get('container_name') or '')
+            if ci:
+                if not ci['State']['Running']:
+                    s['exit_code'] = ci['State'].get('ExitCode')
+                try:
+                    words = self.system.docker('logs', '--tail', '120', s['container_name'], check=False)
+                    lines = [line.strip() for line in words.splitlines() if line.strip()]
+                    s['last_words'] = [line[:180] for line in lines[-10:]]
+                except Exception:
+                    pass
         detail = '; '.join(role + ': ' + ', '.join(
-            s['differences'] + (['slot window ' + json.dumps(s['slot_window'])] if s.get('slot_window') else []))
+            s['differences']
+            + (['slot window ' + json.dumps(s['slot_window'])] if s.get('slot_window') else [])
+            + (['health: ' + s['health_error']] if s.get('health_error') else [])
+            + (['exit ' + str(s['exit_code'])] if s.get('exit_code') is not None else [])
+            + (['last words: ' + ' | '.join(s['last_words'])] if s.get('last_words') else []))
             for role, s in bad)
         require(not bad, 'Backend identity/readiness verification failed' + (': ' + detail if detail else ''))
         return observed

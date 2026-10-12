@@ -48,7 +48,9 @@ class ProvisioningSystem(fixture.FakeSystem):
     def docker(self, *args, **kwargs):
         if args[0] == 'logs':
             self.events.append(('docker', args))
-            return self.log_text
+            # A container whose log the base fake recorded answers with it; the throwaway keeps
+            # the single text it is given, because its whole log is the setup output.
+            return '\n'.join(self.container_logs.get(args[-1], [])) or self.log_text
         # The measurement starts and stops its own compose project; the fake plays the part of
         # compose reading the file it was handed, including the card reservations in it. Only the
         # measurement's project: a switch that builds through this same fake also starts the real
@@ -476,6 +478,31 @@ class ProvisionTests(unittest.TestCase):
             self.c.reconcile(self.bundle, ['coding'])
         # No readiness wait on a fault: the loop never ran on its own cadence.
         self.assertFalse(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
+
+    def test_a_switch_carries_the_last_words_of_an_engine_that_dies_mid_load(self):
+        """The record must not let the witness be deleted.
+
+        The trial's 18:47 attempt: the engine answered its health check, began the read with the
+        cards free, and stopped itself a couple of minutes in. The restoration that followed
+        removed the container, and the log inside it was the engine's only account of why - so
+        the failure record has to hold the state, the exit, and the last words itself.
+        """
+        prepare = patch.object(self.c, 'prepare', side_effect=lambda b: None)
+        prepare.start(); self.addCleanup(prepare.stop)
+        for service in self.bundle['manifest']['services']:
+            self.system.services[service['container_name']] = service
+        self.system.model_loaded = False
+        self.system.die_after_slots = 2
+        self.system.die_words = ['reading the model weights ...',
+            'the engine exited code 1: CUDA error out of memory']
+        with self.assertRaisesRegex(RuntimeError,
+                r'container not running, exit 1, last words: reading the model weights \.\.\. \| '
+                r'the engine exited code 1: CUDA error out of memory'):
+            self.c.transition(PROFILE)
+        # It waited while the engine was still loading, and failed the moment it was not.
+        self.assertTrue(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
+        # The house is back to what it was before the attempt.
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
 
 
 if __name__ == '__main__':

@@ -42,6 +42,12 @@ class FakeSystem:
         # it to true after N slot looks, so a test can play the load completing under a wait.
         self.model_loaded = True
         self.load_after_slots = None
+        # An engine that stops itself while loading (the trial's 18:47 attempt died mid-read with
+        # the cards free): after N slot looks the container is stopped and its last words are in
+        # the log, which is exactly what the record must carry before restoration removes it.
+        self.die_after_slots = None
+        self.die_words = []
+        self.container_logs = {}
         self.engines = {s['engine']['tag']: s['engine'] for s in bundle['manifest']['services']}
         shared = read(ROOT / 'config/shared.json')
         self.engines.update({e['tag']: e for e in shared['engines'].values()})
@@ -51,7 +57,10 @@ class FakeSystem:
     def install(self, role, cfg):
         self.serial += 1
         self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.engines[cfg['image']]['image_id'],
-            'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z'}, 'RestartCount': 0,
+            # Model residency is taken from the flag as the container is installed, so a test can
+            # play one engine still reading its model beside a backend that is already resident.
+            'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z', 'Loaded': self.model_loaded,
+                      'Provisioning': bool(self.engines[cfg['image']].get('provisioning'))}, 'RestartCount': 0,
             'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'],
                 # A service rendered without a user runs as the image's own, which the daemon reports
                 # as an empty string — the same shape the observer has to accept as matching.
@@ -88,6 +97,8 @@ class FakeSystem:
                 'Config': {'Labels': {'org.opencontainers.image.revision': engine['revision']}}}])
         if args[0] == 'stop': self.containers[args[-1]]['State']['Running'] = False
         if args[0] == 'rm': self.containers.pop(args[-1])
+        if args[0] == 'logs':
+            return '\n'.join(self.container_logs.get(args[-1], []))
         if args[0] == 'compose' and 'up' in args:
             if self.fail_reconcile or self.failed_ups:
                 self.failed_ups = max(0, self.failed_ups - 1)
@@ -114,15 +125,36 @@ class FakeSystem:
         if url.endswith('/reload-config'):
             self.events.append(('publish',)); return {}
         name = url.split('/')[2].split(':')[0]
-        if url.endswith('/health'): return {'status': 'ok', 'loaded': self.model_loaded}
+        ci = self.containers.get(name)
+        if url.endswith('/health'):
+            return {'status': 'ok', 'loaded': ci['State'].get('Loaded', self.model_loaded)
+                if ci else self.model_loaded}
         if url.endswith('/slots'):
+            if ci:
+                state = ci['State']
+                # An engine that stops itself while loading (the trial's 18:47 attempt died
+                # mid-read with the cards free): after N of its own slot looks it is gone, its
+                # last words are in the log, and it never answers again. Scoped to
+                # self-provisioning engines, so the replacement backend a failed switch restores
+                # is not played dead the same way.
+                if (self.die_after_slots is not None and state.get('Provisioning')
+                        and state.get('Running') and not state.get('Dead')):
+                    state['probes'] = state.get('probes', 0) + 1
+                    if state['probes'] >= self.die_after_slots:
+                        state.update(Running=False, Dead=True, ExitCode=1,
+                            FinishedAt='2026-10-12T18:49:31.000000000Z')
+                        # The dead engine releases the cards: the global flag is the stand-in for
+                        # a load, and the replacement backend is installed after this look.
+                        self.model_loaded = True
+                        self.container_logs.setdefault(name, []).extend(self.die_words)
             if self.load_after_slots is not None:
                 self.load_after_slots -= 1
                 if self.load_after_slots <= 0:
                     self.model_loaded = True
-            if not self.model_loaded:
+                    for c in self.containers.values(): c['State']['Loaded'] = True
+            loaded = ci['State'].get('Loaded', self.model_loaded) if ci else self.model_loaded
+            if not loaded:
                 return []
-            ci = self.containers[name]
             return [{'id': i, 'n_ctx': self.slot_context or self.window_of(name, ci),
                     'is_processing': self.direct_busy, 'n_prompt_tokens': 0}
                 for i in range(self.slots_of(name, ci))]
