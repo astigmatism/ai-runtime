@@ -16,6 +16,7 @@ Two measurements, because they cost different things:
 
 The receipt they leave behind is what ``Controller.switchable`` insists on before a switch.
 """
+import copy
 import time
 from pathlib import Path
 
@@ -29,6 +30,10 @@ POLL_SECONDS = 15
 LIMIT_SECONDS = 7200
 # Where a provisioning container is published while the serving backend still holds its own port.
 PORT_OFFSET = 1
+# Its own compose project, so a measurement is torn down by name and never reaches the serving
+# stack by accident. Shutting a loaded engine down is slow, so the default is its own grace period.
+PROJECT = 'ai-runtime-provision'
+STOP_SECONDS = 30
 
 
 def workspace_target(cfg, provision):
@@ -49,37 +54,34 @@ def published_port(cfg, offset=0):
     return int(cfg['ports'][0].split(':')[1]) + offset
 
 
-def run_arguments(cfg, name, port):
-    """Translate the rendered compose service into an equivalent ``docker run`` invocation.
+def throwaway(bundle, role, name, port):
+    """The one-off compose project the measurement runs in.
 
-    Same image, entrypoint, arguments, environment, user, binds and card reservations, so what gets
-    measured is the container the switch would start. Two things differ on purpose: the container
-    name, because this one is a throwaway beside the serving one, and the network, because a
-    measurement must not join the router network or take the profile's service aliases.
+    It is the profile's own rendered service, so what gets measured is the container the switch
+    would start — same image, entrypoint, arguments, environment, user, binds and card
+    reservations. Three things change, all of them because a measurement runs beside a serving
+    machine: the container name, so it cannot collide with the backend that is up; the published
+    port, for the same reason; and the network, because a throwaway must not join the router's
+    network or take the profile's service aliases. ``restart`` also comes back to ``no`` — a
+    measurement that fails is a finding, not a container that keeps trying.
+
+    This is written as a compose file rather than translated to ``docker run`` on purpose: the card
+    reservations have to be asked for exactly the way the switch will ask for them, and the switch
+    asks for them through compose.
     """
-    args = ['run', '-d', '--name', name, '--restart', 'no', '--network', 'bridge',
-        '--label', 'local-ai.provisioning=throwaway']
-    if cfg.get('entrypoint'):
-        args += ['--entrypoint', cfg['entrypoint'][0]]
-    if cfg.get('user'):
-        args += ['--user', cfg['user']]
-    if cfg.get('init'):
-        args += ['--init']
-    if cfg.get('stop_grace_period'):
-        args += ['--stop-timeout', str(int(str(cfg['stop_grace_period']).rstrip('s')))]
-    for limit, value in sorted((cfg.get('ulimits') or {}).items()):
-        args += ['--ulimit', f'{limit}={value}']
-    for mount in cfg.get('tmpfs') or []:
-        args += ['--tmpfs', mount]
-    for key, value in sorted((cfg.get('environment') or {}).items()):
-        args += ['-e', f'{key}={value}']
-    for volume in cfg['volumes']:
-        suffix = ':ro' if volume.get('read_only') else ''
-        args += ['-v', volume['source'] + ':' + volume['target'] + suffix]
-    devices = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
-    args += ['--gpus', 'device=' + ','.join(devices)]
-    args += ['-p', f'127.0.0.1:{port}:8080', cfg['image']] + list(cfg.get('command') or [])
-    return args
+    compose = copy.deepcopy(bundle['compose'])
+    compose['name'] = PROJECT
+    compose['services'] = {role: compose['services'][role]}
+    compose['services'][role].update(container_name=name, restart='no',
+        ports=[f'127.0.0.1:{port}:8080'],
+        labels={**(compose['services'][role].get('labels') or {}), 'local-ai.provisioning': 'throwaway'})
+    compose['networks'] = {'router': {'name': PROJECT + '_router'}}
+    return compose
+
+
+def stop_seconds(cfg):
+    """How long the engine gets to shut down, from its own grace period."""
+    return int(str(cfg.get('stop_grace_period') or '30s').rstrip('s'))
 
 
 def probe(system, port):
@@ -106,26 +108,31 @@ def neighbour(system, name):
         'health': health.get('Status') or 'none'}
 
 
-def watch(system, cfg, name, port, files, neighbour_name=None, goal='healthy', limit=LIMIT_SECONDS,
-          poll=POLL_SECONDS, log=print):
+def watch(system, path, role, name, port, files, neighbour_name=None, goal='healthy',
+          limit=LIMIT_SECONDS, poll=POLL_SECONDS, stop=STOP_SECONDS, log=print):
     """Start the container and poll until the workspace is built, or it is answering, or time is up.
 
     ``goal`` is ``workspace`` when only the build is wanted — beside a loaded model the engine may
     never reach health, and waiting for it would prove nothing — and ``healthy`` for the boot a
-    switch actually waits for. The container is removed in every outcome, and the samples always
+    switch actually waits for. The project is torn down in every outcome, and the samples always
     come back: a run that failed to reach anything is still a measurement, and is written down
     rather than retried until it is forgotten.
     """
-    system.docker('rm', '-f', name, check=False)
+    project = ['-p', PROJECT, '-f', str(path)]
+    # Anything left by a run that was interrupted is cleared before this one starts, so the seconds
+    # measured below belong to this container.
+    system.docker('compose', *project, 'down', '--remove-orphans', '-t', '5', check=False)
     started = time.monotonic()
     samples = []
     reached = 'timed out'
     try:
-        system.docker(*run_arguments(cfg, name, port))
+        # No --wait: the wait is the thing being measured, and it is measured against the workspace
+        # and the engine's own answer rather than against Docker's opinion of when to give up.
+        system.docker('compose', *project, 'up', '-d', '--no-deps', '--pull', 'never', role)
         while True:
             elapsed = time.monotonic() - started
             answer = probe(system, port)
-            workspace = all(path.is_file() for path in files)
+            workspace = all(target.is_file() for target in files)
             sample = {'seconds': round(elapsed, 1), 'workspace': workspace, 'health': answer is not None}
             if neighbour_name:
                 sample['neighbour'] = neighbour(system, neighbour_name)
@@ -139,7 +146,7 @@ def watch(system, cfg, name, port, files, neighbour_name=None, goal='healthy', l
                 break
             time.sleep(poll)
     finally:
-        system.docker('rm', '-f', name, check=False)
+        system.docker('compose', *project, 'down', '--remove-orphans', '-t', str(stop), check=False)
     return {'seconds': round(time.monotonic() - started, 1), 'reached': reached,
         'workspace_ready': any(s['workspace'] for s in samples),
         'samples': samples}
@@ -163,14 +170,20 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
         require(not controller.serving(), 'A warm boot needs the text cards to itself; take this '
             'measurement between turns, when nothing is serving')
     port = published_port(cfg, PORT_OFFSET if phase == 'provision' else 0)
-    result = watch(system, cfg, cfg['container_name'] + '-provision', port,
-        ready_files(workspace, provision), neighbour_name=cfg['container_name'],
-        goal='workspace' if phase == 'provision' else 'healthy', limit=limit, poll=poll, log=log)
+    name = cfg['container_name'] + '-provision'
+    spec = controller.state / 'provisioning' / (profile + '-compose.json')
+    # The exact file this run started from stays on disk: if a measurement is questioned later, or a
+    # later engine revision changes what it asks for, the difference is readable.
+    atomic_json(spec, throwaway(bundle, role, name, port))
+    result = watch(system, spec, role, name, port, ready_files(workspace, provision),
+        neighbour_name=cfg['container_name'], goal='workspace' if phase == 'provision' else 'healthy',
+        limit=limit, poll=poll, stop=stop_seconds(cfg), log=log)
     receipt = controller.load('provisioning/' + profile + '.json') or {'profile': profile,
         'engine_tag': engine['tag'], 'image_id': engine['image_id'], 'workspace': str(workspace),
         'ready_files': list(provision.get('ready_files', [])), 'runs': []}
     receipt['measured_at'] = now()
-    receipt['runs'].append({'phase': phase, 'reached': result['reached'], 'seconds': result['seconds']})
+    receipt['runs'].append({'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'],
+        'container': name, 'port': port})
     if phase == 'provision':
         receipt['provision_seconds'] = result['seconds']
         receipt['workspace_ready'] = result['workspace_ready']

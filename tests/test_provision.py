@@ -14,9 +14,9 @@ from unittest import main
 from unittest.mock import patch
 
 import test_controller as fixture
-from runtime.config import render
+from runtime.config import read, render
 from runtime.controller import Controller
-from runtime.provision import measurement, run_arguments, workspace_target
+from runtime.provision import measurement, throwaway, workspace_target
 from runtime.system import atomic_json
 
 PROFILE = 'flash-next-strata-160k'
@@ -35,20 +35,27 @@ class ProvisioningSystem(fixture.FakeSystem):
         self.health_polls = 0
         self.started = []
         self.throwaway_port = None
+        self.devices = None
 
     def docker(self, *args, **kwargs):
-        if args[0] == 'run':
+        # The measurement starts and stops its own compose project; the fake plays the part of
+        # compose reading the file it was handed, including the card reservations in it.
+        if args[0] == 'compose' and 'up' in args:
             self.events.append(('docker', args))
-            self.started.append(args)
-            published = args[args.index('-p') + 1]
-            self.throwaway_port = published.split(':')[1]
-            self.containers[args[args.index('--name') + 1]] = {'Id': 'throwaway', 'Name': args[args.index('--name') + 1],
-                'State': {'Running': True}, 'Config': {'Cmd': []}}
-            return 'throwaway'
-        if args[0] == 'rm' and args[-1] not in self.containers:
-            # A throwaway that never made it is not an error worth raising about; the real thing
-            # would have nothing to remove and `check=False` says so.
+            spec = read(args[args.index('-f') + 1])
+            role = args[-1]
+            service = spec['services'][role]
+            self.throwaway_port = service['ports'][0].split(':')[1]
+            self.devices = service['deploy']['resources']['reservations']['devices'][0]['device_ids']
+            self.started.append((service['container_name'], self.throwaway_port, list(self.devices)))
+            self.containers[service['container_name']] = {'Id': 'throwaway',
+                'Name': service['container_name'], 'State': {'Running': True}, 'Config': {'Cmd': []}}
+            return ''
+        if args[0] == 'compose' and 'down' in args:
             self.events.append(('docker', args))
+            spec = read(args[args.index('-f') + 1])
+            for service in spec['services'].values():
+                self.containers.pop(service['container_name'], None)
             return ''
         return super().docker(*args, **kwargs)
 
@@ -141,25 +148,31 @@ class ProvisionTests(unittest.TestCase):
         self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
         self.assertEqual(self.c.switchable(self.bundle), None)
 
-    def test_the_throwaway_run_asks_for_the_same_machine_the_switch_would(self):
+    def test_the_throwaway_project_asks_for_the_same_machine_the_switch_would(self):
         """Anything less and the measurement is about a different container than the one to come."""
         cfg = self.bundle['compose']['services']['coding']
-        args = run_arguments(cfg, cfg['container_name'] + '-provision', 18081)
-        flags = ' '.join(args)
+        spec = throwaway(self.bundle, 'coding', cfg['container_name'] + '-provision', 18081)
+        service = spec['services']['coding']
+        self.assertEqual(list(spec['services']), ['coding'])
+        self.assertEqual(spec['name'], 'ai-runtime-provision')
+        self.assertEqual(service['container_name'], 'qwen38-daytime-provision')
+        self.assertEqual(service['ports'], ['127.0.0.1:18081:8080'])
+        self.assertEqual(service['restart'], 'no')
+        self.assertEqual(service['labels']['local-ai.provisioning'], 'throwaway')
+        for key in ('image', 'entrypoint', 'command', 'environment', 'user', 'volumes', 'ulimits',
+                'tmpfs', 'healthcheck', 'read_only', 'init', 'pull_policy', 'logging'):
+            self.assertEqual(service[key], cfg[key], key)
         devices = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
-        self.assertIn('--gpus device=' + ','.join(devices), flags)
-        self.assertIn(cfg['image'], args)
-        self.assertEqual(args[args.index('--entrypoint') + 1], cfg['entrypoint'][0])
-        self.assertEqual(args[args.index(cfg['image']):], [cfg['image'], *cfg['command']])
-        self.assertEqual(args[args.index(cfg['image']) + 1:], list(cfg['command']))
-        for key, value in cfg['environment'].items():
-            self.assertIn(f'-e {key}={value}', flags)
-        workspace = str(self.workspace)
-        self.assertIn(f'-v {workspace}:/data ', flags + ' ')
-        self.assertNotIn('-v ' + workspace + ':/data:ro', flags)
-        self.assertIn('--network bridge', flags)
-        self.assertNotIn('router', args)
-        self.assertNotEqual(cfg['container_name'], args[args.index('--name') + 1])
+        self.assertEqual(len(devices), 4)
+        self.assertEqual(service['deploy'], cfg['deploy'])
+        # And it is kept out of the router's world: a private network of its own, never the external
+        # one, and the profile's real service definition is left exactly as it was.
+        self.assertNotIn('external', spec['networks']['router'])
+        self.assertNotEqual(spec['networks']['router']['name'],
+            self.bundle['compose']['networks']['router']['name'])
+        self.assertEqual(cfg['container_name'], 'qwen38-daytime')
+        self.assertEqual(cfg['restart'], 'unless-stopped')
+        self.assertEqual(cfg['ports'], ['127.0.0.1:18080:8080'])
 
     def test_the_build_is_measured_while_the_serving_backend_is_watched(self):
         """Packing competes with a loaded model; this run is also the answer to whether that matters."""
@@ -168,8 +181,8 @@ class ProvisionTests(unittest.TestCase):
         self.assertGreaterEqual(result['provision_seconds'], 0)
         self.assertTrue(result['neighbour_healthy'])
         self.assertTrue(self.system.started)
-        self.assertTrue(all('qwen38-daytime-provision' == args[args.index('--name') + 1]
-            for args in self.system.started))
+        self.assertEqual([name for name, _port, _devices in self.system.started],
+            ['qwen38-daytime-provision'])
         # Nothing about the serving pair was touched, and it is still serving.
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining)
