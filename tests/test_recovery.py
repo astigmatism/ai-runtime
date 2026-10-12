@@ -93,6 +93,11 @@ class RecoveryTests(unittest.TestCase):
             atomic_json(state / 'update-job.json', {'phase': 'controller-replacement'})
             with self.assertRaises(RuntimeError): stable_state(state)
             atomic_json(state / 'update-job.json', {'phase': 'succeeded'})
+            # A service restoration that has not finished is not a moment to take a receipt.
+            atomic_json(state / 'restoration.json', {'attempts': 2, 'next_attempt_at': '2026-10-12T04:26:00+00:00'})
+            with self.assertRaises(RuntimeError): stable_state(state)
+            atomic_json(state / 'restoration.json', {'attempts': 2,
+                'finished_at': '2026-10-12T04:56:00+00:00'})
             stable_state(state)
 
     def test_all_profiles_have_unique_artifact_inventory(self):

@@ -47,6 +47,18 @@ let pending = null, requestUnknown = false, polling = false, actionError = '';
 function schedule(delay) { clearTimeout(timer); timer=setTimeout(tick,delay); }
 try { pending = JSON.parse(sessionStorage.getItem('runtime-switch-request')); } catch (_) { /* Storage may be disabled. */ }
 if (pending && typeof pending.request_id !== 'string') pending = null;
+// A restore request is kept apart from a switch request: it names no profile and expects nothing
+// to have been observed first, because it is the lever for a machine that is not serving.
+let restorePending = null;
+try { restorePending = JSON.parse(sessionStorage.getItem('runtime-restore-request')); } catch (_) { /* As above. */ }
+if (restorePending && typeof restorePending.request_id !== 'string') restorePending = null;
+function rememberRestore(request) {
+  restorePending = request;
+  try {
+    if (request) sessionStorage.setItem('runtime-restore-request', JSON.stringify(request));
+    else sessionStorage.removeItem('runtime-restore-request');
+  } catch (_) { /* The server receipt also survives refresh and reconnect. */ }
+}
 function remember(request) {
   pending = request;
   try {
@@ -60,6 +72,7 @@ function tellError(message) { el('error').hidden = !message; el('error').textCon
 function setOperation(next) {
   if (!next) return;
   if (pending?.request_id === next.id) { remember(null); requestUnknown = false; }
+  if (restorePending?.request_id === next.id) rememberRestore(null);
   if (operation?.id === next.id && operation.updated_at > next.updated_at) return;
   if (operation && operation.id !== next.id && operation.started_at > next.started_at) return;
   operation = next;
@@ -228,8 +241,12 @@ function renderProgress() {
   if (!operation) return;
   panel.className = `operation ${operation.status}`;
   const target = profileName(operation.target_profile);
-  const title = {running: operation.phase === 'restoring' ? `Restoring ${profileName(operation.from_profile)}` : `Switching to ${target}`,succeeded:`${target} is ready`,failed:'Switch did not complete',recovered:`Switch failed · ${profileName(operation.from_profile)} restored`,'needs-attention':'Recovery needs attention'};
-  el('operation-title').textContent = title[operation.status] || 'Switch result';
+  // A restoration is a different promise from a switch, so it is titled as one: nothing was
+  // chosen, and the point is that the previous configuration is serving again.
+  const title = operation.kind === 'restore'
+    ? {running: `Restoring ${target}`, succeeded: `${target} is serving`, recovered: `${target} is serving`, failed: 'Restoration did not begin', 'needs-attention': 'Restoration needs attention'}
+    : {running: operation.phase === 'restoring' ? `Restoring ${profileName(operation.from_profile)}` : `Switching to ${target}`,succeeded:`${target} is ready`,failed:'Switch did not complete',recovered:`Switch failed · ${profileName(operation.from_profile)} restored`,'needs-attention':'Recovery needs attention'};
+  el('operation-title').textContent = title[operation.status] || (operation.kind === 'restore' ? 'Restoration result' : 'Switch result');
   const elapsed = Math.max(0, Math.floor(((operation.finished_at ? Date.parse(operation.finished_at) : Date.now()) - Date.parse(operation.started_at))/1000));
   el('elapsed').textContent = `${running()?'Elapsed':'Duration'} ${Math.floor(elapsed/60)}m ${elapsed%60}s`;
   const stepKey = `${operation.status}:${operation.phase}`;
@@ -248,7 +265,33 @@ function renderProgress() {
   }
   const message = operation.message || '';
   if (el('operation-message').textContent!==message) el('operation-message').textContent=message;
-  el('admissions').textContent = !connected ? 'Connection lost. The switch may still be running; reconnecting to check its status.' : admissionsPaused() ? 'New requests are paused for both models.' : operation.status==='needs-attention' ? 'Check current runtime health and follow the documented recovery procedure.' : '';
+  el('admissions').textContent = !connected ? 'Connection lost. The switch may still be running; reconnecting to check its status.' : admissionsPaused() ? 'New requests are paused for both models.' : operation.status==='needs-attention' ? (operation.kind === 'restore' ? 'Nothing is serving yet. The runtime schedules the next attempt itself, and you can run the restoration again below.' : 'Check current runtime health and follow the documented recovery procedure.') : '';
+}
+// The one lever for a machine that is not serving. It runs the same restoration the runtime's own
+// supervisor runs, so nobody has to reboot a host to get a model back.
+function secondsUntil(timestamp) {
+  const seconds = Math.round((Date.parse(timestamp) - Date.now()) / 1000);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  return ` in ${seconds < 120 ? `${seconds} seconds` : `${Math.round(seconds / 60)} minutes`}`;
+}
+function renderRestoration() {
+  const section = el('restoration');
+  const service = status?.service || {};
+  const restoring = running() && operation?.kind === 'restore';
+  const visible = connected && (restoring || service.pending || service.serving === false);
+  section.hidden = !visible;
+  if (!visible) return;
+  const name = profileName(service.profile || status?.profile);
+  const record = status?.restoration || {};
+  const attempts = record.attempts || 1;
+  el('restore-state').textContent = restoring ? `Restoring ${name}. New requests stay paused until it is serving.`
+    : service.pending ? `Nothing is serving. The runtime is retrying the restoration${secondsUntil(record.next_attempt_at)}, after ${attempts} attempt${attempts === 1 ? '' : 's'}.`
+    : `Nothing is serving and no restoration is pending. Run it now; this machine does not need to be restarted.`;
+  const unavailable = status?.restoring && status.restoring.available === false ? status.restoring.reason : '';
+  el('restore').disabled = submitting || !connected || restoring || Boolean(unavailable) || service.restorable === false;
+  el('restore-reason').textContent = service.restorable === false
+    ? 'No last-known-good release is recorded on this host, so there is nothing to restore to.'
+    : unavailable || (restoring ? 'The restoration is already running.' : '');
 }
 function render() {
   const health=el('health');
@@ -256,7 +299,7 @@ function render() {
   health.className=`badge ${connected && status?.ready && !running()?'ready':'pending'}`;
   const counts = status?.maintenance;
   el('requests').textContent = connected && counts ? `${counts.active_requests} active · ${counts.queued_requests} queued` : 'Requests unavailable';
-  renderRegistry(); renderTopology(); renderProgress(); renderDetails();
+  renderRegistry(); renderTopology(); renderProgress(); renderRestoration(); renderDetails();
   if (connected) el('updated').textContent=`Status updated ${new Date(status.updated_at || Date.now()).toLocaleTimeString()}`;
 }
 async function tick() {
@@ -271,7 +314,7 @@ async function tick() {
       setOperation(next.operation);
       tellError(actionError || next.startup_error || next.error || next.configurations?.error);
     }
-    const id=pending?.request_id || (running()?operation.id:null);
+    const id=pending?.request_id || restorePending?.request_id || (running()?operation.id:null);
     if (id) {
       try { setOperation(await getJSON(`/api/operations/${encodeURIComponent(id)}`)); }
       catch(error) {
@@ -279,7 +322,7 @@ async function tick() {
         // An unrecorded request may be retried explicitly with the SAME ID. Never
         // automatically POST after a lost response, refresh, or reconnect.
         requestUnknown=false;
-        tellError('No operation was recorded for that request. You can try the switch again.');
+        tellError(restorePending?.request_id===id ? 'No operation was recorded for that request. You can run the restoration again.' : 'No operation was recorded for that request. You can try the switch again.');
       }
     }
   } catch(error) {
@@ -287,8 +330,27 @@ async function tick() {
     tellError('Runtime status is unavailable. A switch may still be running; reconnecting without sending another request.');
   }
   render();
-  polling=false; schedule(running() || pending || requestUnknown ? 1000 : 5000);
+  // While a restoration is scheduled the page keeps watching at one-second cadence, because the
+  // runtime may bring the service back between polls and that is worth seeing immediately.
+  polling=false; schedule(running() || pending || restorePending || requestUnknown || status?.service?.pending ? 1000 : 5000);
 }
+// One action, no confirmation: it is the same restoration the runtime's supervisor performs, and
+// the page is read at a moment when the machine is not answering anyone.
+el('restore').addEventListener('click', async () => {
+  if (el('restore').disabled || submitting) return;
+  submitting=true; actionError=''; tellError(''); render(); clearTimeout(timer);
+  // Remembered before it is sent, and a lost response is never reposted automatically — the same
+  // rule the switch follows, so a retry cannot start a second restoration.
+  const request = restorePending || {request_id:uuid()};
+  rememberRestore(request);
+  try {
+    const result=await getJSON('/api/restore-last-known-good',{method:'POST',headers:{'Content-Type':'application/json','X-Runtime-CSRF':status.csrf_token},body:JSON.stringify(request)});
+    setOperation(result.operation); requestUnknown=false;
+  } catch(error) {
+    if (error.httpStatus && error.httpStatus<500) { rememberRestore(null); requestUnknown=false; actionError=error.message; tellError(actionError); }
+    else { connected=false; requestUnknown=true; tellError('Connection lost while starting the restoration. Checking whether it was accepted.'); }
+  } finally { submitting=false; lastStatus=0; render(); schedule(1000); }
+});
 el('switch-form').addEventListener('submit',async event => {
   event.preventDefault();
   if (el('apply').disabled) return;

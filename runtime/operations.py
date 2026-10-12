@@ -2,12 +2,15 @@
 from contextlib import ExitStack
 import re
 import threading
+import uuid
 
 from .config import DAYTIME_PROFILES, is_exclusive, nighttime_for, read
+from .controller import PENDING_PHASES
 from .system import lock, now
 
 OPERATION_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
-PENDING = ('prepared', 'draining', 'applying', 'verifying', 'needs-attention')
+# One vocabulary for "a runtime transaction has not finished", shared with the controller.
+PENDING = PENDING_PHASES
 MESSAGES = {
     'checking': 'Checking the configuration, model files, and runtime.',
     'draining': 'Waiting for existing requests to finish. New requests are paused.',
@@ -24,9 +27,18 @@ MESSAGES = {
     'needs-attention': 'Recovery is incomplete. Switching is disabled; an operator must check the runtime.',
     'drain-timeout': 'Existing work did not finish within five minutes. No active generation was stopped.',
     'interrupted': 'The operation was interrupted before a runtime transaction began. No switch was retried.',
+    # The restoration is a different promise from a switch, so it says what it is: nothing is
+    # serving, and this is the runtime bringing the previous configuration back by itself.
+    'restore-restoring': 'Restoring the last-known-good configuration. Requests stay paused until it is serving.',
+    'restore-succeeded': 'The last-known-good configuration is serving and requests are open.',
+    'restore-recovered': 'The last-known-good configuration is serving and requests are open.',
+    'restore-needs-attention': ('The restoration did not complete. It will try again on its own; the reason is in '
+        'the runtime transaction, and the button runs the same restoration again.'),
+    'restore-failed': ('The restoration could not begin. Nothing was changed; the reason is in the runtime '
+        'transaction, and the button runs the same restoration again.'),
 }
-PUBLIC_FIELDS = ('id', 'from_profile', 'target_profile', 'revision', 'status', 'phase', 'started_at',
-                 'updated_at', 'finished_at', 'error_code', 'already_active')
+PUBLIC_FIELDS = ('id', 'kind', 'trigger', 'from_profile', 'target_profile', 'revision', 'status', 'phase',
+                 'started_at', 'updated_at', 'finished_at', 'error_code', 'already_active')
 
 
 def public_operation(operation):
@@ -37,6 +49,11 @@ def public_operation(operation):
     if key == 'loading' and operation.get('nighttime') in ('stops', 'starts', 'off', 'changes'):
         key = {'stops': 'loading-stops-nighttime', 'starts': 'loading-starts-nighttime', 'off': 'loading-nighttime-off',
             'changes': 'loading-changes-nighttime'}[operation['nighttime']]
+    if operation.get('kind') == 'restore':
+        # A restoration is a different promise from a switch, so it is described in its own words
+        # even when it ends in a phase a switch would also have used.
+        named = 'restore-' + (operation['phase'] if operation['status'] == 'running' else operation['status'])
+        key = named if named in MESSAGES else key
     result['message'] = MESSAGES.get(key, MESSAGES.get(operation['status'], 'Runtime status unavailable.'))
     return result
 
@@ -147,6 +164,130 @@ class Operations:
             except BaseException:
                 guards.close()
                 raise
+
+    def restore_blockers(self):
+        """Why a restoration may not start right now.
+
+        Deliberately not the switch's list. A runtime that is not serving, is not ready, or has an
+        interrupted transaction is precisely when a restoration is needed, so none of those can be
+        reasons to refuse one. What is refused is a competing owner of the router or the checkout,
+        and a host with no recorded release to bring back.
+        """
+        c = self.controller
+        if c.load('router-maintenance.json', {}).get('reserved'):
+            return 'A router deployment reserves the runtime.'
+        if c.load('update-job.json', {}).get('phase') in ('prepared', 'controller-replacement'):
+            return 'A source deployment must finish or be recovered first.'
+        if (self.latest() or {}).get('status') == 'running' or (self.worker and self.worker.is_alive()):
+            return 'Another runtime operation is already in progress.'
+        if c.last_known_good() is None:
+            return 'No last-known-good release is recorded; operator attention required.'
+        return None
+
+    def restore_availability(self):
+        reason = self.restore_blockers()
+        if reason:
+            return {'available': False, 'reason': reason}
+        try:
+            # Probe only; do no journal I/O while briefly holding the locks.
+            with lock(self.controller.state / 'update.lock'), lock(self.controller.state / 'runtime.lock'):
+                pass
+            return {'available': True, 'reason': None}
+        except RuntimeError:
+            return {'available': False, 'reason': 'Another runtime operation or source deployment is in progress.'}
+
+    def start_restore(self, request):
+        """Admit the one-action restore: no profile, and nothing observed beforehand."""
+        if (not isinstance(request, dict) or set(request) != {'request_id'}
+                or not isinstance(request.get('request_id'), str)
+                or not OPERATION_ID.fullmatch(request['request_id'])):
+            raise OperationError(400, 'invalid-request', 'Provide only a request UUID.')
+        with self.mutex:
+            existing = self.read(request['request_id'])
+            if existing:
+                if existing.get('kind') != 'restore' or existing.get('request') != dict(request):
+                    raise OperationError(409, 'request-id-reused', 'This request ID belongs to a different operation.')
+                return existing, False
+            guards = ExitStack()
+            try:
+                try:
+                    guards.enter_context(lock(self.controller.state / 'update.lock'))
+                    guards.enter_context(lock(self.controller.state / 'runtime.lock'))
+                except RuntimeError:
+                    raise OperationError(409, 'busy', 'Another runtime operation or source deployment is in progress.') from None
+                reason = self.restore_blockers()
+                if reason:
+                    raise OperationError(409, 'unavailable', reason)
+                return self.begin_restore(guards, 'portal', operation_id=request['request_id']), True
+            except BaseException:
+                guards.close()
+                raise
+
+    def begin_restore(self, guards, trigger, operation_id=None):
+        """Start the restoration in its own worker so the page keeps polling while it runs."""
+        good = self.controller.last_known_good() or {}
+        profile = good.get('bundle', {}).get('profile')
+        operation = {'id': operation_id or str(uuid.uuid4()), 'kind': 'restore', 'trigger': trigger,
+            'from_profile': self.controller.load('transaction.json', {}).get('profile') or profile,
+            'target_profile': profile, 'revision': self.controller.revision,
+            'status': 'running', 'phase': 'restoring', 'started_at': now()}
+        if operation_id:
+            operation['request'] = {'request_id': operation_id}
+        self.save(operation)
+        self.controller.save('latest-operation.json', {'id': operation['id']})
+        self.worker = threading.Thread(target=self.run_restore, args=(operation, guards), daemon=True)
+        try:
+            self.worker.start()
+        except Exception:
+            self.complete(operation, 'needs-attention', 'The restoration could not be started.')
+            raise
+        return dict(operation)
+
+    def restore_if_due(self):
+        """Run a scheduled restoration when its timer has come due. This is the retry on a timer.
+
+        A failed attempt schedules the next one, so as long as this loop is alive the runtime
+        keeps trying until it is serving; nothing here waits for a person to notice.
+        """
+        with self.mutex:
+            if self.worker and self.worker.is_alive():
+                return None
+        if not self.controller.restoration_due():
+            return None
+        guards = ExitStack()
+        try:
+            try:
+                guards.enter_context(lock(self.controller.state / 'update.lock'))
+                guards.enter_context(lock(self.controller.state / 'runtime.lock'))
+            except RuntimeError:
+                return None  # Something else owns the runtime this tick; the schedule still stands.
+            if not self.controller.restoration_due():
+                return None
+            return self.begin_restore(guards, 'supervisor')
+        except BaseException:
+            guards.close()
+            raise
+
+    def run_restore(self, operation, guards):
+        c = self.controller
+        def progress(phase):
+            operation['phase'] = phase
+            self.save(operation)
+        try:
+            c._restore_locked(operation_id=operation['id'], progress=progress)
+            self.publish_status(c.status())
+            self.complete(operation, 'recovered')
+        except BaseException as error:
+            # This receipt is what a person reads when the box is not serving, so the reason stays
+            # with it. The next attempt is already scheduled by the failed pass.
+            tx = c.load('transaction.json', {})
+            status = 'needs-attention'
+            if tx.get('id') == operation['id'] and tx.get('phase') in ('succeeded', 'failed', 'recovered'):
+                status = tx['phase']
+            self.publish_status(c.status())
+            self.complete(operation, status, str(error))
+        finally:
+            guards.close()
 
     def publish_status(self, snapshot):
         # A slow poll started before the switch must not overwrite newer health.

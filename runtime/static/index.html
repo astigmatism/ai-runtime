@@ -35,6 +35,12 @@
       <p id="admissions" class="secondary"></p>
     </section>
   </section>
+  <section id="restoration" class="restoration" aria-labelledby="restore-title" hidden>
+    <h2 id="restore-title">Service restoration</h2>
+    <p id="restore-state" class="secondary" role="status" aria-live="polite"></p>
+    <button id="restore" type="button">Restore last-known-good</button>
+    <p id="restore-reason" class="secondary"></p>
+  </section>
   <details class="runtime-details"><summary>Runtime details</summary><div id="services"></div><p class="revision">Deployed revision <code id="revision">—</code></p></details>
   <details class="deployment-details"><summary>Deployment details</summary><h3 id="deploy-state">No source deployment recorded</h3><p id="deploy-detail" class="secondary"></p><p class="secondary">Deploy source changes with <strong>Update and restart</strong> in Service Portal.</p></details>
   <footer><span id="updated">Waiting for status</span><span>AI Runtime · Rosalina</span></footer>

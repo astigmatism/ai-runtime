@@ -14,6 +14,11 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def future(seconds):
+    """The same timestamp format, `seconds` from now, so a schedule is readable and comparable."""
+    return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)).isoformat()
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

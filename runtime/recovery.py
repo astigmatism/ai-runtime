@@ -32,6 +32,11 @@ def stable_state(state):
     reservation = state / 'router-maintenance.json'
     require(not reservation.exists() or not read(reservation).get('reserved'),
             'Router maintenance is reserved')
+    # A host that is still trying to get a backend serving is not a host worth archiving: the
+    # receipt would show a machine that is not answering anyone, and the retry is mid-flight.
+    restoration = state / 'restoration.json'
+    require(not restoration.exists() or read(restoration).get('finished_at'),
+            'A restoration is bringing the service back; wait for it to finish before exporting')
 
 
 def model_inventory(root):

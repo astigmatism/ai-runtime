@@ -205,7 +205,7 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
 - **Not enabled in the profile:** `--calibrate` and any auto-tuning, `VISION`, aliases, and a second slot. The strict-determinism measurements (single-thread, cache-off) belong to the benchmark harness, not to the served configuration.
 - **What `output_policy: unrestricted` means here.** The house contract requires it, and it is true in the sense it is used: the deployment sets no server-side output ceiling. It is **not** a claim that this quant produces unrestricted content: `UD-IQ4_XS` is Unsloth's dynamic quant of the official Qwen release, not an uncensored variant, so `nsfw` stays `false` and a warning to that effect ships with the catalog entry. It has not been attested on the trial quant.
 - **Retention, bounded when it was created** (the rule is repeated in the profile's `retention` block): the image — keep exactly the registered tag for as long as the profile exists, superseded tags removed reference-aware and never by a blanket prune; the model revision — retained only while the profile is registered, then it is an ordinary library revision under the normal pass; the workspace `ai/strata-trial/data` — bounded by the engine and removed with the profile; reports — `ops/reports/<date>-strata-trial`, following the existing reports aging. Root filesystem headroom is checked before and after the download (the 85% warning line in the house maintenance pass); at staging it was 434 GB free of 938 GB.
-- **Before selecting it:** create `ai/models/strata-trial/data` owned by the deployment user (the engine writes there), and expect the first start to take minutes, not seconds. The circuit breaker for the trial, agreed with the owner: any sustained state under 8 GiB MemAvailable or under 150 MiB free on any of the four cards is expected behaviour for a 94 GB model on 123 GB of RAM and is the signal to switch back, not an incident to debug. Switching back **is** the rollback; teardown is removing the profile and then the image reference-aware.
+- **Before selecting it:** see [pre-provisioning the trial](#pre-provisioning-the-trial-and-the-window-it-has-to-produce) — creating `ai/models/strata-trial/data` owned by the deployment user is not enough any more; the switch is refused until the workspace build and a warm boot have been measured on this host. The circuit breaker for the trial, agreed with the owner: any sustained state under 8 GiB MemAvailable or under 150 MiB free on any of the four cards is expected behaviour for a 94 GB model on 123 GB of RAM and is the signal to switch back, not an incident to debug. Switching back **is** the rollback; teardown is removing the profile and then the image reference-aware.
 - **Baseline measured on 2026-10-11 from the running `flash-next-solo-160k`** (same probe, prompt set and method the trial will be measured with; three distinct prompts per length, greedy, 256 new tokens, direct to `127.0.0.1:18080`; `ops/reports/20261011-strata-trial/baseline.jsonl`):
 
 | Prompt tokens | First token (s) | Prefill (tok/s) | Decode (tok/s) |
@@ -216,7 +216,29 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
 | 131,072 (131,116–131,348) | 137.2 / 137.7 / 138.8 | 946–956 | 35.4 / 35.5 / 35.9 |
 
   The three prompts of one length share their filler, so the 32K row shows both a cold run (1,019 tok/s) and prefix-cache hits (9,261–11,851) rather than three comparable prefills; the 16K and 128K rows are cold. The trial must be read the same way, cold run against cold run. Nothing here was estimated: every number is one recorded request.
-- **Open questions the trial still has to answer**, stated at creation: how long the first start actually takes (the pack plus the ~6 GB draft download, which needs Hugging Face egress and is the engine's own mtp/rt form, not the `mtp-*.gguf` heads in the library); whether `--vision no` in a `BUILD_VISION=0` image changes anything the router or `/v1/models` reports. Narrowed since: the numbering question only decides *which of the four* is card `0`, because the container is given exactly the four reserved UUIDs and `GPUS=0,1,2,3` asks for all of them — the pre-flight shows the host enumerates 0=RTX 3080 Ti, 1=RTX 4080 SUPER, 2=RTX 3090, 3=RTX 4080, and `LAYER_SPLIT=auto` places the layers by free VRAM whichever end of that list is which.
+- **Open questions the trial still has to answer**, stated at creation: how long the first start actually takes (the pack plus the ~6 GB draft download, which needs Hugging Face egress and is the engine's own mtp/rt form, not the `mtp-*.gguf` heads in the library) — since 2026-10-12 this one is no longer open-ended but a prerequisite: it is measured by [pre-provisioning](#pre-provisioning-the-trial-and-the-window-it-has-to-produce), and the profile cannot be switched to until it has been; whether `--vision no` in a `BUILD_VISION=0` image changes anything the router or `/v1/models` reports. Narrowed since: the numbering question only decides *which of the four* is card `0`, because the container is given exactly the four reserved UUIDs and `GPUS=0,1,2,3` asks for all of them — the pre-flight shows the host enumerates 0=RTX 3080 Ti, 1=RTX 4080 SUPER, 2=RTX 3090, 3=RTX 4080, and `LAYER_SPLIT=auto` places the layers by free VRAM whichever end of that list is which.
+
+## Pre-provisioning the trial, and the window it has to produce
+
+The trial has now been switched to twice and left the box with nothing serving both times. The first attempt failed on merged container settings; the second (2026-10-12, 01:12) got the container up and then spent its whole readiness window inside the engine's first-boot work — reading 94 GB of shards, building the expert pack, installing the draft layer — never reached `/health`, and was abandoned with the router drained. The workspace it left behind, `ai/models/strata-trial/data`, still holds the config that run started. So the readiness window on this engine has never been a measurement; it has been 3600 s because that was a plausible number.
+
+A switch is now refused until the number is measured **here**:
+
+```sh
+docker exec local-ai-runtime python3 -m runtime provision --profile flash-next-strata-160k
+# the workspace build, alongside the serving backend; nothing is stopped
+
+docker exec local-ai-runtime python3 -m runtime provision --profile flash-next-strata-160k --phase warm
+# the boot a switch actually waits for, taken between turns, when the cards are free
+```
+
+- The first command renders the profile's real bundle and starts its container as a throwaway — same image, entrypoint, environment, user, binds and four card reservations, different container name, on the plain bridge network so it is not in the router's world. It stops as soon as `/data/config/strata-ud-iq4_xs.json` exists, and it samples the serving backend every poll: that run is also the answer to whether packing a model competes with a model that is loaded and answering, which had only ever been assumed.
+- The second one cannot run while anything is serving, because a warm boot needs the cards to itself. It never stops the serving backend to get them: it refuses, and the measurement is taken between turns. It records the seconds from container start to the first healthy `/health`.
+- Both merge into `.state/provisioning/flash-next-strata-160k.json`: the engine tag and image id, the workspace, the ready files, `provision_seconds`, `warm_boot_seconds`, `healthy_warm_boot`, the neighbour samples, and every run. A receipt counts only for the image id and workspace directory it was taken with, so a rebuilt tag or a moved workspace invalidates it and the switch is refused again.
+- `Controller.switchable` refuses the switch when there is no receipt, when the receipt says the warm boot never reached health (**in which case the trial is not switchable, and the honest move is to retire the profile**), or when `readiness_wait_seconds` is under three times the measured warm boot. The refusal happens before the drain, before anything is recreated, and its message says which command to run.
+- Set `readiness_wait_seconds` to at least three times the measured boot, and report the measurement in the trial's report. Do not carry over 3600 s, and do not take the number from another machine: this is the only box with these four cards, and the whole complaint is that nobody measured it.
+
+The tool is measurement, not a switch: it starts no compose project, touches no catalog, and takes no drain. It is refused while a runtime transaction is pending, for the same reason.
 
 ## Speculative decoding experiments
 
@@ -265,6 +287,67 @@ These follow the DFlash 2 review of 2026-10-07. DFlash 2 drafts a block of token
      After load the RTX 4080 has 1.06 GB free, the RTX 3080 Ti 1.5 GB, and the RTX 3080 4.2 GB in use.
    - **Switching:** the head was trained for the original model, not the abliterated one, so acceptance may be lower than Daytime's. In the browser, switching between configurations that differ only in their Nighttime variant recreates only Nighttime; an unexpected Nighttime change is still refused. DFlash 2 for Nighttime is not planned, given experiment 2.
 
+## Service restoration: the host never rests with nothing serving
+
+Every destructive transition on this host has to be survivable without a person, and the path that
+puts the machine back has to be exercised by tests against the failures the deploy paths can
+actually produce. This house is run by agents. A human in front of a drained router with no lever is
+the failure mode, not the fallback.
+
+So the runtime never comes to rest with no backend serving and no automatic action pending. Either a
+healthy backend answers with admissions open, or the last-known-good release is being brought back —
+now, or on a schedule that does not need anyone at the keyboard.
+
+### What that means when a transition fails
+
+| Situation | Behaviour |
+| --- | --- |
+| A backend's `/slots` cannot be fetched | It is serving nothing. It is recorded as `unreachable` and never holds a drain open. A response that is not a slot list is recorded as `malformed`, which is not evidence of work either. |
+| A drain deadline passes during a restoration | The restoration continues. The router already rejects everything, so there is nobody left to be polite to; aborting there is exactly how a host ends up drained with no backend. |
+| A drain deadline passes before any backend was replaced | The operation refuses and has touched nothing. A generation on a backend's own port is legitimate work, and backing away costs nothing yet. |
+| A deployment fails after replacing a backend | The previous release is restored through the same finalize path a healthy boot uses: recreate, verify health and generation, republish the catalog, undrain, write the receipt. |
+| That restoration fails too | The next attempt is scheduled on a capped backoff (30s, 60s, 2m, 5m, 10m, 15m) and the controller's supervision loop takes it up. Attempts continue until the service comes back. |
+
+The failure is never left as a condition to notice. `.state/restoration.json` is the durable action:
+the profile to bring back, how many attempts have run, the reason, `next_attempt_at`, and the phases
+reached. It is cleared only once a healthy backend is serving with admissions open, and it holds off
+`python3 -m runtime.recovery export` while it is outstanding. Each phase a restoration reaches is
+also written into `transaction.json` under `restoration`, so what an attempt did is readable
+afterwards without a journal.
+
+### Three ways to run the same restoration
+
+There is one implementation — the boot-time path that brought this host back on llama.cpp by itself
+after the 2026-10-12 outage — and three ways to reach it:
+
+| Way | When it is used |
+| --- | --- |
+| The supervision loop | Automatic. A restoration that has come due runs on its own and the page reflects it. |
+| **Restore last-known-good** in the runtime page (`POST /api/restore-last-known-good`) | The one action for a machine that is not serving. It names no profile and expects nothing to have been observed first, and appears on the page whenever the runtime is not serving. |
+| `docker exec local-ai-runtime python3 -m runtime restore` | The same call from a shell, including one the browser cannot reach. |
+
+All three hold `runtime.lock` for the whole pass, refuse a router release that has reserved the
+runtime, and refuse to start while another operation is running. They do not refuse a runtime that
+is mid-transaction, not ready, or already reporting failures — that is the moment restoration is
+needed. A drain left set by an attempt that stopped belongs to no live operation, so the
+restoration takes it over and clears it.
+
+`GET /api/status` carries the contract: `service` (`serving`, `restorable`, `pending`, `profile`)
+and `restoration` (attempts, reason, next attempt, phases). Raw Docker errors stay in the private
+journals; the browser is shown the shape of the failure, never its text.
+
+### The release gates
+
+`tests/test_restoration.py` is what keeps this honest, and it runs in CI as part of
+`python3 -m unittest discover -s tests -v`:
+
+- a target that starts but never becomes healthy → the previous configuration is restored inside the
+  same call, the router is undrained, and a healthy backend is serving;
+- the restoration's own first attempt fails → it is scheduled, re-entered, and succeeds with nobody
+  touching anything;
+- a `/slots` response of the wrong shape → a bounded wait and a recorded decision, never a hang;
+- a backend that answers no port at all → treated as idle, so the drain can settle.
+
 ## Recover an interrupted update
 
 ```sh
@@ -293,7 +376,7 @@ updater.candidate(transaction['target']['image'], 'recover')
 PY
 ```
 
-A confirmed failed initialization may remain in Docker's restart loop. Recovery does not terminate an unhealthy process whose activity cannot be established. If this prevents recovery, inspect that backend's logs, confirm it is only a failed initializer and has no active work, then repair that one backend. Re-run recovery afterward. Admission stays paused until verification succeeds. This conservative case is reported as `needs-attention` rather than a successful rollback.
+A failed initializer may sit in Docker's restart loop while recovery runs. That no longer stalls it: a backend whose `/slots` cannot be read is serving nothing, and once the router reports it is relaying no work the restoration continues rather than arguing about activity it cannot see. If a pass still fails — a protected backend has drifted, a router release has reserved the runtime, or the release cannot be brought up at all — the attempt is recorded and the next one is scheduled, and the runtime page offers the same restoration as one action. Read the failed backend's logs when a specific backend needs repair, then run the restoration; admission stays paused until verification succeeds. `needs-attention` now means an attempt failed and another is coming, not that the machine needs to be restarted.
 
 ## Restore the initial host controller
 

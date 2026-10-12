@@ -28,9 +28,11 @@ def listed(config_dir):
 def main():
     parser = argparse.ArgumentParser(prog='ai-runtime')
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
-        'deploy', 'adopt', 'recover', 'rollback-release', 'publish', 'serve', 'list', 'check',
+        'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'serve', 'list', 'check',
+        'provision',
         'router-maintenance-begin', 'router-maintenance-end'])
     parser.add_argument('--profile', choices=DAYTIME_PROFILES)
+    parser.add_argument('--phase', choices=['provision', 'warm'], default='provision')
     parser.add_argument('--full-hash', action='store_true')
     args = parser.parse_args()
     if args.action == 'list':
@@ -61,6 +63,17 @@ def main():
         result = controller.transition(args.profile, deploy=args.action == 'deploy', adopt=args.action == 'adopt')
     elif args.action == 'recover':
         result = controller.recover()
+    elif args.action == 'restore':
+        # The one action that brings the last-known-good release back; the same path a healthy
+        # boot takes, so nobody has to reboot a machine to get the model serving again.
+        result = controller.restore_last_known_good()
+    elif args.action == 'provision':
+        # An engine that builds its own state before it answers is not switched to on a guessed
+        # window: this measures the build and the warm boot here, and the switch insists on it.
+        from .provision import measurement
+        if args.profile is None:
+            raise RuntimeError('provision needs --profile')
+        result = measurement(controller, args.profile, phase=args.phase)
     elif args.action == 'rollback-release':
         result = controller.rollback_release()
     elif args.action == 'publish':

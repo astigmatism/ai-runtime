@@ -26,6 +26,15 @@ def public_status(state):
     for key in ('last_deployment', 'source_deployment'):
         if (status.get(key) or {}).get('error'):
             status[key]['error'] = 'Deployment did not complete. View the Service Portal deployment result.'
+    # A restoration reason carries the same Docker detail as the private journals, including the
+    # per-phase record that says what each attempt ran into.
+    if (status.get('restoration') or {}).get('phases'):
+        for phase in status['restoration']['phases']:
+            if phase.get('error'):
+                phase['error'] = 'The attempt did not complete.'
+    for key in ('reason', 'last_error'):
+        if (status.get('restoration') or {}).get(key):
+            status['restoration'][key] = 'The restoration has not completed. View controller diagnostics for details.'
     return status
 
 
@@ -75,6 +84,9 @@ def handler(controller, state, operations=None):
                     status['operation'] = operation
                     if path == '/api/status':
                         status['switching'] = operations.availability()
+                        # The restore button needs its own availability: a runtime that refuses a
+                        # switch because it is not ready is exactly when the restore is allowed.
+                        status['restoring'] = operations.restore_availability()
                     if operation and operation['status'] == 'running':
                         status['ready'] = False
                 if path == '/healthz':
@@ -97,7 +109,8 @@ def handler(controller, state, operations=None):
                 self.send(404, {'error': 'Not found'})
 
         def do_POST(self):
-            if self.path != '/api/profile-switch':
+            route = self.path.split('?', 1)[0]
+            if route not in ('/api/profile-switch', '/api/restore-last-known-good'):
                 self.send(405, {'error': 'Method not allowed'})
                 return
             token = self.headers.get('X-Runtime-CSRF', '')
@@ -121,8 +134,11 @@ def handler(controller, state, operations=None):
             if not operations:
                 self.send(503, {'error': 'Runtime switching is unavailable'})
                 return
+            # The restore route is the same one action the runtime's own supervisor takes: bring
+            # back the release that last served. One button, and no reboot.
+            start = operations.start_restore if route == '/api/restore-last-known-good' else operations.start
             try:
-                operation, created = operations.start(request)
+                operation, created = start(request)
                 self.send(202 if created else 200, {'operation_id': operation['id'], 'operation': public_operation(operation)})
             except OperationError as error:
                 self.send(error.status, {'error': str(error), 'code': error.code})
@@ -139,7 +155,12 @@ def handler(controller, state, operations=None):
 def refresh(controller, state, operations):
     try:
         operations.reconcile_interrupted()
-        if not state['started']:
+        # A restoration that has come due outranks everything else in this loop. It is the
+        # automatic action the runtime owes a host that is not serving, so the retry timer is
+        # served here: a failed attempt schedules the next one and this is where it is taken up,
+        # rather than waiting for a person to notice or for someone to reboot the machine.
+        restoration = operations.restore_if_due()
+        if not state['started'] and not restoration:
             controller.transition()
             state['started'] = True
         state.pop('startup_error', None)
@@ -159,6 +180,9 @@ def serve(controller):
     def supervise():
         while True:
             refresh(controller, state, operations)
-            time.sleep(5 if state['started'] else 30)
+            # A pending restoration is polled as often as a started runtime is, so a scheduled
+            # retry is not held up by the slow startup loop while nothing is serving.
+            pending = (state.get('status') or {}).get('service', {}).get('pending')
+            time.sleep(5 if state['started'] or pending else 30)
     threading.Thread(target=supervise, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 8080), handler(controller, state, operations)).serve_forever()

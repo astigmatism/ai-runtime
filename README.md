@@ -93,15 +93,18 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |
 | `docker exec local-ai-runtime python3 -m runtime publish` | Verify and republish the selected catalog |
+| `docker exec local-ai-runtime python3 -m runtime restore` | Bring back the release that last served and reopen requests, whether or not a failure left the router drained |
+| `docker exec local-ai-runtime python3 -m runtime provision --profile <name>` | Measure a self-provisioning engine's workspace build (`--phase warm` for the boot) on this host; switching to it is refused until that has been recorded |
 | `scripts/recover-update.sh` | Complete or recover an interrupted portal update |
 
 `nighttime`, `daytime-256`, and `nighttime-256` retain their existing compatibility meaning: ensure the selected pair. Historical `deploy` and `rollback` commands are retired. Stopping the controller does not unload the model servers. Backend restart policies remain in place. Controller startup is idempotent and rejects stale source revisions or unfinished maintenance rather than overwriting them.
 
 ### HTTP interface
 
-- `GET /api/status`: revision, active profile, configuration registry, GPU assignments, model readiness, request counts, source deployment, latest browser operation, switching availability, and a process-scoped CSRF token.
+- `GET /api/status`: revision, active profile, configuration registry, GPU assignments, model readiness, request counts, source deployment, latest browser operation, switching availability, the service-restoration contract (`service.serving`/`restorable`/`pending`/`profile`, plus `restoration` with its attempts, reason, and next attempt), restore availability, and a process-scoped CSRF token.
 - `POST /api/profile-switch`: JSON `{profile, request_id, expected_profile, expected_revision}`. `request_id` is a lowercase UUID; the expected values come from status. Send the same-origin `Origin` and `X-Runtime-CSRF` headers. Returns `202 {operation_id, operation}` immediately; repeated identical IDs return `200` and the existing receipt. Reusing an ID for different parameters, stale selection, or maintenance conflicts returns `409`. Invalid bodies return `400`, cross-origin/token failures `403`, and non-JSON requests `415`.
-- `GET /api/operations/<id>`: a sanitized durable receipt, or `404`. Status is `running`, `succeeded`, `failed`, `recovered`, or `needs-attention`; live phases are `checking`, `draining`, `loading`, `verifying`, and `restoring`.
+- `POST /api/restore-last-known-good`: JSON `{request_id}`, same headers. The one action that brings back the release which last served and reopens requests — the same path the supervision loop and `runtime restore` take, and it is not refused for being mid-transaction or not ready. Only a competing owner of the router or the checkout, or a host with no recorded release, returns `409`.
+- `GET /api/operations/<id>`: a sanitized durable receipt, or `404`. `kind` is `switch` or `restore`; status is `running`, `succeeded`, `failed`, `recovered`, or `needs-attention`; live phases are `checking`, `draining`, `loading`, `verifying`, and `restoring`.
 - `GET /healthz`: `200 {"ready": true}` only after startup reconciliation and verification and outside an active browser switch; otherwise `503`.
 - `GET /`, `/app.js`, `/style.css`: runtime UI. Other mutation endpoints/methods return `405`.
 
@@ -120,6 +123,12 @@ LLM Router publishes names and counts, never UUIDs, paths, or backend URLs. It c
 This is a trusted-LAN administration surface without a login: anyone who can reach it can switch profiles. The current bind address is preserved. JSON, same-origin checks, a CSRF token, and a Host allowlist protect browser requests; they are not user authentication. `RUNTIME_ALLOWED_HOSTS` in the existing Git-excluded `.env` accepts comma-separated hostnames/IPs without ports. It defaults to `RUNTIME_BIND_IP` and loopback addresses. Add any hostname used to open the page to this setting; unrecognized hosts return `421`. The direct HTTP listener does not trust forwarded origin headers.
 
 The runtime and updater locks cover admission through completion, including validation and recovery. No switch is queued. Operation receipts live in `.state/operations/` and contain private diagnostic errors; HTTP responses expose only safe status messages. A restarted controller reconciles receipts against the existing runtime transaction and never automatically retries an interrupted switch. Full failure diagnostics remain in the private transaction/operation journals and the CLI. Source-deployment results come from the Portal updater journal and are displayed separately from profile-switch results.
+
+### Service restoration: nothing serving is never the resting state
+
+Every destructive transition has to be survivable without human intervention, and the recovery path has to be exercised by tests against the exact failures the deploy paths can produce. This house is run by agents, and a human with no lever is the failure mode, not the fallback.
+
+The runtime therefore never comes to rest with no backend serving and no automatic action pending. A backend whose `/slots` cannot be fetched is serving nothing, so it is idle rather than busy, and a drain deadline during a restoration means continue rather than abort: the router already rejects everything, so there is nothing left to be polite to. A deployment that replaced a backend and failed has the release that last served restored through the same finalize path a healthy boot uses; if that attempt fails it schedules the next one on a capped backoff, and the supervision loop runs it until the service comes back. The page states the contract (`service`, `restoration`) and offers **Restore last-known-good** as a single action; `docker exec local-ai-runtime python3 -m runtime restore` is the same call. See [service restoration](docs/deployment.md#service-restoration-the-host-never-rests-with-nothing-serving), and `tests/test_restoration.py` for the failures it is tested against.
 
 ## Development
 

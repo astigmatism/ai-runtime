@@ -11,6 +11,7 @@ import sys
 import tarfile
 
 from .config import read, require
+from .controller import PENDING_PHASES
 from .system import atomic_json, lock, now
 
 REMOTE = 'https://github.com/astigmatism/ai-runtime.git'
@@ -208,7 +209,7 @@ class Updater:
             require(job['phase'] != 'succeeded', 'The last update already completed')
             require(before in (job['previous'], job['target']), 'Checkout changed since the interrupted update')
             tx = read(self.state / 'transaction.json')
-            if tx['phase'] in ('prepared', 'draining', 'applying', 'verifying', 'needs-attention'):
+            if tx['phase'] in PENDING_PHASES:
                 self.candidate(job['image'], 'recover')
             active = read(self.state / 'active.json')
             require(active['revision'] in (job['previous'], job['target']), 'Unknown active revision; refusing recovery')
