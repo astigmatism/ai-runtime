@@ -87,7 +87,10 @@ class FakeSystem:
                 self.failed_ups = max(0, self.failed_ups - 1)
                 raise RuntimeError('Simulated load failure')
             compose = read(args[args.index('-f') + 1])
-            roles = args[args.index('450') + 1:]
+            # The roles are whatever follows the bounded wait, whatever its length: an engine that
+            # names its own readiness window waits longer than the usual 450 s, and the fake has to
+            # accept the same call the controller makes with that window.
+            roles = args[args.index('--wait-timeout') + 2:]
             for role in roles: self.install(role, compose['services'][role])
         return ''
 
@@ -117,6 +120,13 @@ class FakeSystem:
                 self.failed_generations = max(0, self.failed_generations - 1)
                 raise RuntimeError('Simulated acceptance failure')
             return {'content': 'K'}
+        # The OpenAI chat dialect, which is what an engine configured by its environment answers.
+        if url.endswith('/v1/chat/completions'):
+            self.events.append(('generation', name))
+            if self.generation_fails or self.failed_generations:
+                self.failed_generations = max(0, self.failed_generations - 1)
+                raise RuntimeError('Simulated acceptance failure')
+            return {'choices': [{'message': {'content': 'K'}}]}
         raise AssertionError(url)
 
 

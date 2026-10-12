@@ -329,7 +329,7 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
         'ready_files': list(provision.get('ready_files', [])), 'runs': []}
     receipt['measured_at'] = now()
     run = {'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'], 'container': name,
-        'port': port, 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
+        'port': port, 'via': 'cli', 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
         'free_bytes_after': free_bytes(workspace), 'ready_paths': result['ready_paths'],
         'samples': result['samples']}
     if result.get('container_log') is not None:

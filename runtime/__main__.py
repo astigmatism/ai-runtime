@@ -75,12 +75,15 @@ def main():
             raise RuntimeError('provision needs --profile')
         result = measurement(controller, args.profile, phase=args.phase)
     elif args.action == 'gate':
-        # The refusal a switch would hand back, given without switching: read-only, nothing locked,
-        # nothing drained, no container asked to do anything.
+        # What a switch would do, given without switching: read-only, nothing locked, nothing
+        # drained, no container asked to do anything. `reasons` are the refusals; `notes` are the
+        # things the selection will do that are worth knowing first (a build, a thin window).
         if args.profile is None:
             raise RuntimeError('gate needs --profile')
-        reasons = controller.verdict(controller.desired(args.profile))
-        result = {'profile': args.profile, 'switchable': not reasons, 'reasons': reasons}
+        bundle = controller.desired(args.profile)
+        reasons = controller.verdict(bundle)
+        notes = controller.verdict_notes(bundle)
+        result = {'profile': args.profile, 'switchable': not reasons, 'reasons': reasons, 'notes': notes}
     elif args.action == 'rollback-release':
         result = controller.rollback_release()
     elif args.action == 'publish':

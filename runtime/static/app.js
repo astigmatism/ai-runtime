@@ -36,10 +36,17 @@ function switchImpact(target) {
   const night = !target.exclusive && !current.exclusive ? 'Nighttime stays loaded.'
     : target.exclusive && current.exclusive ? 'Nighttime stays off.'
     : target.exclusive ? 'Nighttime will be stopped while this configuration runs.' : 'Nighttime will be started again.';
-  return `Existing requests finish first. New requests pause during the switch. ${night}`;
+  const base = `Existing requests finish first. New requests pause during the switch. ${night}`;
+  // What the selection will do, from the same read-only verdict the gate reports: a refusal is
+  // shown instead of inviting a click that only fails, and a build is announced before it happens.
+  if (target.reasons?.length) return `${base} ${target.reasons[0]}`;
+  if (target.notes?.length) return `${base} ${target.notes.join(' ')}`;
+  return base;
 }
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
-const phaseNames = {checking: 'Check', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
+// Prepare is the step a self-provisioning engine adds: the workspace build, done beside the
+// serving model, before the drain. A switch that needs no build runs it as a no-op.
+const phaseNames = {checking: 'Check', preparing: 'Prepare', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
 const phases = Object.keys(phaseNames);
 let status = null, operation = null, selected = null, connected = false, submitting = false;
 let topologySignature = '', registrySignature = '', detailsSignature = '', lastStatus = 0, timer;

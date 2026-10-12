@@ -1,9 +1,11 @@
-"""A self-provisioning engine has to bring a measured window to a switch, not a guessed one.
+"""A self-provisioning engine must not make the selection a terminal ritual.
 
 The Strata trial's first attempt spent its whole readiness window building the state it had never
-built before and was abandoned with the router drained. These tests hold the line that grew out of
-that: the build and the warm boot are measured on this host, the throwaway run asks for the same
-machine the switch would ask for, and the switch refuses to enter a window nobody has timed.
+built before and was abandoned with the router drained. The line that grew out of that is now
+drawn differently: the switch prepares the workspace itself, doing the half that is safe beside a
+loaded model before it drains, and waits for the engine's actual answer; the measurements remain
+the evidence the gate and the refusals read, and the only refusals left are ones the machine's
+evidence backs.
 """
 import copy
 import json
@@ -16,7 +18,8 @@ from unittest.mock import patch
 import test_controller as fixture
 from runtime.config import read, render
 from runtime.controller import Controller
-from runtime.provision import matching, measurement, ready_files, throwaway, workspace_ready, workspace_target
+from runtime.provision import (PROJECT, matching, measurement, ready_files, throwaway, workspace_ready,
+    workspace_target)
 from runtime.system import atomic_json
 
 PROFILE = 'flash-next-strata-160k'
@@ -45,24 +48,24 @@ class ProvisioningSystem(fixture.FakeSystem):
             self.events.append(('docker', args))
             return self.log_text
         # The measurement starts and stops its own compose project; the fake plays the part of
-        # compose reading the file it was handed, including the card reservations in it.
-        if args[0] == 'compose' and 'up' in args:
+        # compose reading the file it was handed, including the card reservations in it. Only the
+        # measurement's project: a switch that builds through this same fake also starts the real
+        # backend, and that one goes through the ordinary install path.
+        if args[0] == 'compose' and args[1:3] == ('-p', PROJECT):
             self.events.append(('docker', args))
             spec = read(args[args.index('-f') + 1])
-            role = args[-1]
-            service = spec['services'][role]
-            self.throwaway_port = service['ports'][0].split(':')[1]
-            self.throwaway_name = service['container_name']
-            self.devices = service['deploy']['resources']['reservations']['devices'][0]['device_ids']
-            self.started.append((service['container_name'], self.throwaway_port, list(self.devices)))
-            self.containers[service['container_name']] = {'Id': 'throwaway',
-                'Name': service['container_name'], 'State': {'Running': True}, 'Config': {'Cmd': []}}
-            return ''
-        if args[0] == 'compose' and 'down' in args:
-            self.events.append(('docker', args))
-            spec = read(args[args.index('-f') + 1])
-            for service in spec['services'].values():
-                self.containers.pop(service['container_name'], None)
+            if 'up' in args:
+                role = args[-1]
+                service = spec['services'][role]
+                self.throwaway_port = service['ports'][0].split(':')[1]
+                self.throwaway_name = service['container_name']
+                self.devices = service['deploy']['resources']['reservations']['devices'][0]['device_ids']
+                self.started.append((service['container_name'], self.throwaway_port, list(self.devices)))
+                self.containers[service['container_name']] = {'Id': 'throwaway',
+                    'Name': service['container_name'], 'State': {'Running': True}, 'Config': {'Cmd': []}}
+            else:
+                for service in spec['services'].values():
+                    self.containers.pop(service['container_name'], None)
             return ''
         return super().docker(*args, **kwargs)
 
@@ -133,12 +136,53 @@ class ProvisionTests(unittest.TestCase):
         atomic_json(self.state / 'provisioning' / (PROFILE + '.json'), recorded)
         return recorded
 
-    def test_a_trial_nobody_has_measured_is_not_switched_to(self):
-        """The refusal has to come before anything is drained or recreated, and name the way out."""
-        with self.assertRaisesRegex(RuntimeError, 'never been pre-provisioned'):
-            self.c.transition(PROFILE)
-        self.assertEqual(self.system.events, [])
-        self.assertFalse(self.system.draining)
+    def test_a_switch_builds_the_workspace_before_it_takes_the_drain(self):
+        """The selection is the operation.
+
+        The build is the half that is safe beside a loaded model, so the switch does it before the
+        drain; the order in the event log is the guarantee, and the boot it waited for is written
+        down where the next gate can read it as evidence.
+        """
+        prepare = patch.object(self.c, 'prepare', side_effect=lambda b: None)
+        prepare.start(); self.addCleanup(prepare.stop)
+        # The router's record of what a backend announces is part of the switch; the fake keeps
+        # that record in its manifest table, and the switch publishes the new one.
+        for service in self.bundle['manifest']['services']:
+            self.system.services[service['container_name']] = service
+        result = self.c.transition(PROFILE)
+        self.assertEqual(result['profile'], PROFILE)
+        events = self.system.events
+        first_drain = next(i for i, e in enumerate(events) if e[0] == 'drain' and e[1])
+        build_up = next(i for i, e in enumerate(events) if e[0] == 'docker' and e[1][:1] == ('compose',)
+            and e[1][1:3] == ('-p', PROJECT) and 'up' in e[1])
+        switch_up = next(i for i, e in enumerate(events) if e[0] == 'docker' and e[1][:1] == ('compose',)
+            and e[1][1:3] != ('-p', PROJECT) and 'up' in e[1])
+        self.assertLess(build_up, first_drain)
+        self.assertLess(first_drain, switch_up)
+        recorded = json.loads((self.state / 'provisioning' / (PROFILE + '.json')).read_text())
+        self.assertTrue(recorded['workspace_ready'])
+        self.assertEqual(recorded['runs'][-2]['phase'], 'provision')
+        self.assertEqual(recorded['runs'][-2]['via'], 'switch')
+        self.assertEqual(recorded['runs'][-1]['phase'], 'warm')
+        self.assertTrue(recorded['healthy_warm_boot'])
+        self.assertGreaterEqual(recorded['warm_boot_seconds'], 0)
+
+    def test_a_switch_that_cannot_build_the_workspace_changes_nothing(self):
+        """A build failure stops the switch at its edge: no drain, no touched backend, a clean record."""
+        system = ProvisioningSystem(self.serving, exits_after=1,
+            log_text='=== Step 2: your choices ===\n  [X] that quant is not in the family named\nSetup stopped.')
+        c = Controller(fixture.ROOT / 'config', self.state, 'a' * 40, system)
+        # The model artifacts are a precondition checked before the build, and have their own
+        # tests; this one is about what a failed build leaves behind.
+        prepare = patch.object(c, 'prepare', side_effect=lambda b: None)
+        prepare.start(); self.addCleanup(prepare.stop)
+        with self.assertRaisesRegex(RuntimeError, 'Setup stopped'):
+            c.transition(PROFILE)
+        self.assertFalse(any(e[0] == 'drain' for e in system.events))
+        self.assertEqual(c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        transaction = c.load('transaction.json')
+        self.assertEqual(transaction['phase'], 'failed')
+        self.assertIn('could not build its workspace', str(transaction.get('error')))
 
     def test_a_measurement_only_counts_for_the_machine_it_was_taken_on(self):
         engine = self.c.provisioning(self.bundle)[1]
@@ -148,22 +192,37 @@ class ProvisionTests(unittest.TestCase):
         self.assertIsNone(self.c.provisioned(self.bundle))
         self.receipt(healthy_warm_boot=True, warm_boot_seconds=100, workspace=str(self.state / 'elsewhere'))
         self.assertIsNone(self.c.provisioned(self.bundle))
-        with self.assertRaisesRegex(RuntimeError, 'never been pre-provisioned'):
-            self.c.switchable(self.bundle)
+        # A stale receipt is not a refusal any more: the switch would build and measure the
+        # workspace itself, and the gate says so instead of standing in the way.
+        self.assertEqual(self.c.switchable(self.bundle), None)
+        self.assertTrue(any('build it first' in note for note in self.c.verdict_notes(self.bundle)))
 
     def test_a_workspace_that_never_came_up_healthy_ends_the_trial(self):
-        """An engine that cannot boot from its own provisioned state is not switchable, full stop."""
-        self.receipt(healthy_warm_boot=False, warm_boot_seconds=2900,
-            error='The container never answered its health check from the provisioned workspace')
-        with self.assertRaisesRegex(RuntimeError, 'not switchable'):
+        """An engine that cannot boot from its own provisioned state is not switchable, full stop:
+        the switch would only spend a drain and a restoration to relearn what the measurement knew."""
+        self.receipt(healthy_warm_boot=False,
+            error='The container never answered its health check from the provisioned workspace',
+            runs=[{'phase': 'warm', 'reached': 'timed out', 'seconds': 2900}])
+        with self.assertRaisesRegex(RuntimeError, 'never completed a warm boot'):
             self.c.switchable(self.bundle)
 
-    def test_the_window_has_to_be_three_times_the_boot_it_is_guaranteeing(self):
-        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1500)
-        with self.assertRaisesRegex(RuntimeError, 'under three times'):
+    def test_a_container_that_stopped_at_startup_is_a_refusal(self):
+        """The setup error is a refusal, not a wait: the switch would fail at the same edge, so it
+        says so now, in the words the engine gave."""
+        self.receipt(runs=[{'phase': 'provision', 'reached': 'exited (1)', 'seconds': 1.3,
+            'container_log': 'Setup stopped.'}])
+        with self.assertRaisesRegex(RuntimeError, 'stopped by itself at startup'):
             self.c.switchable(self.bundle)
-        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
+
+    def test_a_thin_window_is_a_note_not_a_refusal(self):
+        """The switch waits for the engine's actual answer and the recovery path stands behind it,
+        so a window thin against the measurement is worth knowing before the selection, not a
+        reason to sit down."""
+        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1500)
         self.assertEqual(self.c.switchable(self.bundle), None)
+        self.assertTrue(any('at least 4501s' in note for note in self.c.verdict_notes(self.bundle)))
+        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
+        self.assertFalse(any('three times' in note for note in self.c.verdict_notes(self.bundle)))
 
     def test_an_engine_that_installs_inside_its_image_is_not_run_as_the_deployment_user(self):
         """What is baked into an image decides who can run it, and this trial proved it the hard way.
@@ -281,22 +340,46 @@ class ProvisionTests(unittest.TestCase):
             self.assertIsInstance(result['disk_free_bytes'][key], int)
         self.assertEqual(result['runs'][-1]['free_bytes_after'], result['disk_free_bytes']['after'])
 
-    def test_the_refusal_is_readable_without_attempting_a_switch(self):
-        """A refusal that can only be understood by provoking one is a refusal nobody can plan around."""
+    def test_the_gate_says_what_the_selection_will_do_without_doing_it(self):
+        """A selection nobody can understand before clicking is a selection made in the dark.
+
+        The gate is read-only: what a switch to the profile would do, and what would refuse it,
+        given without switching, without locking, without draining.
+        """
+        # Nothing measured yet: no refusal, and a note that says the build will happen first.
+        self.assertEqual(self.c.verdict(self.bundle), [])
+        self.c.switchable(self.bundle)
+        notes = self.c.verdict_notes(self.bundle)
+        self.assertTrue(any('build it first' in note for note in notes), notes)
+        self.assertTrue(any('beside the model that is serving' in note for note in notes), notes)
+        # A warm boot that was measured and failed: the one refusal that is evidence.
+        self.receipt(healthy_warm_boot=False, error='never answered',
+            runs=[{'phase': 'warm', 'reached': 'timed out', 'seconds': 2900}])
         reasons = self.c.verdict(self.bundle)
         self.assertEqual(len(reasons), 1)
-        self.assertIn('never been pre-provisioned', reasons[0])
-        self.assertIn('--profile ' + PROFILE, reasons[0])
-        self.receipt(healthy_warm_boot=False, warm_boot_seconds=2900, error='never answered')
-        self.assertIn('not switchable', self.c.verdict(self.bundle)[0])
-        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1500)
-        refusal = self.c.verdict(self.bundle)[0]
-        self.assertIn('at least 4501s', refusal)
-        with self.assertRaisesRegex(RuntimeError, 'under three times the measured warm boot'):
+        self.assertIn('never completed a warm boot', reasons[0])
+        with self.assertRaisesRegex(RuntimeError, 'never completed a warm boot'):
             self.c.switchable(self.bundle)
+        # Measured and healthy: no refusal at any window, and a thin window is a note.
+        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1500)
+        self.assertEqual(self.c.verdict(self.bundle), [])
+        self.c.switchable(self.bundle)
+        self.assertTrue(any('at least 4501s' in note for note in self.c.verdict_notes(self.bundle)))
         self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
         self.assertEqual(self.c.verdict(self.bundle), [])
         self.c.switchable(self.bundle)
+        self.assertFalse(any('three times' in note for note in self.c.verdict_notes(self.bundle)))
+
+    def test_the_page_sees_what_a_selection_will_do_before_the_click(self):
+        """The same verdict the gate reports must sit on the profile itself in the status the page
+        reads: a selection nobody can understand before clicking is a selection made in the dark."""
+        entry = next(e for e in self.c.status()['configurations']['selectable'] if e['profile'] == PROFILE)
+        self.assertEqual(entry['reasons'], [])
+        self.assertTrue(any('build it first' in note for note in entry['notes']))
+        self.receipt(healthy_warm_boot=False, error='never answered',
+            runs=[{'phase': 'warm', 'reached': 'timed out', 'seconds': 2900}])
+        entry = next(e for e in self.c.status()['configurations']['selectable'] if e['profile'] == PROFILE)
+        self.assertTrue(any('never completed a warm boot' in reason for reason in entry['reasons']))
 
     def test_a_warm_boot_is_not_measured_while_the_cards_are_busy(self):
         """The tool never stops a serving model to time its replacement; that is a decision, not a side effect."""

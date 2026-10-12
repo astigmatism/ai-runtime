@@ -12,6 +12,7 @@ from pathlib import Path
 import time
 import uuid
 
+from . import provision as provision_tool
 from .config import (DAYTIME_PROFILES, DEFAULT_PROFILE, NIGHTTIME_PROFILE, available_profiles, digest, read, render,
     require, service_engine)
 from .system import System, atomic_json, future, lock, now
@@ -94,8 +95,8 @@ class Controller:
     def provisioning(self, bundle):
         """Return (role, engine, contract) for a service that builds its own state on first start.
 
-        Such an engine has no honest readiness window until a warm boot from that state has been
-        measured on this host; the window that a switch is given has to come from the measurement.
+        The switch now prepares such a workspace itself before it drains, so the readiness window
+        only has to cover the load, and the load is waited on for the engine's actual answer.
         """
         for role, cfg in bundle['compose']['services'].items():
             engine = service_engine(bundle, role)
@@ -122,49 +123,177 @@ class Controller:
             return None
         return receipt
 
-    def verdict(self, bundle):
-        """Why a switch to this bundle would be refused, worked out without touching anything.
+    def preparation_state(self, bundle):
+        """(role, engine, contract, workspace, cfg) for the service that builds its own state,
+        read without touching anything, or None when the bundle has no such service."""
+        role, engine, contract = self.provisioning(bundle)
+        if role is None:
+            return None
+        cfg = bundle['compose']['services'][role]
+        return role, engine, contract, provision_tool.workspace_target(cfg, contract), cfg
 
-        An empty list is the go-ahead. ``switchable`` raises on these and the read-only ``gate``
-        command reports them, so the reason a profile will not be switched to is readable without
-        attempting a switch — a refusal should never require provoking one to be understood.
+    def preparation_needed(self, bundle):
+        """Whether the switch must build this bundle's workspace before it takes the drain.
+
+        A workspace that already holds everything the engine needs is skipped without ceremony:
+        the common case after the first switch is a comparison, not a build.
         """
-        role, engine, provision = self.provisioning(bundle)
-        if engine is None:
+        found = self.preparation_state(bundle)
+        if found is None or found[3] is None:
+            return False
+        role, engine, contract, workspace, cfg = found
+        return not provision_tool.workspace_ready(provision_tool.ready_files(workspace, contract))
+
+    def ensure_provisioned(self, bundle, log=lambda message: None):
+        """The half of a first start that is safe beside a loaded model, done before the drain.
+
+        The trial host measured the split: while 94 GB was verified and packed beside a serving
+        model, its slots answered in 0.003 s against a 0.002 s baseline and it never left health;
+        the load that follows the pack is the half that cannot run beside the model it replaces,
+        and it waits for the drain. So a switch to a self-provisioning engine does the safe half
+        here, in plain sight, before it has asked for anything. If the engine cannot build its
+        workspace, the switch stops at the edge of the transaction: no drain, no touched backend,
+        and the reason the engine gave is the reason the operator gets.
+        """
+        found = self.preparation_state(bundle)
+        require(found is not None and found[3] is not None,
+            'This bundle declares no provisionable workspace')
+        role, engine, contract, workspace, cfg = found
+        name = cfg['container_name'] + '-provision'
+        port = provision_tool.published_port(cfg, provision_tool.PORT_OFFSET)
+        files = provision_tool.ready_files(workspace, contract)
+        free_before = provision_tool.free_bytes(workspace)
+        spec = self.state / 'provisioning' / (bundle['profile'] + '-compose.json')
+        provision_tool.atomic_json(spec, provision_tool.throwaway(bundle, role, name, port))
+        result = provision_tool.watch(self.system, spec, role, name, port, files,
+            serving=provision_tool.serving_containers(self), goal='workspace',
+            stop=provision_tool.stop_seconds(cfg), log=log)
+        if result['reached'] != 'workspace':
+            words = (result.get('container_log') or '').strip().splitlines()
+            last_line = words[-1] if words else 'no output was captured from the container'
+            raise RuntimeError(bundle['profile'] + ': the engine could not build its workspace '
+                '(' + result['reached'] + ' after ' + str(result['seconds']) + 's): ' + last_line)
+        self._record_provision_run(bundle, role, engine, contract, workspace, name, port, result, free_before)
+        return result
+
+    def _record_provision_run(self, bundle, role, engine, contract, workspace, name, port, result, free_before):
+        """The build the switch just did, in the same receipt the read-only measurement writes, so
+        one file is the whole story of the workspace on this machine."""
+        receipt = self.load('provisioning/' + bundle['profile'] + '.json') or {
+            'profile': bundle['profile'], 'engine_tag': engine['tag'], 'image_id': engine['image_id'],
+            'workspace': str(workspace), 'ready_files': list(contract.get('ready_files', [])), 'runs': []}
+        receipt['measured_at'] = now()
+        run = {'phase': 'provision', 'reached': result['reached'], 'seconds': result['seconds'],
+            'container': name, 'port': port, 'via': 'switch',
+            'pack_bytes': provision_tool.footprint(workspace),
+            'free_bytes_before': free_before, 'free_bytes_after': provision_tool.free_bytes(workspace),
+            'ready_paths': result['ready_paths'], 'samples': result['samples']}
+        if result.get('container_log') is not None:
+            run['container_log'] = result['container_log']
+        receipt['runs'].append(run)
+        receipt['pack_bytes'] = run['pack_bytes']
+        receipt['provision_seconds'] = result['seconds']
+        receipt['workspace_ready'] = result['workspace_ready']
+        receipt['disk_free_bytes'] = {'before': free_before, 'after': run['free_bytes_after']}
+        nearby = [sample['neighbours'] for sample in result['samples'] if sample.get('neighbours')]
+        receipt['neighbour_healthy'] = bool(nearby) and all(n['health'] == 'healthy'
+            for sample in nearby for n in sample)
+        answered = [n['slots_seconds'] for sample in nearby for n in sample
+                    if n.get('slots_seconds') is not None]
+        receipt['neighbour_slots_max_seconds'] = max(answered) if answered else None
+        receipt['neighbour_samples'] = nearby[-8:]
+        atomic_json(self.state / 'provisioning' / (bundle['profile'] + '.json'), receipt)
+
+    def _record_warm_boot(self, bundle, roles, seconds):
+        """The boot the switch just measured, where the next refusal can read it as evidence.
+
+        A successful switch is the warm boot: the engine loaded from its own workspace with no
+        other model on the cards and answered the bounded generation, so the number the switch
+        waited is the number the window has to cover.
+        """
+        found = self.preparation_state(bundle)
+        if found is None or found[0] not in roles:
+            return
+        role, engine, contract, workspace, cfg = found
+        receipt = self.load('provisioning/' + bundle['profile'] + '.json') or {
+            'profile': bundle['profile'], 'engine_tag': engine['tag'], 'image_id': engine['image_id'],
+            'workspace': str(workspace), 'ready_files': list(contract.get('ready_files', [])), 'runs': []}
+        receipt['measured_at'] = now()
+        receipt['runs'].append({'phase': 'warm', 'reached': 'healthy', 'seconds': seconds,
+            'via': 'switch', 'container': cfg['container_name']})
+        receipt['warm_boot_seconds'] = seconds
+        receipt['healthy_warm_boot'] = True
+        receipt['workspace_ready'] = True
+        atomic_json(self.state / 'provisioning' / (bundle['profile'] + '.json'), receipt)
+
+    def verdict(self, bundle):
+        """The hard reasons a switch to this bundle is refused, and nothing softer.
+
+        A refusal is evidence the machine cannot do the job: a warm boot that was measured and
+        failed, or a container that stopped itself at startup. Everything else — a workspace that
+        still needs building, a window that is thin against a measurement — is a note the gate
+        shows, because the switch now builds the workspace itself and waits for the engine's
+        actual answer, and the recovery path stands behind a switch that turns out to be wrong.
+        """
+        if self.preparation_state(bundle) is None:
             return []
-        command = 'python3 -m runtime provision --profile ' + bundle['profile']
         receipt = self.provisioned(bundle)
         if receipt is None:
-            return ['The ' + engine['tag'] + ' workspace has never been pre-provisioned '
-                'on this host for this release; run ' + command + ' and let it record a healthy warm boot']
-        if receipt.get('healthy_warm_boot') is not True:
-            # A run whose container died at startup is a different refusal from one that booted slowly
-            # and never answered, and the person reading the Portal needs to be able to tell them
-            # apart: one is a configuration fault to fix, the other is a window to widen.
-            last = (receipt.get('runs') or [{}])[-1]
+            return []
+        last = (receipt.get('runs') or [{}])[-1]
+        phase = str(last.get('phase') or '')
+        reached = str(last.get('reached') or '')
+        if phase == 'warm' and reached != 'healthy':
             detail = str(receipt.get('error') or 'see the receipt')
-            if str(last.get('reached', '')).startswith('exited'):
-                detail = ('the container stopped by itself ' + str(last['reached']) +
-                    ' after ' + str(last.get('seconds')) + 's; its output is in the receipt')
-            return ['Pre-provisioning ' + engine['tag'] + ' did not '
-                'reach a healthy warm boot (' + detail + '); the trial '
-                'is not switchable until it does, or the profile is retired']
-        window = engine.get('readiness_wait_seconds') or 0
-        measured = float(receipt.get('warm_boot_seconds') or 0)
-        if window < 3 * measured:
-            return ['The readiness window for ' + engine['tag'] + ' is ' + str(window) +
-                's, under three times the measured warm boot of ' + str(receipt['warm_boot_seconds']) +
-                's; set readiness_wait_seconds to at least ' + str(int(3 * measured + 1)) + 's and publish']
+            return ['This engine has never completed a warm boot from its own workspace on this '
+                'host (' + detail + '); the switch is refused until it does, or the profile is retired']
+        if phase == 'provision' and reached.startswith('exited'):
+            role, engine, contract, workspace, cfg = self.preparation_state(bundle)
+            return ['The ' + engine['tag'] + ' container stopped by itself at startup ' + reached +
+                '; its output is in the receipt. A switch would refuse to build the workspace for '
+                'this engine until that is fixed, and the profile is better retired if it cannot be']
         return []
 
-    def switchable(self, bundle):
-        """Refuse to switch onto a workspace whose first boot has never been measured here.
+    def verdict_notes(self, bundle):
+        """What a switch to this bundle will do that is worth knowing before it is selected.
 
-        A trial whose engine provisions on first start can sit inside the readiness window for
-        hours; the first attempt at this one did exactly that and was abandoned with the router
-        drained. The window is only trustworthy once a warm boot from the provisioned workspace has
-        been measured on this host, with room to spare, so a blind switch is refused rather than
-        run into a timeout.
+        These never refuse; they are the difference between selecting a profile and knowing what
+        the selection costs.
+        """
+        found = self.preparation_state(bundle)
+        if found is None:
+            return []
+        role, engine, contract, workspace, cfg = found
+        notes = []
+        receipt = self.provisioned(bundle)
+        if workspace is None or not provision_tool.workspace_ready(
+                provision_tool.ready_files(workspace, contract)):
+            note = ('The ' + engine['tag'] + ' workspace has not been built on this host; the '
+                    'switch will build it first, beside the model that is serving, before it '
+                    'takes the drain')
+            if receipt:
+                built = [run for run in reversed(receipt.get('runs', []))
+                         if run.get('phase') == 'provision' and run.get('reached') == 'workspace']
+                if built:
+                    note += ' (the last build here took ' + str(built[0]['seconds']) + 's)'
+            notes.append(note)
+        if receipt and receipt.get('healthy_warm_boot') is True:
+            window = engine.get('readiness_wait_seconds') or 0
+            measured = float(receipt.get('warm_boot_seconds') or 0)
+            if measured and window < 3 * measured:
+                notes.append('The readiness window for ' + engine['tag'] + ' is ' + str(window) +
+                    's, under three times the measured warm boot of '
+                    + str(receipt['warm_boot_seconds']) + 's; raise readiness_wait_seconds to at '
+                    + 'least ' + str(int(3 * measured + 1)) + 's')
+        return notes
+
+    def switchable(self, bundle):
+        """Refuse a switch the evidence says will not work; let the rest proceed and prepare.
+
+        The refusal used to be paperwork — a window no one had measured. After the switch learned
+        to build the workspace itself and wait for the engine's actual answer, only two things are
+        still refusals: a warm boot that was measured and failed, and an engine that stops itself
+        at startup.
         """
         reasons = self.verdict(bundle)
         if reasons:
@@ -733,6 +862,12 @@ class Controller:
         self.save('transaction.json', tx)
         changed = False
         try:
+            if self.preparation_needed(bundle):
+                # The workspace build is safe beside the serving model, so it happens before the
+                # drain: a failure here stops the switch at its edge, and nothing has been taken.
+                self.mark(tx, 'preparing')
+                progress('preparing')
+                self.ensure_provisioned(bundle)
             self.set_drain(True, tx)
             self.mark(tx, 'draining')
             progress('draining')
@@ -741,11 +876,13 @@ class Controller:
             progress('loading')
             changed = True
             self.release(removed)
+            load_started = time.monotonic()
             after = self.reconcile(bundle, roles, sequential=topology)
             require(all(after[r]['id'] == cid for r, cid in unchanged.items()), 'An unchanged backend was unexpectedly recreated')
             self.mark(tx, 'verifying')
             progress('verifying')
             self.acceptance(bundle, roles)
+            self._record_warm_boot(bundle, roles, round(time.monotonic() - load_started, 1))
             self.publish(bundle)
             self.save('previous.json', previous)
             self.save('active.json', target)
@@ -847,9 +984,21 @@ class Controller:
             'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
             'last_deployment': self.load('last-deployment.json'), 'updated_at': now()}
         # Read-only presentation of the profile registry. It is reported before the live
-        # checks below so an unreadable definition never hides the health of the pair.
+        # checks below so an unreadable definition never hides the health of the pair. Each
+        # selectable configuration carries the same verdict the read-only gate gives: what a
+        # switch to it would do (notes) and what would refuse it (reasons), so the page can
+        # show the cost of a selection before the selection is made.
         try:
-            result['configurations'] = {'active': bundle['profile'], **available_profiles(self.config_dir, self.host)}
+            configurations = available_profiles(self.config_dir, self.host)
+            for entry in configurations.get('selectable', []):
+                try:
+                    candidate = render(self.config_dir, self.host, entry['profile'])
+                    entry['reasons'] = self.verdict(candidate)
+                    entry['notes'] = self.verdict_notes(candidate)
+                except Exception as error:
+                    entry['reasons'] = ['This configuration cannot be rendered: ' + str(error)]
+                    entry['notes'] = []
+            result['configurations'] = {'active': bundle['profile'], **configurations}
         except Exception as error:
             result['configurations'] = {'active': bundle['profile'], 'selectable': [],
                 'always_included': [], 'error': str(error)}
