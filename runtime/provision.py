@@ -116,6 +116,34 @@ def probe(system, name, port):
     return None
 
 
+def exited(system, name):
+    """The exit code of a container that ran and stopped, or None while it is still running.
+
+    A container that refuses to start does not come back: without asking, the poll loop below watches
+    a corpse for the whole limit, and a two-second refusal reads as a two-hour build. That is not a
+    hypothetical — the first two runs on the trial host were exactly that, a setup error printed once
+    and then ninety minutes of ``workspace=False``.
+    """
+    state = (system.inspect(name) or {}).get('State') or {}
+    if not state or state.get('Running') or state.get('Status') in ('created', 'running', 'restarting'):
+        return None
+    if not state.get('FinishedAt') or str(state['FinishedAt']).startswith('0001'):
+        return None
+    return state.get('ExitCode')
+
+
+def last_words(system, name, tail=25):
+    """The end of what the container printed, for a run that died at startup.
+
+    The engine's own reason for refusing is the useful part of a failed measurement, and the person
+    watching a run should not have to know to ask for it after the teardown has taken the container.
+    """
+    try:
+        return system.docker('logs', '--tail', str(tail), name, check=False)
+    except Exception:
+        return None
+
+
 def serving_containers(controller):
     """The containers actually serving, read from the active record rather than from the target.
 
@@ -191,6 +219,7 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
     started = time.monotonic()
     samples = []
     reached = 'timed out'
+    words = None
     try:
         # No --wait: the wait is the thing being measured, and it is measured against the workspace
         # and the engine's own answer rather than against Docker's opinion of when to give up.
@@ -210,14 +239,26 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
             if workspace and (goal == 'workspace' or answer is not None):
                 reached = 'workspace' if goal == 'workspace' else 'healthy'
                 break
+            code = exited(system, name)
+            if code is not None:
+                reached = 'exited (' + str(code) + ')'
+                words = last_words(system, name) or ''
+                log(f"provision {name}: the container stopped by itself with code {code} after "
+                    f"{sample['seconds']:.1f}s; its last words are —")
+                for line in words.splitlines()[-12:]:
+                    log('  | ' + line)
+                break
             if elapsed >= limit:
                 break
             time.sleep(poll)
     finally:
         system.docker('compose', *project, 'down', '--remove-orphans', '-t', str(stop), check=False)
-    return {'seconds': round(time.monotonic() - started, 1), 'reached': reached,
+    found = {'seconds': round(time.monotonic() - started, 1), 'reached': reached,
         'workspace_ready': any(s['workspace'] for s in samples),
         'samples': samples}
+    if reached.startswith('exited'):
+        found['container_log'] = words
+    return found
 
 
 def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, poll=POLL_SECONDS, log=print):
@@ -260,6 +301,11 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
     run = {'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'], 'container': name,
         'port': port, 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
         'free_bytes_after': free_bytes(workspace), 'samples': result['samples']}
+    if result.get('container_log') is not None:
+        # The engine's own reason for refusing to start goes into the receipt with the run it came
+        # from: the container that printed it is torn down before anyone reads the file, and this is
+        # the difference between a finding and a mystery.
+        run['container_log'] = result['container_log']
     receipt['runs'].append(run)
     receipt['pack_bytes'] = run['pack_bytes']
     receipt['disk_free_bytes'] = {'before': free_before, 'after': run['free_bytes_after']}

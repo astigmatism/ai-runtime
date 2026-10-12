@@ -301,11 +301,19 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}
     cfg.update(image=engine['tag'], container_name=definition['container_name'], command=[],
-        environment=environment,
-        user=f"{host['uid']}:{host['gid']}", volumes=mounts,
+        environment=environment, volumes=mounts,
         ports=[f"127.0.0.1:{definition['host_port']}:8080"],
         deploy={'resources': {'reservations': {'devices': [{
             'driver': 'nvidia', 'device_ids': text_devices, 'capabilities': ['gpu']}]}}})
+    # The house default is the deployment user, which can write the workspace and the model files but
+    # nothing inside a prebuilt image. An engine that installs into its own virtualenv on first start
+    # therefore says so on its engine entry, and gets the user the image was built for instead. It is
+    # stated on the engine and not inferred from the interface, because it is a property of what is
+    # baked into the image, and it is a wider grant: the container runs with that image's privileges.
+    if engine.get('runs_as_image_user'):
+        cfg.pop('user', None)
+    else:
+        cfg['user'] = f"{host['uid']}:{host['gid']}"
     require(cfg.get('read_only') is False,
         name + ': an environment-configured engine writes its own configuration and needs a writable root')
     require(cfg.get('environment', {}).get('CUDA_VISIBLE_DEVICES'),

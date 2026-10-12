@@ -46,7 +46,10 @@ class FakeSystem:
         self.serial += 1
         self.containers[cfg['container_name']] = {'Id': role + str(self.serial), 'Image': self.engines[cfg['image']]['image_id'],
             'State': {'Running': True, 'StartedAt': '2026-01-01T00:00:00Z'}, 'RestartCount': 0,
-            'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'], 'User': cfg['user'], 'Env': [k + '=' + v for k, v in cfg.get('environment', {}).items()]},
+            'Config': {'Cmd': cfg['command'], 'Entrypoint': cfg['entrypoint'],
+                # A service rendered without a user runs as the image's own, which the daemon reports
+                # as an empty string — the same shape the observer has to accept as matching.
+                'User': cfg.get('user') or '', 'Env': [k + '=' + v for k, v in cfg.get('environment', {}).items()]},
             'HostConfig': {'ReadonlyRootfs': cfg.get('read_only', True), 'RestartPolicy': {'Name': 'unless-stopped'},
                 'Init': True, 'DeviceRequests': [{'Driver': 'nvidia', 'Count': 0, 'Capabilities': [['gpu']], 'DeviceIDs': cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']}],
                 'PortBindings': {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': cfg['ports'][0].split(':')[1]}]}},
@@ -506,17 +509,34 @@ class EnvironmentEngineObservationTests(unittest.TestCase):
 
     def test_a_service_dictionary_missing_a_setting_drifts_instead_of_crashing(self):
         for key, reason in [('restart', 'restart policy'), ('init', 'init'),
-                ('entrypoint', 'entrypoint'), ('user', 'user'), ('read_only', 'read-only root'),
+                ('entrypoint', 'entrypoint'), ('read_only', 'read-only root'),
                 ('deploy', 'GPU assignment'), ('volumes', 'model mounts'),
                 ('ports', 'port bindings'), ('networks', 'router network')]:
             # An absent command and an empty one mean the same thing to the comparison, so that key is
             # deliberately not in this list: the trial's engine takes its settings from the environment.
+            # Neither is 'user', which the trial legitimately does not render at all; it has its own
+            # test below, because there 'nothing' and 'empty string' are the same container.
             damaged = copy.deepcopy(self.bundle)
             damaged['compose']['services']['coding'].pop(key)
             with self.subTest(setting=key):
                 observed = self.c.observe(damaged)
                 self.assertIn(reason, observed['coding']['differences'])
                 self.assertFalse(observed['coding']['healthy'])
+
+    def test_a_backend_running_as_its_image_user_is_not_called_drifted(self):
+        """The trial renders no user and the daemon reports that as an empty string.
+
+        Read as literally different, every health check would insist the container that is correctly
+        serving is wrong, which is how a working backend gets restarted on a loop and a switch gets
+        blamed for it.
+        """
+        cfg = self.bundle['compose']['services']['coding']
+        self.assertNotIn('user', cfg)
+        self.assertEqual(self.system.containers[cfg['container_name']]['Config']['User'], '')
+        self.assertNotIn('user', self.c.observe(self.bundle)['coding']['differences'])
+        damaged = copy.deepcopy(self.bundle)
+        damaged['compose']['services']['coding']['user'] = '0:0'
+        self.assertIn('user', self.c.observe(damaged)['coding']['differences'])
 
     def test_a_backend_that_came_up_on_another_window_says_so_with_its_number(self):
         """Strata reports the window the engine loaded with, which need not be the one asked for.

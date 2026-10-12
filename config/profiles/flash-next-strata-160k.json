@@ -30,7 +30,7 @@
   ],
   "arguments": {
     "--alias": "qwen3.8-flash-next-ud-iq4_xs",
-    "--family": "qwen",
+    "--family": "unsloth",
     "--quant": "UD-IQ4_XS",
     "--model": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
     "--kv": "k8v4",

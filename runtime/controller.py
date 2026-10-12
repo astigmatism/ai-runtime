@@ -138,8 +138,16 @@ class Controller:
             return ['The ' + engine['tag'] + ' workspace has never been pre-provisioned '
                 'on this host for this release; run ' + command + ' and let it record a healthy warm boot']
         if receipt.get('healthy_warm_boot') is not True:
+            # A run whose container died at startup is a different refusal from one that booted slowly
+            # and never answered, and the person reading the Portal needs to be able to tell them
+            # apart: one is a configuration fault to fix, the other is a window to widen.
+            last = (receipt.get('runs') or [{}])[-1]
+            detail = str(receipt.get('error') or 'see the receipt')
+            if str(last.get('reached', '')).startswith('exited'):
+                detail = ('the container stopped by itself ' + str(last['reached']) +
+                    ' after ' + str(last.get('seconds')) + 's; its output is in the receipt')
             return ['Pre-provisioning ' + engine['tag'] + ' did not '
-                'reach a healthy warm boot (' + str(receipt.get('error') or 'see the receipt') + '); the trial '
+                'reach a healthy warm boot (' + detail + '); the trial '
                 'is not switchable until it does, or the profile is retired']
         window = engine.get('readiness_wait_seconds') or 0
         measured = float(receipt.get('warm_boot_seconds') or 0)
@@ -223,7 +231,10 @@ class Controller:
                 (ci['Image'] == engine['image_id'], 'image'),
                 ((ci['Config'].get('Cmd') or []) == (cfg.get('command') or []), 'arguments'),
                 (ci['Config'].get('Entrypoint') == cfg.get('entrypoint'), 'entrypoint'),
-                (ci['Config'].get('User') == cfg.get('user'), 'user'),
+                # A service that runs as the image's own user renders no user at all and the daemon
+                # reports that as an empty string; comparing them literally would call such a
+                # container drifted on every check, which would schedule pointless restarts.
+                ((ci['Config'].get('User') or None) == cfg.get('user'), 'user'),
                 (ci['HostConfig'].get('ReadonlyRootfs') == cfg.get('read_only'), 'read-only root'),
                 (ci['HostConfig'].get('RestartPolicy', {}).get('Name') == cfg.get('restart'), 'restart policy'),
                 (ci['HostConfig'].get('Init') == cfg.get('init'), 'init'),

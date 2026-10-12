@@ -29,9 +29,11 @@ class ProvisioningSystem(fixture.FakeSystem):
     decides when each of them happens, which lets a measurement be tested without an engine.
     """
 
-    def __init__(self, bundle, healthy_after=3):
+    def __init__(self, bundle, healthy_after=3, exits_after=None, log_text='Setup stopped.'):
         super().__init__(bundle)
         self.healthy_after = healthy_after
+        self.exits_after = exits_after
+        self.log_text = log_text
         self.health_polls = 0
         self.started = []
         self.throwaway_port = None
@@ -39,6 +41,9 @@ class ProvisioningSystem(fixture.FakeSystem):
         self.devices = None
 
     def docker(self, *args, **kwargs):
+        if args[0] == 'logs':
+            self.events.append(('docker', args))
+            return self.log_text
         # The measurement starts and stops its own compose project; the fake plays the part of
         # compose reading the file it was handed, including the card reservations in it.
         if args[0] == 'compose' and 'up' in args:
@@ -73,6 +78,12 @@ class ProvisioningSystem(fixture.FakeSystem):
         # nobody from in here, so a tool that depended on it would never see a healthy boot.
         if url.endswith('/health') and url.startswith('http://' + (self.throwaway_name or '') + ':8080'):
             self.health_polls += 1
+            if self.exits_after is not None and self.health_polls >= self.exits_after:
+                # An engine whose setup refuses does not keep trying: it prints why and goes away, and
+                # from outside that is a stopped container whose output is readable for a moment.
+                self.containers[self.throwaway_name] = {'State': {'Running': False, 'Status': 'exited',
+                    'ExitCode': 1, 'FinishedAt': '2026-10-12T14:54:20.728631538Z'}}
+                raise RuntimeError('connection refused')
             if self.health_polls < self.healthy_after:
                 raise RuntimeError('connection refused')
             return {'status': 'ok'}
@@ -153,6 +164,51 @@ class ProvisionTests(unittest.TestCase):
         self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
         self.assertEqual(self.c.switchable(self.bundle), None)
 
+    def test_an_engine_that_installs_inside_its_image_is_not_run_as_the_deployment_user(self):
+        """What is baked into an image decides who can run it, and this trial proved it the hard way.
+
+        The engine installs its own Python packages into its virtualenv on first start, which lives
+        in the image and is not writable by the house user; the run died with a permission error two
+        seconds in and the measurement spent two hours watching a stopped container. So the engine
+        says on its entry that it runs as its image's user, and that grant is stated rather than
+        assumed — the other engines keep the unprivileged house user they have always had.
+        """
+        cfg = self.bundle['compose']['services']['coding']
+        self.assertNotIn('user', cfg)
+        for service in self.serving['compose']['services'].values():
+            self.assertEqual(service['user'], f"{self.HOST['uid']}:{self.HOST['gid']}")
+
+    def test_the_trial_asks_for_the_quant_its_files_are(self):
+        """The staged files are Unsloth's UD-IQ4_XS; naming the other family makes the engine refuse.
+
+        This is not a style point: with the wrong family the engine stops at its second step saying
+        the quant does not exist, which reads as a slow model and cost a whole idle window.
+        """
+        environment = self.bundle['compose']['services']['coding']['environment']
+        self.assertEqual(environment['FAMILY'], 'unsloth')
+        self.assertEqual(environment['MODEL'], 'UD-IQ4_XS')
+
+    def test_a_container_that_refuses_to_start_is_not_waited_out(self):
+        """A setup error printed once is a finding, not two hours of ``workspace=False``.
+
+        The first two runs on the trial host were this: the engine refused, exited in a second, and
+        the tool polled the corpse to the limit while the person watching saw nothing but a counter.
+        """
+        system = ProvisioningSystem(self.serving, exits_after=2,
+            log_text='=== Step 2: your choices ===\n  [X] that quant is not in the family named\nSetup stopped.')
+        c = Controller(fixture.ROOT / 'config', self.state, 'a' * 40, system)
+        with patch('runtime.provision.time.sleep'):
+            receipt = measurement(c, PROFILE, phase='provision', limit=7200, poll=15, log=lambda *a: None)
+        run = receipt['runs'][-1]
+        self.assertEqual(run['reached'], 'exited (1)')
+        self.assertIn('Setup stopped.', run['container_log'])
+        self.assertLess(len(run['samples']), 4)
+        self.assertFalse(receipt['workspace_ready'])
+        # It still says goodbye properly: the project is torn down rather than left stopped on disk.
+        self.assertIn('down', [a for a in system.events[-1][1] if a in ('up', 'down')])
+        reasons = c.verdict(self.bundle)
+        self.assertTrue(any('stopped by itself' in reason for reason in reasons), reasons)
+
     def test_the_throwaway_project_asks_for_the_same_machine_the_switch_would(self):
         """Anything less and the measurement is about a different container than the one to come."""
         cfg = self.bundle['compose']['services']['coding']
@@ -164,9 +220,13 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(service['ports'], ['127.0.0.1:18081:8080'])
         self.assertEqual(service['restart'], 'no')
         self.assertEqual(service['labels']['local-ai.provisioning'], 'throwaway')
-        for key in ('image', 'entrypoint', 'command', 'environment', 'user', 'volumes', 'ulimits',
+        for key in ('image', 'entrypoint', 'command', 'environment', 'volumes', 'ulimits',
                 'tmpfs', 'healthcheck', 'read_only', 'init', 'pull_policy', 'logging'):
             self.assertEqual(service[key], cfg[key], key)
+        # The image-user grant is part of the machine being measured: a throwaway that quietly ran as
+        # somebody else would be measuring a container that cannot be switched to.
+        self.assertNotIn('user', cfg)
+        self.assertNotIn('user', service)
         devices = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
         self.assertEqual(len(devices), 4)
         self.assertEqual(service['deploy'], cfg['deploy'])
