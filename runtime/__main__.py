@@ -29,7 +29,7 @@ def main():
     parser = argparse.ArgumentParser(prog='ai-runtime')
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
         'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'serve', 'list', 'check',
-        'provision',
+        'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
     parser.add_argument('--profile', choices=DAYTIME_PROFILES)
     parser.add_argument('--phase', choices=['provision', 'warm'], default='provision')
@@ -38,7 +38,7 @@ def main():
     if args.action == 'list':
         print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')))
         return
-    readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check')
+    readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')
     controller = Controller(system=System(readonly=readonly))
     if args.action == 'serve':
         from .web import serve
@@ -74,6 +74,13 @@ def main():
         if args.profile is None:
             raise RuntimeError('provision needs --profile')
         result = measurement(controller, args.profile, phase=args.phase)
+    elif args.action == 'gate':
+        # The refusal a switch would hand back, given without switching: read-only, nothing locked,
+        # nothing drained, no container asked to do anything.
+        if args.profile is None:
+            raise RuntimeError('gate needs --profile')
+        reasons = controller.verdict(controller.desired(args.profile))
+        result = {'profile': args.profile, 'switchable': not reasons, 'reasons': reasons}
     elif args.action == 'rollback-release':
         result = controller.rollback_release()
     elif args.action == 'publish':
@@ -83,6 +90,8 @@ def main():
     print(json.dumps(result, indent=2))
     if args.action == 'inspect' and not result['matches_live']:
         raise RuntimeError('Requested profile does not match the healthy live runtime')
+    if args.action == 'gate' and not result['switchable']:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

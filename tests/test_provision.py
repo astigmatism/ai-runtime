@@ -35,6 +35,7 @@ class ProvisioningSystem(fixture.FakeSystem):
         self.health_polls = 0
         self.started = []
         self.throwaway_port = None
+        self.throwaway_name = None
         self.devices = None
 
     def docker(self, *args, **kwargs):
@@ -46,6 +47,7 @@ class ProvisioningSystem(fixture.FakeSystem):
             role = args[-1]
             service = spec['services'][role]
             self.throwaway_port = service['ports'][0].split(':')[1]
+            self.throwaway_name = service['container_name']
             self.devices = service['deploy']['resources']['reservations']['devices'][0]['device_ids']
             self.started.append((service['container_name'], self.throwaway_port, list(self.devices)))
             self.containers[service['container_name']] = {'Id': 'throwaway',
@@ -66,13 +68,16 @@ class ProvisioningSystem(fixture.FakeSystem):
         return state
 
     def http(self, url, body=None, headers=None, timeout=None):
-        # Only the throwaway's own answer is simulated; a measurement must not be able to make the
-        # serving backend look healthy or unhealthy.
-        if self.throwaway_port and f':{self.throwaway_port}/health' in url:
+        # Only the throwaway's own answer is simulated, and only on the route the controller can
+        # really use: its name on the shared network. The host's published loopback port answers to
+        # nobody from in here, so a tool that depended on it would never see a healthy boot.
+        if url.endswith('/health') and url.startswith('http://' + (self.throwaway_name or '') + ':8080'):
             self.health_polls += 1
             if self.health_polls < self.healthy_after:
                 raise RuntimeError('connection refused')
             return {'status': 'ok'}
+        if url.startswith('http://127.0.0.1:'):
+            raise RuntimeError('no route from the controller to the host loopback')
         return super().http(url, body=body, headers=headers, timeout=timeout)
 
 
@@ -165,11 +170,12 @@ class ProvisionTests(unittest.TestCase):
         devices = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
         self.assertEqual(len(devices), 4)
         self.assertEqual(service['deploy'], cfg['deploy'])
-        # And it is kept out of the router's world: a private network of its own, never the external
-        # one, and the profile's real service definition is left exactly as it was.
-        self.assertNotIn('external', spec['networks']['router'])
-        self.assertNotEqual(spec['networks']['router']['name'],
-            self.bundle['compose']['networks']['router']['name'])
+        # It shares the router network with whatever is serving, because that network is the only
+        # place the controller can reach a backend from, but it is reached by its own name and never
+        # by the profile's service aliases, which stay the property of the container that is serving.
+        self.assertEqual(spec['networks'], self.bundle['compose']['networks'])
+        self.assertEqual(service['networks'], {'router': {}})
+        self.assertTrue(cfg['networks']['router']['aliases'])
         self.assertEqual(cfg['container_name'], 'qwen38-daytime')
         self.assertEqual(cfg['restart'], 'unless-stopped')
         self.assertEqual(cfg['ports'], ['127.0.0.1:18080:8080'])
@@ -187,6 +193,29 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining)
         self.assertNotIn('qwen38-daytime-provision', self.system.containers)
+        # The size of the pack and the space it left are part of the finding, not something a human
+        # has to remember to write down beside the run.
+        self.assertGreater(result['pack_bytes'], 0)
+        for key in ('before', 'after'):
+            self.assertIsInstance(result['disk_free_bytes'][key], int)
+        self.assertEqual(result['runs'][-1]['free_bytes_after'], result['disk_free_bytes']['after'])
+
+    def test_the_refusal_is_readable_without_attempting_a_switch(self):
+        """A refusal that can only be understood by provoking one is a refusal nobody can plan around."""
+        reasons = self.c.verdict(self.bundle)
+        self.assertEqual(len(reasons), 1)
+        self.assertIn('never been pre-provisioned', reasons[0])
+        self.assertIn('--profile ' + PROFILE, reasons[0])
+        self.receipt(healthy_warm_boot=False, warm_boot_seconds=2900, error='never answered')
+        self.assertIn('not switchable', self.c.verdict(self.bundle)[0])
+        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1500)
+        refusal = self.c.verdict(self.bundle)[0]
+        self.assertIn('at least 4501s', refusal)
+        with self.assertRaisesRegex(RuntimeError, 'under three times the measured warm boot'):
+            self.c.switchable(self.bundle)
+        self.receipt(healthy_warm_boot=True, warm_boot_seconds=1000)
+        self.assertEqual(self.c.verdict(self.bundle), [])
+        self.c.switchable(self.bundle)
 
     def test_a_warm_boot_is_not_measured_while_the_cards_are_busy(self):
         """The tool never stops a serving model to time its replacement; that is a decision, not a side effect."""
@@ -206,6 +235,9 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(result['warm_boot_seconds'], 240)
         self.assertEqual(result['runs'][-1]['reached'], 'healthy')
         self.assertEqual(self.system.health_polls, self.system.healthy_after)
+        # Read over the network the controller actually shares with a backend: a published loopback
+        # port is the host's route, not this one's, and a measurement taken through it is no measurement.
+        self.assertEqual(result['runs'][-1]['samples'][-1]['health_via'], 'container')
         self.c.switchable(self.bundle)
         recorded = json.loads((self.state / 'provisioning' / (PROFILE + '.json')).read_text())
         self.assertEqual([run['phase'] for run in recorded['runs']], ['warm'])

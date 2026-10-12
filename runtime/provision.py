@@ -17,6 +17,8 @@ Two measurements, because they cost different things:
 The receipt they leave behind is what ``Controller.switchable`` insists on before a switch.
 """
 import copy
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -61,9 +63,11 @@ def throwaway(bundle, role, name, port):
     would start — same image, entrypoint, arguments, environment, user, binds and card
     reservations. Three things change, all of them because a measurement runs beside a serving
     machine: the container name, so it cannot collide with the backend that is up; the published
-    port, for the same reason; and the network, because a throwaway must not join the router's
-    network or take the profile's service aliases. ``restart`` also comes back to ``no`` — a
-    measurement that fails is a finding, not a container that keeps trying.
+    port, for the same reason; and the service aliases, which are dropped because on the router
+    network the profile's names belong to the container that is serving and nothing may resolve the
+    trial to this one. The container's own name still resolves, which is how its health answer is
+    read from here. ``restart`` also comes back to ``no`` — a measurement that fails is a finding,
+    not a container that keeps trying.
 
     This is written as a compose file rather than translated to ``docker run`` on purpose: the card
     reservations have to be asked for exactly the way the switch will ask for them, and the switch
@@ -72,10 +76,13 @@ def throwaway(bundle, role, name, port):
     compose = copy.deepcopy(bundle['compose'])
     compose['name'] = PROJECT
     compose['services'] = {role: compose['services'][role]}
-    compose['services'][role].update(container_name=name, restart='no',
-        ports=[f'127.0.0.1:{port}:8080'],
-        labels={**(compose['services'][role].get('labels') or {}), 'local-ai.provisioning': 'throwaway'})
-    compose['networks'] = {'router': {'name': PROJECT + '_router'}}
+    service = compose['services'][role]
+    service.update(container_name=name, restart='no', ports=[f'127.0.0.1:{port}:8080'],
+        # No aliases: on this network the profile's names belong to the container that is serving,
+        # and nothing may resolve the trial to this one. The container's own name still resolves,
+        # which is how the health answer below gets read.
+        networks={'router': {}},
+        labels={**(service.get('labels') or {}), 'local-ai.provisioning': 'throwaway'})
     return compose
 
 
@@ -84,31 +91,90 @@ def stop_seconds(cfg):
     return int(str(cfg.get('stop_grace_period') or '30s').rstrip('s'))
 
 
-def probe(system, port):
-    """The container's own health answer, or None while it is not answering yet."""
-    try:
-        answer = system.http(f'http://127.0.0.1:{port}/health', timeout=5)
-    except Exception:
-        return None
-    return answer if isinstance(answer, dict) else None
+def health_routes(name, port):
+    """How the container's health answer can be reached, in the order the controller can use it.
+
+    The controller sits on the router network, not in the host's network namespace, so a port
+    published on the host's loopback is reachable by a human on that host and not from here. The
+    container's name on that network is the route the controller uses for every backend, so it is
+    tried first and the published port is kept as a fallback. Which route answered is written into
+    the samples, so a measurement never rests on an unstated assumption about the network again.
+    """
+    return [('container', 'http://' + name + ':8080/health'),
+        ('host loopback', f'http://127.0.0.1:{port}/health')]
 
 
-def neighbour(system, name):
-    """What the serving backend is doing, sampled each poll of a run that shares the machine.
+def probe(system, name, port):
+    """The container's own health answer and the route it arrived on, or None while not answering."""
+    for route, url in health_routes(name, port):
+        try:
+            answer = system.http(url, timeout=5)
+        except Exception:
+            continue
+        if isinstance(answer, dict):
+            return route, answer
+    return None
+
+
+def serving_containers(controller):
+    """The containers actually serving, read from the active record rather than from the target.
+
+    During a build run the target is not up, so watching the target's own container name would
+    sample nothing; the machine's other half is whatever the active profile is running.
+    """
+    active = controller.load('active.json') or {}
+    services = ((active.get('bundle') or {}).get('compose') or {}).get('services') or {}
+    return sorted({cfg['container_name'] for cfg in services.values() if cfg.get('container_name')})
+
+
+def neighbours(system, names):
+    """What the serving backends are doing, sampled each poll of a run that shares the machine.
 
     This is the other half of the provisioning measurement: packing a model competes for CPU, disk
     and page cache with a model that is loaded and answering, and that is an assumption worth
-    testing rather than one to find out about on a switch.
+    testing rather than one to find out about on a switch. The time the serving backend takes to
+    answer the router is recorded beside it, because a backend that has stopped answering promptly
+    is the contention to write down and stop for, not to discover on a switch.
     """
-    state = system.inspect(name)
-    if not state:
-        return None
-    health = (state.get('State') or {}).get('Health') or {}
-    return {'running': bool((state.get('State') or {}).get('Running')),
-        'health': health.get('Status') or 'none'}
+    found = []
+    for name in names:
+        state = system.inspect(name)
+        if not state:
+            continue
+        health = (state.get('State') or {}).get('Health') or {}
+        sample = {'name': name, 'running': bool((state.get('State') or {}).get('Running')),
+            'health': health.get('Status') or 'none'}
+        started = time.monotonic()
+        try:
+            system.http('http://' + name + ':8080/slots', timeout=10)
+            sample['slots_seconds'] = round(time.monotonic() - started, 3)
+        except Exception:
+            sample['slots_seconds'] = None
+        found.append(sample)
+    return found
 
 
-def watch(system, path, role, name, port, files, neighbour_name=None, goal='healthy',
+def footprint(workspace):
+    """Bytes the workspace holds. Tolerant of a read-only mount and of files moving under it."""
+    total = 0
+    for root, _directories, entries in os.walk(workspace):
+        for entry in entries:
+            try:
+                total += os.stat(os.path.join(root, entry), follow_symlinks=False).st_size
+            except OSError:
+                pass
+    return total
+
+
+def free_bytes(workspace):
+    """Free space on the filesystem the workspace lives on, from the nearest path that exists."""
+    target = Path(workspace)
+    while not target.exists() and target != target.parent:
+        target = target.parent
+    return shutil.disk_usage(target).free
+
+
+def watch(system, path, role, name, port, files, serving=(), goal='healthy',
           limit=LIMIT_SECONDS, poll=POLL_SECONDS, stop=STOP_SECONDS, log=print):
     """Start the container and poll until the workspace is built, or it is answering, or time is up.
 
@@ -131,11 +197,13 @@ def watch(system, path, role, name, port, files, neighbour_name=None, goal='heal
         system.docker('compose', *project, 'up', '-d', '--no-deps', '--pull', 'never', role)
         while True:
             elapsed = time.monotonic() - started
-            answer = probe(system, port)
+            answer = probe(system, name, port)
             workspace = all(target.is_file() for target in files)
             sample = {'seconds': round(elapsed, 1), 'workspace': workspace, 'health': answer is not None}
-            if neighbour_name:
-                sample['neighbour'] = neighbour(system, neighbour_name)
+            if answer:
+                sample['health_via'] = answer[0]
+            if serving:
+                sample['neighbours'] = neighbours(system, serving)
             samples.append(sample)
             log(f"provision {name}: {sample['seconds']:>7.1f}s workspace={workspace} "
                 f"health={sample['health']}")
@@ -171,24 +239,39 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
             'measurement between turns, when nothing is serving')
     port = published_port(cfg, PORT_OFFSET if phase == 'provision' else 0)
     name = cfg['container_name'] + '-provision'
+    # Space before, space after: a pack that consumes a meaningful chunk of the model filesystem is
+    # worth knowing the size of, and so is the free space it left behind.
+    free_before = free_bytes(workspace)
     spec = controller.state / 'provisioning' / (profile + '-compose.json')
     # The exact file this run started from stays on disk: if a measurement is questioned later, or a
     # later engine revision changes what it asks for, the difference is readable.
     atomic_json(spec, throwaway(bundle, role, name, port))
+    # A build run shares the machine, so the serving backends are watched while it packs. A warm run
+    # has no serving backend by construction — that is what its refusal enforces — so there is nothing
+    # beside it to sample.
     result = watch(system, spec, role, name, port, ready_files(workspace, provision),
-        neighbour_name=cfg['container_name'], goal='workspace' if phase == 'provision' else 'healthy',
+        serving=serving_containers(controller) if phase == 'provision' else (),
+        goal='workspace' if phase == 'provision' else 'healthy',
         limit=limit, poll=poll, stop=stop_seconds(cfg), log=log)
     receipt = controller.load('provisioning/' + profile + '.json') or {'profile': profile,
         'engine_tag': engine['tag'], 'image_id': engine['image_id'], 'workspace': str(workspace),
         'ready_files': list(provision.get('ready_files', [])), 'runs': []}
     receipt['measured_at'] = now()
-    receipt['runs'].append({'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'],
-        'container': name, 'port': port})
+    run = {'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'], 'container': name,
+        'port': port, 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
+        'free_bytes_after': free_bytes(workspace), 'samples': result['samples']}
+    receipt['runs'].append(run)
+    receipt['pack_bytes'] = run['pack_bytes']
+    receipt['disk_free_bytes'] = {'before': free_before, 'after': run['free_bytes_after']}
     if phase == 'provision':
         receipt['provision_seconds'] = result['seconds']
         receipt['workspace_ready'] = result['workspace_ready']
-        nearby = [s['neighbour'] for s in result['samples'] if s.get('neighbour')]
-        receipt['neighbour_healthy'] = bool(nearby) and all(s['health'] == 'healthy' for s in nearby)
+        nearby = [s['neighbours'] for s in result['samples'] if s.get('neighbours')]
+        receipt['neighbour_healthy'] = bool(nearby) and all(n['health'] == 'healthy'
+            for sample in nearby for n in sample)
+        answered = [n['slots_seconds'] for sample in nearby for n in sample
+            if n.get('slots_seconds') is not None]
+        receipt['neighbour_slots_max_seconds'] = max(answered) if answered else None
         receipt['neighbour_samples'] = nearby[-8:]
     else:
         receipt['warm_boot_seconds'] = result['seconds']

@@ -95,6 +95,7 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | `docker exec local-ai-runtime python3 -m runtime publish` | Verify and republish the selected catalog |
 | `docker exec local-ai-runtime python3 -m runtime restore` | Bring back the release that last served and reopen requests, whether or not a failure left the router drained |
 | `docker exec local-ai-runtime python3 -m runtime provision --profile <name>` | Measure a self-provisioning engine's workspace build (`--phase warm` for the boot) on this host; switching to it is refused until that has been recorded |
+| `docker exec local-ai-runtime python3 -m runtime gate --profile <name>` | Read-only: the refusal a switch to this profile would give, without attempting one; exit code 1 when it would be refused |
 | `scripts/recover-update.sh` | Complete or recover an interrupted portal update |
 
 `nighttime`, `daytime-256`, and `nighttime-256` retain their existing compatibility meaning: ensure the selected pair. Historical `deploy` and `rollback` commands are retired. Stopping the controller does not unload the model servers. Backend restart policies remain in place. Controller startup is idempotent and rejects stale source revisions or unfinished maintenance rather than overwriting them.

@@ -122,6 +122,33 @@ class Controller:
             return None
         return receipt
 
+    def verdict(self, bundle):
+        """Why a switch to this bundle would be refused, worked out without touching anything.
+
+        An empty list is the go-ahead. ``switchable`` raises on these and the read-only ``gate``
+        command reports them, so the reason a profile will not be switched to is readable without
+        attempting a switch — a refusal should never require provoking one to be understood.
+        """
+        role, engine, provision = self.provisioning(bundle)
+        if engine is None:
+            return []
+        command = 'python3 -m runtime provision --profile ' + bundle['profile']
+        receipt = self.provisioned(bundle)
+        if receipt is None:
+            return ['The ' + engine['tag'] + ' workspace has never been pre-provisioned '
+                'on this host for this release; run ' + command + ' and let it record a healthy warm boot']
+        if receipt.get('healthy_warm_boot') is not True:
+            return ['Pre-provisioning ' + engine['tag'] + ' did not '
+                'reach a healthy warm boot (' + str(receipt.get('error') or 'see the receipt') + '); the trial '
+                'is not switchable until it does, or the profile is retired']
+        window = engine.get('readiness_wait_seconds') or 0
+        measured = float(receipt.get('warm_boot_seconds') or 0)
+        if window < 3 * measured:
+            return ['The readiness window for ' + engine['tag'] + ' is ' + str(window) +
+                's, under three times the measured warm boot of ' + str(receipt['warm_boot_seconds']) +
+                's; set readiness_wait_seconds to at least ' + str(int(3 * measured + 1)) + 's and publish']
+        return []
+
     def switchable(self, bundle):
         """Refuse to switch onto a workspace whose first boot has never been measured here.
 
@@ -131,21 +158,9 @@ class Controller:
         been measured on this host, with room to spare, so a blind switch is refused rather than
         run into a timeout.
         """
-        role, engine, provision = self.provisioning(bundle)
-        if engine is None:
-            return
-        command = 'python3 -m runtime provision --profile ' + bundle['profile']
-        receipt = self.provisioned(bundle)
-        require(receipt is not None, 'The ' + engine['tag'] + ' workspace has never been pre-provisioned '
-            'on this host for this release; run ' + command + ' and let it record a healthy warm boot')
-        require(receipt.get('healthy_warm_boot') is True, 'Pre-provisioning ' + engine['tag'] + ' did not '
-            'reach a healthy warm boot (' + str(receipt.get('error') or 'see the receipt') + '); the trial '
-            'is not switchable until it does, or the profile is retired')
-        window = engine.get('readiness_wait_seconds') or 0
-        measured = float(receipt.get('warm_boot_seconds') or 0)
-        require(window >= 3 * measured, 'The readiness window for ' + engine['tag'] + ' is ' + str(window) +
-            's, under three times the measured warm boot of ' + str(receipt['warm_boot_seconds']) +
-            's; set readiness_wait_seconds to at least ' + str(int(3 * measured + 1)) + 's and publish')
+        reasons = self.verdict(bundle)
+        if reasons:
+            raise RuntimeError(reasons[0])
 
     def validate(self, bundle, full_hash=False):
         images = {}
