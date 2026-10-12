@@ -36,6 +36,12 @@ class FakeSystem:
         # configuration. slot_context simulates a backend that came up on another window.
         self.services = {x['container_name']: x for x in bundle['manifest']['services']}
         self.slot_context = None
+        # An engine that answers its health check before the model is resident (Strata's /health
+        # says status ok from server start and carries the model state as loaded; /slots stays
+        # empty until the read completes). model_loaded plays that state; load_after_slots flips
+        # it to true after N slot looks, so a test can play the load completing under a wait.
+        self.model_loaded = True
+        self.load_after_slots = None
         self.engines = {s['engine']['tag']: s['engine'] for s in bundle['manifest']['services']}
         shared = read(ROOT / 'config/shared.json')
         self.engines.update({e['tag']: e for e in shared['engines'].values()})
@@ -108,8 +114,14 @@ class FakeSystem:
         if url.endswith('/reload-config'):
             self.events.append(('publish',)); return {}
         name = url.split('/')[2].split(':')[0]
-        if url.endswith('/health'): return {'status': 'ok'}
+        if url.endswith('/health'): return {'status': 'ok', 'loaded': self.model_loaded}
         if url.endswith('/slots'):
+            if self.load_after_slots is not None:
+                self.load_after_slots -= 1
+                if self.load_after_slots <= 0:
+                    self.model_loaded = True
+            if not self.model_loaded:
+                return []
             ci = self.containers[name]
             return [{'id': i, 'n_ctx': self.slot_context or self.window_of(name, ci),
                     'is_processing': self.direct_busy, 'n_prompt_tokens': 0}

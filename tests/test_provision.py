@@ -32,11 +32,13 @@ class ProvisioningSystem(fixture.FakeSystem):
     decides when each of them happens, which lets a measurement be tested without an engine.
     """
 
-    def __init__(self, bundle, healthy_after=3, exits_after=None, log_text='Setup stopped.'):
+    def __init__(self, bundle, healthy_after=3, exits_after=None, log_text='Setup stopped.',
+                 loaded_after=None):
         super().__init__(bundle)
         self.healthy_after = healthy_after
         self.exits_after = exits_after
         self.log_text = log_text
+        self.loaded_after = loaded_after
         self.health_polls = 0
         self.started = []
         self.throwaway_port = None
@@ -89,7 +91,11 @@ class ProvisioningSystem(fixture.FakeSystem):
                 raise RuntimeError('connection refused')
             if self.health_polls < self.healthy_after:
                 raise RuntimeError('connection refused')
-            return {'status': 'ok'}
+            # The engine's server answers before the model is resident, and its health check
+            # says so in loaded. healthy_after is the server coming up; loaded_after, when set,
+            # is the read completing, polls after the first answer.
+            return {'status': 'ok', 'loaded': self.loaded_after is None
+                or self.health_polls >= self.loaded_after}
         if url.startswith('http://127.0.0.1:'):
             raise RuntimeError('no route from the controller to the host loopback')
         return super().http(url, body=body, headers=headers, timeout=timeout)
@@ -116,8 +122,15 @@ class ProvisionTests(unittest.TestCase):
         self.bundle = render(fixture.ROOT / 'config', host, PROFILE)
         self.workspace = workspace_target(self.bundle['compose']['services']['coding'],
             self.c.provisioning(self.bundle)[2])
-        self.polls = patch('runtime.provision.time.sleep', side_effect=self.build_workspace)
-        self.polls.start(); self.addCleanup(self.polls.stop)
+        # The tool's polls and the switch's waits share the time module, so this is one patch:
+        # the side effect plays the engine packing the workspace a couple of polls in, and the
+        # call record doubles as the switch's wait clock, whose readiness cadence the tests
+        # assert from it. Two separate patches here would replace each other's sleep, because
+        # both target the same global attribute.
+        self.polls = patch('runtime.provision.time.sleep')
+        self.controller_sleeps = self.polls.start()
+        self.controller_sleeps.side_effect = self.build_workspace
+        self.addCleanup(self.polls.stop)
 
     def build_workspace(self, _seconds):
         """The engine packs the workspace a couple of polls in, then is still loading afterwards."""
@@ -407,6 +420,62 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual([run['phase'] for run in recorded['runs']], ['warm'])
         self.assertEqual(recorded['warm_boot_seconds'], 240)
         self.assertEqual(recorded['profile'], PROFILE)
+
+    def test_a_warm_boot_is_not_measured_until_the_model_is_resident(self):
+        """The engine's server answers before the model is resident, and its health check says
+        so in loaded: a measurement that took the first answer as the boot would record a warm
+        boot the length of the web page instead of the model's read, and the receipt would open
+        the switch on a number the model never took."""
+        self.system.containers['qwen38-daytime']['State']['Running'] = False
+        self.system.healthy_after = 1
+        self.system.loaded_after = 3
+        clock = iter(range(0, 1000, 60))
+        with patch('runtime.provision.time.monotonic', side_effect=lambda: next(clock)):
+            result = measurement(self.c, PROFILE, phase='warm', limit=600, poll=0, log=lambda line: None)
+        self.assertTrue(result['healthy_warm_boot'])
+        self.assertEqual(self.system.health_polls, self.system.loaded_after)
+        self.assertFalse(result['runs'][-1]['samples'][0]['health'])
+        self.assertTrue(result['runs'][-1]['samples'][-1]['health'])
+
+    def test_a_switch_waits_out_a_load_that_begins_before_the_model_is_resident(self):
+        """Docker is healthy before the model is.
+
+        Strata's /health says status ok from server start and carries the model state as loaded,
+        so up --wait came back with the read still in flight, and the switch that took the first
+        observe as the boot aborted the trial with the model still reading. The declared
+        readiness window is the bound on the controller's own view: it re-observes until the
+        engine reports the contracted window, and only then accepts.
+        """
+        prepare = patch.object(self.c, 'prepare', side_effect=lambda b: None)
+        prepare.start(); self.addCleanup(prepare.stop)
+        for service in self.bundle['manifest']['services']:
+            self.system.services[service['container_name']] = service
+        self.system.model_loaded = False
+        self.system.load_after_slots = 2
+        result = self.c.transition(PROFILE)
+        self.assertEqual(result['profile'], PROFILE)
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], PROFILE)
+        self.assertTrue(self.system.model_loaded)
+        # The wait ran against the controller's own clock, on its own cadence.
+        self.controller_sleeps.assert_any_call(15)
+        recorded = json.loads((self.state / 'provisioning' / (PROFILE + '.json')).read_text())
+        self.assertTrue(recorded['healthy_warm_boot'])
+
+    def test_a_loaded_engine_on_the_wrong_window_fails_without_spending_the_window(self):
+        """loaded=true with the wrong slot window is a configuration fault, not a slow start.
+
+        The failure has to come now, with the engine's own number in the record, and no readiness
+        wait spent on it: waiting on a fault only turns it into a delay.
+        """
+        for service in self.bundle['manifest']['services']:
+            self.system.services[service['container_name']] = service
+        self.system.model_loaded = True
+        self.system.slot_context = 131072
+        with self.assertRaisesRegex(RuntimeError,
+                r'slot window.*"reported_context": \[131072\].*"loaded": true'):
+            self.c.reconcile(self.bundle, ['coding'])
+        # No readiness wait on a fault: the loop never ran on its own cadence.
+        self.assertFalse(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
 
 
 if __name__ == '__main__':

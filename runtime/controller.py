@@ -22,6 +22,10 @@ from .system import System, atomic_json, future, lock, now
 PENDING_PHASES = ('prepared', 'draining', 'applying', 'verifying', 'restoring', 'needs-attention')
 # How many consecutive quiet passes a drain must see before work is assumed finished.
 DRAIN_SETTLE_ROUNDS = 3
+# How often the switch re-observes a backend that is still reading its model. Docker's health
+# state is the engine's own /health, which an engine like Strata answers from server start, so
+# the waiting has to happen against the controller's own view, and this is the cadence of it.
+READINESS_POLL_SECONDS = 15
 # A failed restoration is retried on this timer until the service is back, and the wait stops
 # growing at the last entry. The host keeps trying rather than giving up: an operator may be
 # asleep, and deciding to stop trying is the same as nobody being there.
@@ -535,8 +539,48 @@ class Controller:
                     'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', str(wait), *batch,
                     timeout=wait + 60)
         observed = self.observe(bundle)
-        require(all(s['healthy'] for s in observed.values()), 'Backend identity/readiness verification failed')
+        # Docker's health state is the engine's own /health, and an engine whose server answers
+        # before the model is resident (Strata's /health says status ok from server start, carries
+        # the model state as loaded, and /slots stays empty until the read completes) is healthy
+        # for Docker while it is still reading: up --wait came back long before the model did, and
+        # the one-shot observe above rejected it while the read was mid-flight. For those, the
+        # declared readiness window is the bound on waiting for the controller's own view. A
+        # backend that loaded with the wrong window, or drifted in any other way, is not waited
+        # out: the window would only turn the fault into a delay.
+        if roles:
+            wait = max([service_engine(bundle, role).get('readiness_wait_seconds', 450) for role in roles])
+            deadline = time.monotonic() + wait
+            while not all(s['healthy'] for s in observed.values()) and self.still_loading(observed) \
+                    and time.monotonic() < deadline:
+                time.sleep(READINESS_POLL_SECONDS)
+                observed = self.observe(bundle)
+        bad = [(role, s) for role, s in observed.items() if not s['healthy']]
+        detail = '; '.join(role + ': ' + ', '.join(
+            s['differences'] + (['slot window ' + json.dumps(s['slot_window'])] if s.get('slot_window') else []))
+            for role, s in bad)
+        require(not bad, 'Backend identity/readiness verification failed' + (': ' + detail if detail else ''))
         return observed
+
+    @staticmethod
+    def still_loading(observed):
+        """The one unhealthy state a readiness window can fix: an engine that answers its own
+        health check before the model is resident. Strata's /health says status ok from server
+        start and carries the model state as loaded; /slots stays empty until the read completes,
+        so the observer records slot context with loaded=false. That is a backend mid-load, and
+        waiting within the declared window is the fix. The same empty list with loaded=true, or
+        any other difference at all, is a fault the window will not fix: saying so here is what
+        keeps the transition from spending the window on it."""
+        for service in observed.values():
+            if service['healthy']:
+                continue
+            window = service.get('slot_window')
+            if window is None or 'slot context' not in service['differences']:
+                return False
+            if any(reason != 'slot context' for reason in service['differences']):
+                return False
+            if window.get('loaded') is not False:
+                return False
+        return bool(observed)
 
     def acceptance(self, bundle, roles):
         for role in roles:

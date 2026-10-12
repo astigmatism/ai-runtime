@@ -133,13 +133,19 @@ def health_routes(name, port):
 
 
 def probe(system, name, port):
-    """The container's own health answer and the route it arrived on, or None while not answering."""
+    """The container's own health answer and the route it arrived on, or None while not answering.
+
+    An engine may answer its health check before the model is resident: Strata's /health says
+    status ok from server start and carries the model state as loaded. An answer that says
+    loaded=false is a web page, not a boot, and counting it would measure the time to the page
+    instead of the time to the model - the number the switch waits for and the receipt records.
+    """
     for route, url in health_routes(name, port):
         try:
             answer = system.http(url, timeout=5)
         except Exception:
             continue
-        if isinstance(answer, dict):
+        if isinstance(answer, dict) and answer.get('loaded') is not False:
             return route, answer
     return None
 
