@@ -135,6 +135,7 @@ class RestorationTests(unittest.TestCase):
         deployment = self.c.load('last-deployment.json')
         self.assertEqual(deployment['profile'], 'qwen27b-q6k-with-nighttime')
         self.assertEqual(deployment['phase'], 'recovered')
+        self.assertEqual(deployment['intent'], 'deployment')
         self.assertIn('readiness', str(deployment['error']))
 
     # 1c/1e (ii). The recovery pass itself fails, then re-enters and finishes on its own.
@@ -215,7 +216,10 @@ class RestorationTests(unittest.TestCase):
         self.assertTrue(result['restored'])
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining)
-        self.assertEqual(self.c.load('transaction.json')['intent'], 'restore-last-known-good')
+        transaction = self.c.load('transaction.json')
+        self.assertEqual(transaction['intent'], 'restore-last-known-good')
+        # The receipt a person reads afterwards says this was a restoration, not a switch.
+        self.assertEqual(self.c.load('last-deployment.json')['intent'], 'restore-last-known-good')
 
     def test_status_reports_the_service_contract_and_hides_the_raw_failure(self):
         self.strand_the_backend(drained=False)

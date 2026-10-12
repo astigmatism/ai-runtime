@@ -467,8 +467,13 @@ class Controller:
     def finish(self, transaction, state, error=None):
         transaction.update(phase=state, finished_at=now(), error=error)
         self.save('transaction.json', transaction)
-        self.save('last-deployment.json', {k: transaction.get(k) for k in
-            ('id', 'phase', 'profile', 'started_at', 'finished_at', 'error', 'changed_roles', 'revision', 'config_sha256')})
+        # `phase` and `error` are what a person reads first, and `intent` says which kind of attempt
+        # this was: a failed switch and the restoration that put the machine back afterwards
+        # otherwise look identical in this file.
+        record = {k: transaction.get(k) for k in
+            ('id', 'intent', 'phase', 'profile', 'started_at', 'finished_at', 'error', 'changed_roles', 'revision', 'config_sha256')}
+        record['intent'] = transaction.get('intent') or 'deployment'
+        self.save('last-deployment.json', record)
         if state in ('succeeded', 'recovered'):
             # A verified release is serving, so nothing further is owed. The restoration record
             # stays on disk as history; it simply stops being an action waiting to happen.
