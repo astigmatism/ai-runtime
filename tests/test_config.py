@@ -18,8 +18,17 @@ PAIRED = tuple(n for n in DAYTIME_PROFILES if n not in EXCLUSIVE)
 ENGINES = read(ROOT / 'config/shared.json')['engines']
 # The one profile that is not llama.cpp. Its engine is configured by the environment, so the
 # catalog fields that describe a flag the engine was handed (KV types, --fit, the host-RAM prompt
-# cache budget) are not published for it, and it carries no aliases.
+# cache budget) are not published for it. It is reached through its own service alias, TRIAL_SERVICE,
+# which is nobody's default and is asserted on that entry by ServiceIdentityTests below.
 TRIAL = 'flash-next-strata-160k'
+TRIAL_SERVICE = 'trial'
+# The alias every configuration's Daytime entry carries for the legacy Ollama surface. It is the
+# compatibility ID, not the one a contract client sends, so it is never the only alias an entry has.
+COMPATIBILITY_ALIAS = 'local-active'
+# The service IDs a resident answers to here. The trial claims none of them: it replaces the Daytime
+# resident and stops Nighttime, so an entry answering to any of these would be reachable by clients
+# that were never told to try it.
+RESIDENT_SERVICES = ('daytime', COMPATIBILITY_ALIAS, 'nighttime')
 
 
 def interface_of(profile):
@@ -564,12 +573,12 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual([x['target'] for x in service['volumes'] if x['read_only']],
             [x['target'] for x in definition['artifacts']])
 
-    def test_the_trial_is_published_without_aliases_or_llama_cpp_only_claims(self):
+    def test_the_trial_is_published_under_its_own_service_id_and_without_llama_cpp_only_claims(self):
         bundle = self.bundle()
         entry = bundle['catalog']['models'][0]
         definition = read(ROOT / 'config/profiles' / (TRIAL + '.json'))
         self.assertEqual(entry['model'], definition['arguments']['--alias'])
-        self.assertEqual(entry['aliases'], [])
+        self.assertEqual(entry['aliases'], [TRIAL_SERVICE])
         self.assertEqual(entry['context_length'], definition['context_tokens'])
         self.assertEqual(entry['total_context_length'], definition['context_tokens'])
         self.assertEqual(entry['input_modalities'], ['text'])
@@ -620,6 +629,69 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
         self.assertGreater(engine['readiness_wait_seconds'], 450)
+
+
+class ServiceIdentityTests(unittest.TestCase):
+    """What a client has to send to reach a backend, and what must never reach the trial."""
+
+    def test_every_profile_publishes_a_service_id_a_contract_client_can_send(self):
+        # LLM Router derives the client-facing ID from these aliases and falls back to the canonical
+        # model id when it finds none (llm-router `src/capabilities.js`: `service: aliases.find(...)
+        # ?? entry.id`), and its client contract forbids a client from sending, configuring or
+        # comparing canonical ids. An entry with no service alias is therefore running, selected, and
+        # impossible to ask for — a host whose only lever moves nothing, which is the failure AGENTS.md
+        # forbids in a drain, reached here through model identity instead. It is not theoretical: the
+        # trial published `aliases: []` from 2026-10-11 until it was given its own alias on 2026-10-13,
+        # and the primary client on this machine had no model at all to use while it was selected.
+        for name in DAYTIME_PROFILES:
+            catalog = render(ROOT / 'config', host_for(name), name)['catalog']
+            with self.subTest(profile=name):
+                # Publication merges the default's entry over the document root, so a client that reads
+                # the root has to be told the same service ID as the entry it describes.
+                self.assertEqual(catalog['aliases'], catalog['models'][0]['aliases'])
+            for entry in catalog['models']:
+                with self.subTest(profile=name, model=entry['model']):
+                    service = [alias for alias in entry['aliases']
+                        if isinstance(alias, str) and alias.strip() and alias != COMPATIBILITY_ALIAS]
+                    # The compatibility alias is the legacy Ollama surface. An entry carrying only it
+                    # still has nothing a contract client may send.
+                    self.assertTrue(service, 'Profile ' + name +
+                        ' publishes a catalog no client following the router contract can address')
+                    # No two residents answer to the same service ID, whichever configuration is
+                    # selected: `trial` is only ever the trial, `daytime` only ever a Daytime model.
+                    for other in catalog['models']:
+                        if other is entry:
+                            continue
+                        self.assertTrue(set(service).isdisjoint(
+                            [alias for alias in other['aliases'] if alias != COMPATIBILITY_ALIAS]),
+                            'Service ID shared between ' + entry['model'] + ' and ' + other['model'])
+
+    def test_the_trial_never_shadows_a_resident_service(self):
+        """`aliases: []` was never about being unreachable. It was about being nobody's default.
+
+        The trial replaces the Daytime resident on the same cards and stops Nighttime, so a `daytime`,
+        `local-active` or `nighttime` alias on this entry would move an existing client onto a 4-bit,
+        text-only, unqualified engine with nobody having chosen it — contradicting that selecting the
+        trial, and switching back, are the owner's acts. Its own alias is what makes it addressable;
+        these three are what keep it a deliberate choice, so the protection is asserted against the
+        alias set rather than depending on that set being empty.
+        """
+        catalog = render(ROOT / 'config', host_for(TRIAL), TRIAL)['catalog']
+        entry = catalog['models'][0]
+        self.assertEqual(entry['aliases'], [TRIAL_SERVICE])
+        self.assertTrue(set(RESIDENT_SERVICES).isdisjoint(entry['aliases']))
+        # `trial` is not a service anything else claims, and the trial is not declared offline.
+        self.assertNotIn(TRIAL_SERVICE, [alias for service in catalog['offline_services']
+            for alias in service['aliases']])
+        # And the other way round: no other configuration answers to `trial`, so a client that kept
+        # sending it after a switch away is refused rather than quietly left on the trial engine.
+        for name in DAYTIME_PROFILES:
+            if name == TRIAL:
+                continue
+            with self.subTest(profile=name):
+                aliases = [alias for model in render(ROOT / 'config', host_for(name), name)['catalog']['models']
+                    for alias in model['aliases']]
+                self.assertNotIn(TRIAL_SERVICE, aliases)
 
 
 class ContainerContractTests(unittest.TestCase):

@@ -7,8 +7,13 @@ from pathlib import Path
 
 # Selectable configurations. Paired profiles run on the Daytime pair beside Nighttime; exclusive
 # (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
-# The Strata entry is a trial: it is selectable by name only and carries no aliases, so selecting
-# something else never routes to it and it never shadows the active profile.
+# The Strata entry is a trial. It publishes its own service alias, `trial`, and never `daytime`,
+# `local-active` or `nighttime`: selecting some other configuration therefore never routes to it, it
+# never shadows the active profile, and nothing reaches it until an operator who selected it is asked
+# for by name. While it is selected there is likewise no `daytime` service to ask for, because this
+# configuration replaces the Daytime resident. What is not an option is publishing no service alias
+# at all: that is a catalog a client following the router contract cannot address, which is the same
+# hole as nothing serving (asserted for every profile by ServiceIdentityTests in tests/test_config.py).
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
     'flash-next-solo-160k', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
