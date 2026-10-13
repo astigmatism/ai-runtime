@@ -5,11 +5,13 @@ all four text GPUs, so selecting it stops and removes Nighttime, and selecting a
 profile again recreates it.
 """
 import copy
+import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import time
+import urllib.error
 import uuid
 
 from . import provision as provision_tool
@@ -61,6 +63,60 @@ class Controller:
         require(bool(token), 'Router credential is missing')
         return self.system.http(self.host['router_admin_url'].rstrip('/') + '/admin/api/' + path,
             body, {self.host['router_admin_header']: token})
+
+    def admin_healing(self, path, body=None):
+        """The admin call a mutating operation makes, with the one repair it is allowed.
+
+        A router whose active catalog is unusable (a backend kind it cannot handle) refuses every
+        admin call, including the read a recovery needs, and the state is persisted: a restart
+        comes back wedged exactly as it was. The runtime is the only writer of that catalog file,
+        so it is the only component that can converge it. If the catalog on disk is not the
+        last-known-good release, it is the catalog of a switch the router refused: the good one is
+        written back and the router is reloaded, and the call is retried once. If the router was
+        not wedged that way, the error is re-raised and the caller's retry schedule is untouched.
+        """
+        try:
+            return self.admin(path, body)
+        except urllib.error.HTTPError as error:
+            if not self.heal_wedged_router(error):
+                raise
+            return self.admin(path, body)
+
+    def heal_wedged_router(self, error):
+        """Write the last-known-good catalog back to the router and reload it.
+
+        Returns True only when something was actually changed. If the router was not wedged on a
+        catalog this runtime refused - the error says otherwise, no last-known-good release is
+        recorded, or the file on disk holds a catalog of the same backend kind as the release it
+        is supposed to serve - it is left alone so the caller's retry surfaces the failure
+        again. Only a foreign kind in that file is a wedge this runtime owns, because only this
+        runtime writes that file, and it never published a catalog of a kind the router refused.
+        The decorated fields a healthy publish adds to the file are deliberately ignored: a
+        transient 503 against an otherwise-healthy file must not rewrite it. The router re-reads
+        its catalog file on every call, so the reload is enough and no restart is involved.
+        """
+        body = {}
+        try:
+            body = json.loads(error.read() or b'{}')
+        except Exception:
+            pass
+        code = (body.get('error') or {}).get('code')
+        if error.code != 503 or code not in (None, 'INVALID_BACKEND_KIND'):
+            return False
+        good = self.last_known_good()
+        if good is None:
+            return False
+        catalog = copy.deepcopy(good['bundle']['catalog'])
+        path = Path(self.host['router_state_dir']) / 'active-model.json'
+        try:
+            on_disk = json.loads(path.read_text())
+        except Exception:
+            return False
+        if on_disk.get('backend_kind') == catalog.get('backend_kind'):
+            return False
+        atomic_json(path, catalog)
+        self.admin('reload-config', {})
+        return True
 
     def desired(self, profile=None):
         current = self.load('active.json', {})
@@ -234,29 +290,86 @@ class Controller:
         """The hard reasons a switch to this bundle is refused, and nothing softer.
 
         A refusal is evidence the machine cannot do the job: a warm boot that was measured and
-        failed, or a container that stopped itself at startup. Everything else — a workspace that
-        still needs building, a window that is thin against a measurement — is a note the gate
-        shows, because the switch now builds the workspace itself and waits for the engine's
-        actual answer, and the recovery path stands behind a switch that turns out to be wrong.
+        failed, a container that stopped itself at startup, or a backend kind the deployed router
+        cannot serve. Everything else — a workspace that still needs building, a window that is
+        thin against a measurement — is a note the gate shows, because the switch now builds the
+        workspace itself and waits for the engine's actual answer, and the recovery path stands
+        behind a switch that turns out to be wrong.
         """
+        reasons = []
+        kind = bundle['catalog'].get('backend_kind')
+        kinds = self.router_supported_kinds()
+        if kind and kinds is not None and kind not in kinds:
+            reasons.append('The deployed router does not support backend kind ' + kind +
+                '; a switch to this profile is refused until the router is updated to a release that does')
         if self.preparation_state(bundle) is None:
-            return []
+            return reasons
         receipt = self.provisioned(bundle)
         if receipt is None:
-            return []
+            return reasons
         last = (receipt.get('runs') or [{}])[-1]
         phase = str(last.get('phase') or '')
         reached = str(last.get('reached') or '')
         if phase == 'warm' and reached != 'healthy':
             detail = str(receipt.get('error') or 'see the receipt')
-            return ['This engine has never completed a warm boot from its own workspace on this '
-                'host (' + detail + '); the switch is refused until it does, or the profile is retired']
+            reasons.append('This engine has never completed a warm boot from its own workspace on this '
+                'host (' + detail + '); the switch is refused until it does, or the profile is retired')
         if phase == 'provision' and reached.startswith('exited'):
             role, engine, contract, workspace, cfg = self.preparation_state(bundle)
-            return ['The ' + engine['tag'] + ' container stopped by itself at startup ' + reached +
+            reasons.append('The ' + engine['tag'] + ' container stopped by itself at startup ' + reached +
                 '; its output is in the receipt. A switch would refuse to build the workspace for '
-                'this engine until that is fixed, and the profile is better retired if it cannot be']
-        return []
+                'this engine until that is fixed, and the profile is better retired if it cannot be')
+        return reasons
+
+    def router_supported_kinds(self):
+        """The backend kinds the deployed router can serve, or None if it cannot be asked.
+
+        Cached briefly because the status page asks about every selectable profile; the switch
+        itself verifies fresh, so this is the display layer and a stale entry costs at most a
+        retry after a router update.
+        """
+        # Wall-clock, not monotonic: the switch's drain accounting owns the monotonic clock,
+        # and this cache must not steal a reading from it.
+        cached = getattr(self, '_kinds_cache', None)
+        if cached is not None and (
+                datetime.datetime.now(datetime.timezone.utc) - cached[0]).total_seconds() < 30:
+            return cached[1]
+        kinds = None
+        try:
+            state = self.admin('runtime-state')
+            reported = (state.get('router') or {}).get('supported_backend_kinds')
+            # A router old enough not to report its kinds supports exactly the two kinds it has
+            # always served; a catalog of anything else is refused below, as it should be.
+            kinds = list(reported) if reported else ['ollama', 'llama_cpp']
+        except Exception:
+            kinds = None
+        self._kinds_cache = (datetime.datetime.now(datetime.timezone.utc), kinds)
+        return kinds
+
+    def require_router_supports(self, bundle):
+        """Refuse, before the drain, a catalog the deployed router cannot serve.
+
+        Publishing a kind the router does not implement wedges the router's own health and admin
+        paths, and because the wedged catalog is a file the router reads back on boot, a restart
+        cannot clear it: the host would come up serving nothing, and only a hand-written file
+        would put it back. Refusing at the edge is the only way a switch cannot leave that state
+        behind, so the check fails closed - a router that cannot be asked cannot be switched.
+        """
+        kind = bundle['catalog'].get('backend_kind')
+        if not kind:
+            return
+        try:
+            state = self.admin_healing('runtime-state')
+        except Exception as error:
+            require(False, 'The router cannot be reached, so this switch cannot verify that its backend '
+                'kind ' + kind + ' is supported: ' + str(error))
+        reported = (state.get('router') or {}).get('supported_backend_kinds')
+        supported = tuple(reported) if reported else ('ollama', 'llama_cpp')
+        require(kind in supported,
+            'The deployed router does not support backend kind ' + kind + ': publishing this catalog would '
+            'leave the router unable to serve the configuration or to take administration, and a restart '
+            'would not clear it. The switch is refused before the drain; update the router to a release '
+            'that supports the kind, or the profile must name a supported kind')
 
     def verdict_notes(self, bundle):
         """What a switch to this bundle will do that is worth knowing before it is selected.
@@ -295,13 +408,17 @@ class Controller:
         """Refuse a switch the evidence says will not work; let the rest proceed and prepare.
 
         The refusal used to be paperwork — a window no one had measured. After the switch learned
-        to build the workspace itself and wait for the engine's actual answer, only two things are
-        still refusals: a warm boot that was measured and failed, and an engine that stops itself
-        at startup.
+        to build the workspace itself and wait for the engine's actual answer, the refusals are:
+        a warm boot that was measured and failed, an engine that stops itself at startup, and a
+        backend kind the deployed router cannot serve - the one refusal the evidence cannot catch
+        afterwards, because publishing it wedges the router in a state a restart cannot clear.
         """
         reasons = self.verdict(bundle)
         if reasons:
             raise RuntimeError(reasons[0])
+        # The verdict's kind check is the display layer and may be a second stale; the switch
+        # itself verifies against the router fresh, and fails closed if it cannot.
+        self.require_router_supports(bundle)
 
     def validate(self, bundle, full_hash=False):
         images = {}
@@ -685,11 +802,11 @@ class Controller:
             raise
 
     def set_drain(self, enabled, transaction):
-        return self.admin('runtime-drain', {'enabled': enabled,
+        return self.admin_healing('runtime-drain', {'enabled': enabled,
             'reason': 'local-ai-runtime:' + transaction['id'] if enabled else 'runtime ready'})
 
     def owns_drain(self, transaction):
-        state = self.admin('runtime-state')['runtime']
+        state = self.admin_healing('runtime-state')['runtime']
         return state['draining'] and state.get('drain_reason', state.get('reason')) == 'local-ai-runtime:' + transaction['id']
 
     def mark(self, transaction, phase, step=None):
@@ -704,7 +821,7 @@ class Controller:
             transaction.setdefault('restoration', {}).setdefault('phases', []).append({'step': step, 'at': now()})
         self.save('transaction.json', transaction)
 
-    def finish(self, transaction, state, error=None):
+    def finish(self, transaction, state, error=None, serving_profile=None):
         transaction.update(phase=state, finished_at=now(), error=error)
         self.save('transaction.json', transaction)
         # `phase` and `error` are what a person reads first, and `intent` says which kind of attempt
@@ -717,7 +834,10 @@ class Controller:
         if state in ('succeeded', 'recovered'):
             # A verified release is serving, so nothing further is owed. The restoration record
             # stays on disk as history; it simply stops being an action waiting to happen.
-            self.clear_restoration('The runtime is serving ' + str(transaction.get('profile')) + ' and requests are open.')
+            # A recovered switch restored its previous release, not the target the transaction
+            # records, so the note names the release that is actually serving.
+            serving = serving_profile or transaction.get('profile')
+            self.clear_restoration('The runtime is serving ' + str(serving) + ' and requests are open.')
 
     def last_known_good(self):
         """The release this host was last known serving, which is what a restoration brings back.
@@ -885,7 +1005,7 @@ class Controller:
         self.save('active.json', previous)
         self.set_drain(False, transaction)
         self.mark(transaction, 'restoring', 'publishing')
-        self.finish(transaction, 'recovered', transaction.get('error'))
+        self.finish(transaction, 'recovered', transaction.get('error'), serving_profile=old['profile'])
 
     def recover_locked(self, transaction, restoring=False, progress=lambda phase: None):
         """Restore the release a transaction recorded, through the path a healthy boot uses.
@@ -939,7 +1059,7 @@ class Controller:
         require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
         require(not daytime_only or topology or night_change or 'everyday' not in roles,
             'Profile switch would replace Nighttime; operator attention required')
-        state = self.admin('runtime-state')['runtime']
+        state = self.admin_healing('runtime-state')['runtime']
         require(not state['draining'], 'Another operation owns the router drain')
         if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles and not removed:
             return {'already_active': True, 'profile': bundle['profile']}
@@ -1009,7 +1129,7 @@ class Controller:
             tx = self.load('transaction.json')
             require(tx and tx['phase'] in PENDING_PHASES,
                 'There is no interrupted deployment to recover')
-            if tx['phase'] == 'prepared' and not self.admin('runtime-state')['runtime']['draining']:
+            if tx['phase'] == 'prepared' and not self.admin_healing('runtime-state')['runtime']['draining']:
                 self.finish(tx, 'failed', 'Interrupted before draining; prior runtime preserved')
             else:
                 self.recover_locked(tx, restoring=True)
@@ -1022,7 +1142,7 @@ class Controller:
             active = self.load('active.json')
             require(previous and active, 'No prior release is available')
             require(active['revision'] == self.revision, 'Refusing rollback from a superseded updater')
-            require(not self.admin('runtime-state')['runtime']['draining'], 'Another operation owns the router drain')
+            require(not self.admin_healing('runtime-state')['runtime']['draining'], 'Another operation owns the router drain')
             tx = {'id': str(uuid.uuid4()), 'phase': 'prepared', 'started_at': now(), 'previous': previous,
                 'target': active, 'revision': self.revision, 'profile': previous['bundle']['profile'],
                 'error': 'Replacement controller failed readiness'}
@@ -1051,7 +1171,7 @@ class Controller:
             require(active and active['revision'] == self.revision, 'Controller does not own the deployed revision')
             reservation = self.load('router-maintenance.json', {})
             if begin:
-                require(not reservation.get('reserved') and not self.admin('runtime-state')['runtime']['draining'],
+                require(not reservation.get('reserved') and not self.admin_healing('runtime-state')['runtime']['draining'],
                     'Another maintenance operation is active')
                 require(self.load('transaction.json', {}).get('phase') not in PENDING_PHASES,
                     'Interrupted runtime transaction')

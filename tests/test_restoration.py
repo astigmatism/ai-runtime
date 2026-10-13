@@ -10,14 +10,17 @@ in-process path had refused to do at all.
 These tests are what stops that from being the end of a story again. They are release gates: CI
 runs the whole suite, so the exact incident is re-fought on every change.
 """
+import copy
 import json
+from io import BytesIO
 from pathlib import Path
 import unittest
+import urllib.error
 import uuid
 from unittest.mock import patch
 
 import test_controller as fixture
-from runtime.config import render
+from runtime.config import read, render
 from runtime.operations import Operations, OperationError, public_operation
 from runtime.system import atomic_json
 from runtime.web import public_status
@@ -40,8 +43,42 @@ class StubbornSystem(fixture.FakeSystem):
         self.slots_shape = None  # answers something that is not a slot list
         self.busy_names = None  # which backends are generating, rather than all of them
         self.slot_polls = 0
+        # A router that cannot serve its active catalog: every admin call it must resolve a
+        # backend for is a 503 until the catalog file holds a kind it can serve, and the file
+        # is what a restart reads back, so the wedge survives reboots. The 2026-10-12 incident.
+        self.router_wedged_kind = None
+        self.router_supported_kinds = None  # None: an old router that reports nothing
+        self.router_catalog_path = None  # the file the router serves its catalog from
+        self.router_503 = None  # a bare 503 with no JSON body, as a router mid-restart gives
+
+    def _wedged_router_check(self, url):
+        """Refuse admin calls the way a router wedged on an unsupported kind does.
+
+        The real router resolves its backend adapter for each such request and re-reads its
+        catalog file on every call, so a catalog of a kind it does not implement 503s each
+        request, and only a rewritten file - which only the runtime, the file's writer, can do
+        - clears it. `reload-config` resolves no adapter, so it answers even while wedged,
+        exactly as the real endpoint does.
+        """
+        if self.router_wedged_kind is None or self.router_catalog_path is None:
+            return
+        if url.endswith('/reload-config'):
+            return
+        try:
+            catalog = json.loads(Path(self.router_catalog_path).read_text())
+        except Exception:
+            return
+        if catalog.get('backend_kind') != self.router_wedged_kind:
+            return
+        raise urllib.error.HTTPError(url, 503, 'Service Unavailable', {}, BytesIO(json.dumps(
+            {'ok': False, 'error': {'code': 'INVALID_BACKEND_KIND',
+                'message': 'Unsupported active backend kind: ' + self.router_wedged_kind + '.'}}).encode()))
 
     def http(self, url, body=None, headers=None, timeout=None):
+        if url.endswith(('/runtime-state', '/runtime-drain', '/reload-config')):
+            self._wedged_router_check(url)
+            if self.router_503 is not None:
+                raise urllib.error.HTTPError(url, 503, 'Service Unavailable', {}, BytesIO(b''))
         name = url.split('/')[2].split(':')[0]
         if url.endswith('/slots'):
             self.slot_polls += 1
@@ -58,7 +95,13 @@ class StubbornSystem(fixture.FakeSystem):
             if self.never_healthy_alias and container:
                 if self.never_healthy_alias in (container['Config']['Cmd'] or []):
                     raise RuntimeError('Simulated readiness timeout: ' + name + ' never became healthy')
-        return super().http(url, body, headers, timeout)
+        result = super().http(url, body, headers, timeout)
+        if url.endswith('/runtime-state'):
+            if self.router_supported_kinds is not None:
+                result['router'] = {'supported_backend_kinds': self.router_supported_kinds}
+            else:
+                result.pop('router', None)  # default: an old router that reports nothing
+        return result
 
 
 class RestorationTests(unittest.TestCase):
@@ -76,8 +119,39 @@ class RestorationTests(unittest.TestCase):
         self.system.slots_shape = None
         self.system.busy_names = None
         self.system.slot_polls = 0
+        self.system.router_wedged_kind = None
+        self.system.router_supported_kinds = None
+        self.system.router_catalog_path = str(self.state / 'router' / 'active-model.json')
+        self.system.router_503 = None
         self.web_state = {'started': True, 'status': self.c.status()}
         self.ops = Operations(self.c, self.web_state)
+
+    def wedge_the_router(self, transaction, catalog=None):
+        """The state a refused Strata catalog leaves: the router serves a file of a kind it
+        cannot handle, the drain is held for that attempt, and every admin call 503s. The state
+        is persisted in the file, which is what a restart reads back."""
+        lkg = self.c.last_known_good()
+        wedged = copy.deepcopy(catalog if catalog is not None else lkg['bundle']['catalog'])
+        wedged['backend_kind'] = 'strata'
+        for entry in wedged['models']:
+            entry['backend_kind'] = 'strata'
+        atomic_json(self.state / 'router' / 'active-model.json', wedged)
+        self.system.router_wedged_kind = 'strata'
+        self.system.draining = True
+        self.system.reason = 'local-ai-runtime:' + transaction['id']
+
+    def failed_switch_transaction(self, target_profile='flash-next-strata-160k'):
+        """The transaction a refused switch leaves behind: pending, its drain still owned, the
+        target recorded - the same shape the 2026-10-12 host carried across its reboot."""
+        target = render(ROOT / 'config', fixture.HOST, target_profile)
+        tx = {'id': str(uuid.uuid4()), 'started_at': '2000-01-01T00:00:00+00:00', 'phase': 'verifying',
+            'intent': 'switch', 'previous': self.active,
+            'target': {'revision': 'a' * 40, 'image': 'old-image', 'bundle': target},
+            'changed_roles': ['coding'], 'revision': 'a' * 40, 'profile': target_profile,
+            'config_sha256': target['config_sha256'],
+            'error': 'Update failed: HTTP Error 503: Service Unavailable; recovery failed: HTTP Error 503: Service Unavailable'}
+        atomic_json(self.state / 'transaction.json', tx)
+        return tx
 
     def switch_to_other_daytime(self):
         """The alias the other Daytime launches on, to make one backend of it refuse readiness."""
@@ -361,7 +435,14 @@ class RestorationTests(unittest.TestCase):
 
         Its admin API reads the published file on every call. Leaving that file in place
         after rejection prevents recovery from even checking ownership of the drain.
+
+        This is the backstop behind the pre-drain gate: the router reports the kind as
+        supported (so the gate admits the switch) and still rejects the file once it is
+        published. A router that reports nothing is refused at the gate instead, which is
+        what test_a_switch_to_an_unsupported_kind_is_refused_before_the_drain covers.
         """
+        self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
+        self.c._kinds_cache = None
         self.c.publish(self.bundle)
         target = render(ROOT / 'config', self.c.host, 'flash-next-strata-160k')
         for service in target['manifest']['services']:
@@ -429,6 +510,101 @@ class RestorationTests(unittest.TestCase):
         atomic_json(self.state / 'router-maintenance.json', {'reserved': False})
         atomic_json(self.state / 'update-job.json', {'phase': 'prepared'})
         self.assertIn('source deployment', self.ops.restore_blockers())
+
+    # The 2026-10-12 root cause, end to end: a catalog the router refuses wedges every admin
+    # call, and the wedge is a file, so it survives a reboot. The restoration must converge it,
+    # because the runtime is the only writer of the file the router is wedged on.
+    def test_a_wedged_router_is_converged_by_the_restoration_itself(self):
+        """The host is exactly as it was at 22:27: a refused Strata catalog is served, the
+        drain is held for a dead attempt, and every admin call is a 503. No person, CLI or
+        power button is involved: the scheduled restoration converges the router, then
+        completes the recovery."""
+        tx = self.failed_switch_transaction()
+        self.wedge_the_router(tx)
+        self.system.containers['qwen38-daytime']['State']['Running'] = False  # the refused launch is dead
+        self.c.schedule_restoration(RuntimeError('HTTP Error 503: Service Unavailable'), tx)
+        self.make_restoration_due()
+        started = self.ops.restore_if_due()
+        self.assertIsNotNone(started, 'the due restoration was not taken up on its own')
+        self.wait_for_worker()
+        self.assertEqual(self.ops.read(started['id'])['status'], 'recovered')
+        # The wedge is cleared at the source: the router's file holds the last-known-good
+        # release again, and a reload told the router to serve it.
+        served = read(self.state / 'router' / 'active-model.json')
+        self.assertEqual(served['backend_kind'], 'llama_cpp')
+        self.assertEqual(served['model'], self.c.last_known_good()['bundle']['catalog']['model'])
+        self.assertIn(('publish',), self.system.events)
+        # And the host is where a restart is promised to land: serving, undrained, recorded.
+        self.assertTrue(self.c.serving())
+        self.assertFalse(self.system.draining)
+        self.assertFalse(self.c.restoration_pending())
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        record = self.c.restoration()
+        self.assertIn('qwen27b-q8-with-nighttime', record['note'])
+        self.assertNotIn('flash-next', record['note'])
+
+    def test_a_reboot_converges_a_wedged_host_without_human_intervention(self):
+        """The governing promise: whatever state the machine is in, a restart lands it on the
+        known-working configuration. The 2026-10-12 host rebooted into the wedged state and
+        stayed there until a hand wrote a file; the supervisor's first quiet tick after boot
+        must now do that work, with nothing else touched."""
+        tx = self.failed_switch_transaction()
+        self.wedge_the_router(tx)
+        self.system.containers['qwen38-daytime']['State']['Running'] = False
+        # The failed attempt left a scheduled retry and a pending transaction: the state a
+        # reboot carries into the fresh process.
+        self.c.schedule_restoration(RuntimeError('HTTP Error 503: Service Unavailable'), tx)
+        rebooted = fixture.Controller(ROOT / 'config', self.state, 'a' * 40, self.system)
+        prepare = patch.object(rebooted, 'prepare', side_effect=lambda b: None)
+        prepare.start(); self.addCleanup(prepare.stop)
+        ops = Operations(rebooted, {'started': True, 'status': rebooted.status()})
+        self.make_restoration_due()
+        started = ops.restore_if_due()
+        self.assertIsNotNone(started, 'the boot tick did not take up the scheduled restoration')
+        ops.worker.join(10)
+        self.assertFalse(ops.worker.is_alive(), 'the restoration worker did not finish')
+        served = read(self.state / 'router' / 'active-model.json')
+        self.assertEqual(served['backend_kind'], 'llama_cpp')
+        self.assertTrue(rebooted.serving())
+        self.assertFalse(self.system.draining)
+        self.assertFalse(rebooted.restoration_pending())
+        self.assertEqual(rebooted.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+
+    def test_a_switch_to_an_unsupported_kind_is_refused_before_the_drain(self):
+        """The gate the 22:20 click should have been: a catalog of a kind the deployed router
+        cannot serve is refused before the drain is taken, the machine keeps serving what it
+        serves, and nothing is left behind that a reboot could then resurrect."""
+        with self.assertRaisesRegex(RuntimeError, 'does not support backend kind strata'):
+            self.c.transition('flash-next-strata-160k')
+        self.assertFalse(self.system.draining, 'the drain was taken to reach the refusal')
+        self.assertNotIn(('drain', True), self.system.events)
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertTrue(self.c.serving())
+        # The card says it before the click, because the verdict is the gate.
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-160k')
+        self.assertTrue(any('does not support backend kind strata' in r for r in self.c.verdict(bundle)))
+
+    def test_the_router_gate_passes_a_kind_the_router_reports(self):
+        """Once the router update reports the kinds it serves, the same catalog is no longer
+        refused at the gate: the refusal was about the deployed router, not the profile."""
+        self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
+        # The status poll in setUp cached the old router's answer; the clock moves past it.
+        self.c._kinds_cache = None
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-160k')
+        self.c.require_router_supports(bundle)  # must not raise
+        self.assertFalse(any('does not support backend kind' in r for r in self.c.verdict(bundle)))
+
+    def test_a_transient_503_leaves_a_matching_catalog_untouched(self):
+        """A 503 without the wedge signature is a router in trouble, not a wedged one: the
+        repair leaves the file alone - it holds a catalog of the same kind as the release it
+        serves, decorations and all - and the caller's retry schedule still sees the error."""
+        self.c.publish(self.bundle)  # the file now holds exactly what a healthy publish leaves
+        path = self.state / 'router' / 'active-model.json'
+        before = path.read_bytes()
+        self.system.router_503 = 'bare'
+        with self.assertRaises(urllib.error.HTTPError):
+            self.c.owns_drain({'id': 't1'})
+        self.assertEqual(path.read_bytes(), before, 'a transient failure rewrote the catalog')
 
 
 if __name__ == '__main__':

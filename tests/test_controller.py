@@ -113,8 +113,11 @@ class FakeSystem:
 
     def http(self, url, body=None, headers=None, timeout=None):
         if url.endswith('/runtime-state'):
+            # The deployed router reports the backend kinds it can serve, which is what the
+            # switch gate verifies before it takes the drain.
             return {'runtime': {'draining': self.draining, 'drain_reason': self.reason,
                     'active_count': self.active_count, 'queued_count': self.queued_count},
+                'router': {'supported_backend_kinds': ['ollama', 'llama_cpp', 'strata']},
                 'models': [{'id': self.alias_of(name, ci),
                     'x_ollama_router': {'health': {'available': True}, 'output_policy': 'unrestricted',
                         'context_window': self.window_of(name, ci),
