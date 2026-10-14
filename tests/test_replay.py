@@ -21,9 +21,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import strata_replay as replay  # noqa: E402
+try:
+    import strata_replay as replay  # noqa: E402
+except ModuleNotFoundError:
+    replay = None
+
+# The runtime image ships runtime/, config/ and tests/ -- not scripts/, which holds the
+# benchmark harness rather than anything the controller needs to serve. The updater runs
+# this suite inside its candidate image as the gate on deployment, so importing the
+# harness by path stopped a release over a tool that has nothing to do with serving: the
+# gate failed, nothing drained, and the running engine never noticed. Skipped there, and
+# named as skipped rather than passing silently; run in full in every real checkout.
+requires_harness = unittest.skipIf(replay is None,
+                                   "scripts/strata_replay.py is not in the runtime image")
 
 
+@requires_harness
 class TheCorpusIsFixed(unittest.TestCase):
     def test_the_same_file_produces_the_same_prompts(self):
         """The one property everything else rests on."""
@@ -77,6 +90,7 @@ class TheCorpusIsFixed(unittest.TestCase):
                                             f"answer, so it will stop too early to measure")
 
 
+@requires_harness
 class TheStatisticsAreReproducible(unittest.TestCase):
     def test_the_interval_does_not_move_between_calls(self):
         values = [104.8, 148.9, 157.1, 136.8, 165.6, 164.3, 142.5]
@@ -93,6 +107,7 @@ class TheStatisticsAreReproducible(unittest.TestCase):
         self.assertGreaterEqual(hi, statistics.median(values))
 
 
+@requires_harness
 class TheNumbersComeFromTheEngine(unittest.TestCase):
     def test_the_engine_timing_is_used_when_it_reports_one(self):
         d = replay.digest({"first": 1.0, "total": 3.0, "pieces": 100, "err": None,
@@ -124,6 +139,7 @@ class TheNumbersComeFromTheEngine(unittest.TestCase):
         self.assertNotEqual(a["answer_sha256"], b["answer_sha256"])
 
 
+@requires_harness
 class ASummaryRefusesToPoolTwoRegimes(unittest.TestCase):
     def _row(self, label, phase, decode, answer):
         return {"label": label, "ok": True, "phase": phase, "decode_tps": decode,
@@ -147,6 +163,7 @@ class ASummaryRefusesToPoolTwoRegimes(unittest.TestCase):
         self.assertEqual(len(s["code-4k"]["answers"]), 2)
 
 
+@requires_harness
 class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
     """`verdict` is the part of this tool that protects a future reader, so its order is
     deliberate: a run taken while the engine was busy is not a slow run, it is a different
@@ -209,6 +226,7 @@ class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
 
 
 
+@requires_harness
 class ItWaitsForTheBoxToBeAlone(unittest.TestCase):
     """The baseline can only be taken unattended, and unattended means nobody can promise
     the box is quiet -- so the tool has to refuse rather than measure anyway."""
