@@ -34,7 +34,7 @@
     "--quant": "UD-IQ4_XS",
     "--model": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
     "--kv": "k8v4",
-    "--kv-streaming": "auto",
+    "--kv-streaming": "off",
     "--vision": "no",
     "--gpus": "0,1,2,3",
     "--layer-split": "auto",
