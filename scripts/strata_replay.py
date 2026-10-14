@@ -423,6 +423,9 @@ def main() -> int:
                     help="Start only after the engine has been idle this many seconds running")
     ap.add_argument("--quiet-bound", type=float, default=3600.0,
                     help="Give up rather than measure a busy box")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="Re-take a sample that came back while the engine was busy, instead "
+                         "of voiding the whole run over one interruption")
     ap.add_argument("--compare", metavar="DIR", help="A previous run's directory to diff against")
     args = ap.parse_args()
 
@@ -459,15 +462,25 @@ def main() -> int:
 
     print("corpus: " + ", ".join(p["label"] + "=" + p["sha256"] for p in prompts))
     rows = []
+    discarded = []          # kept for the record, never summarised
     for rnd in range(args.rounds):
         for p in prompts:                               # fixed order: drift shows as drift
-            busy = busy_slots(args.url, args.key)
-            r = chat(args.url, args.key, p["messages"], args.max_tokens, args.think,
-                     timeout=3600)
-            d = digest(r)
-            d.update(label=p["label"], kind=p["kind"], round=rnd, corpus_sha256=p["sha256"],
-                     target_tokens=p["target_tokens"], busy_before=busy,
-                     phase="cold" if rnd < args.warmup else "warm")
+            for attempt in range(args.retries + 1):
+                busy = busy_slots(args.url, args.key)
+                r = chat(args.url, args.key, p["messages"], args.max_tokens, args.think,
+                         timeout=3600)
+                d = digest(r)
+                d.update(label=p["label"], kind=p["kind"], round=rnd, corpus_sha256=p["sha256"],
+                         target_tokens=p["target_tokens"], busy_before=busy, attempt=attempt,
+                         phase="cold" if rnd < args.warmup else "warm")
+                if d["ok"] and not busy:
+                    break
+                discarded.append(d)
+                if attempt < args.retries:
+                    print(f"  {p['label']}: discarded "
+                          f"({'engine was busy' if busy else d['err']}), taking it again",
+                          file=sys.stderr, flush=True)
+                    time.sleep(args.settle)
             rows.append(d)
             note = "  CONTAMINATED: engine was busy" if busy else ""
             if not d["ok"]:
@@ -476,7 +489,7 @@ def main() -> int:
                 print(f"  run {rnd + 1} [{d['phase']:4s}] {p['label']}: decode "
                       f"{d['decode_tps']} tok/s, first token {d['ttft_s']} s, "
                       f"{d['prompt_tokens']} prompt tokens, {d['generated_tokens']} tokens, "
-                      f"answer {d['answer_sha256']}{note}")
+                      f"answer {d['answer_sha256']}{note}", flush=True)
             time.sleep(args.settle)
 
     warm = [r for r in rows if r["phase"] == "warm"]
@@ -522,7 +535,8 @@ def main() -> int:
                    "params": {"rounds": args.rounds, "warmup": args.warmup,
                               "max_tokens": args.max_tokens, "think": args.think,
                               "temperature": 0, "cells": list(keep)},
-                   "summary": summary, "cold": summarise(cold), "rows": rows}, f, indent=1)
+                   "summary": summary, "cold": summarise(cold), "rows": rows,
+                   "discarded": discarded}, f, indent=1)
     print(f"\nwrote {os.path.join(args.out, 'results.json')}")
 
     code, reasons = verdict(rows, summary)
