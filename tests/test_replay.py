@@ -16,6 +16,7 @@ corpus that changed between two runs is caught rather than silently compared.
 import statistics
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -34,10 +35,25 @@ class TheCorpusIsFixed(unittest.TestCase):
         called 32k that quietly became 3k would compare a different workload against a
         baseline and report the difference as an effect."""
         for p in replay.corpus():
-            target = int("".join(c for c in p["label"].split("-")[1] if c.isdigit())) * 1000
             chars = len(p["messages"][1]["content"])
-            self.assertGreater(chars, target * 3.6 * 0.8, f"{p['label']} shrank")
-            self.assertLess(chars, target * 3.6 * 1.25, f"{p['label']} grew")
+            self.assertGreater(chars, p["target_tokens"] * replay.CPT[p["kind"]] * 0.9,
+                               f"{p['label']} shrank")
+            self.assertLess(chars, p["target_tokens"] * replay.CPT[p["kind"]] * 1.15,
+                            f"{p['label']} grew")
+
+    def test_the_shapes_are_not_assumed_to_tokenize_alike(self):
+        """The uniform guess this replaced was wrong by a factor of two on JSON, and the
+        first full run built a cell named 128k that came to 208,561 tokens and was refused
+        as over context. If someone flattens this table back to one number, that returns."""
+        self.assertLess(replay.CPT["tool"], replay.CPT["prose"] * 0.6)
+
+    def test_the_largest_cell_fits_the_window_this_box_boots_with(self):
+        """163,840 is what the trial profile contracts for. A cell that overflows is not
+        slow, it is refused with HTTP 400, and a run that silently loses its largest cell
+        looks like a result."""
+        window = 163_840
+        for label, _, _, tokens in replay.CELLS:
+            self.assertLess(tokens + 256, window, f"{label} does not fit the loaded window")
 
     def test_a_subset_of_cells_keeps_the_prompts_it_shares_with_the_whole_set(self):
         """Comparing an arm run with two cells against a baseline run with five is only
@@ -125,6 +141,74 @@ class ASummaryRefusesToPoolTwoRegimes(unittest.TestCase):
                 self._row("code-4k", "warm", 143.0, "b")]
         s = replay.summarise(rows)
         self.assertEqual(len(s["code-4k"]["answers"]), 2)
+
+
+class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
+    """`verdict` is the part of this tool that protects a future reader, so its order is
+    deliberate: a run taken while the engine was busy is not a slow run, it is a different
+    run, and every number in it still looks plausible."""
+
+    def _row(self, **over):
+        row = {"label": "code-4k", "ok": True, "busy_before": 0, "prompt_tokens": 4000,
+               "target_tokens": 4000, "decode_tps": 150.0}
+        row.update(over)
+        return row
+
+    def _summary(self, answers=("a",)):
+        return {"code-4k": {"n": 2, "answers": list(answers)}}
+
+    def test_a_quiet_run_passes(self):
+        self.assertEqual(replay.verdict([self._row()], self._summary()), (0, []))
+
+    def test_a_request_that_failed_is_reported_first(self):
+        code, reasons = replay.verdict([self._row(ok=False)], self._summary())
+        self.assertEqual(code, 1)
+        self.assertIn("failed", reasons[0])
+
+    def test_foreign_work_disqualifies_the_run_rather_than_downgrading_it(self):
+        code, reasons = replay.verdict([self._row(busy_before=1)], self._summary())
+        self.assertEqual(code, 3)
+        self.assertIn("not a baseline", reasons[0])
+
+    def test_contamination_outranks_everything_else_about_the_same_run(self):
+        """Both are true of the same run; only the contamination is the reason to throw it
+        away, and reporting the lesser reason invites somebody to keep the run anyway."""
+        rows = [self._row(busy_before=2), self._row(prompt_tokens=9000)]
+        code, reasons = replay.verdict(rows, self._summary(("a", "b")))
+        self.assertEqual(code, 3)
+        self.assertIn("generating", reasons[0])
+
+    def test_an_answer_that_changed_between_rounds_is_not_a_fixed_replay(self):
+        code, reasons = replay.verdict([self._row()], self._summary(("a", "b")))
+        self.assertEqual(code, 1)
+        self.assertIn("not stable", reasons[0])
+
+    def test_a_cell_that_drifted_off_its_name_is_caught(self):
+        code, reasons = replay.verdict([self._row(prompt_tokens=9000)], self._summary())
+        self.assertEqual(code, 1)
+        self.assertIn("drifted", reasons[0])
+
+
+class ItWaitsForTheBoxToBeAlone(unittest.TestCase):
+    """The baseline can only be taken unattended, and unattended means nobody can promise
+    the box is quiet -- so the tool has to refuse rather than measure anyway."""
+
+    def test_it_starts_once_the_engine_reports_idle(self):
+        with unittest.mock.patch.object(replay, "busy_slots", return_value=0):
+            self.assertIsNone(replay.wait_for_quiet("u", "k", hold=0.05, bound=5, settle=0.01))
+
+    def test_it_gives_up_rather_than_measuring_a_busy_engine(self):
+        with unittest.mock.patch.object(replay, "busy_slots", return_value=1):
+            reason = replay.wait_for_quiet("u", "k", hold=0.05, bound=0.2, settle=0.01)
+        self.assertIsNotNone(reason)
+        self.assertIn("not idle", reason)
+
+    def test_a_busy_request_part_way_through_resets_the_idle_clock(self):
+        """Otherwise a foreign request that lands one second before the start still lets
+        the run begin, which is the exact case the whole check exists for."""
+        seen = iter([0, 0, 1, 0, 0, 0, 0, 0])
+        with unittest.mock.patch.object(replay, "busy_slots", side_effect=lambda *a: next(seen)):
+            self.assertIsNone(replay.wait_for_quiet("u", "k", hold=0.04, bound=5, settle=0.01))
 
 
 if __name__ == "__main__":

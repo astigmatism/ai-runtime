@@ -166,25 +166,33 @@ def _ask(kind: str, body: str) -> list:
             {"role": "user", "content": body + "\n\n" + task}]
 
 
-# (cell, shape, seed, characters). At roughly 3.6 characters per token on this tokenizer
-# these land near 4K, 32K and 128K prompt tokens; the engine's own `prompt_tokens` is what
-# gets recorded, so the names are addresses and not claims.
-CELLS = (("code-4k", "code", 11, 14_000),
-         ("tool-4k", "tool", 23, 14_000),
-         ("code-32k", "code", 37, 115_000),
-         ("prose-32k", "prose", 53, 115_000),
-         ("tool-128k", "tool", 71, 460_000))
+# Characters per token, measured against the served model's own tokenizer on 2026-10-14 by
+# asking the engine for the `prompt_tokens` of a known string. The guess this replaces --
+# 3.6 for every shape -- was wrong by a factor of two on JSON, and the first full run built
+# a cell named 128k that was 208,561 tokens and the engine refused it as over context.
+# Shape matters because a JSON record is mostly punctuation.
+CPT = {"code": 3.836, "tool": 2.183, "prose": 4.726}
+
+# (cell, shape, seed, prompt tokens). The names are addresses: what gets recorded is the
+# engine's own `prompt_tokens`, and `main` refuses a run whose cells drifted off them.
+CELLS = (("code-4k", "code", 11, 4_000),
+         ("tool-4k", "tool", 23, 4_000),
+         ("code-32k", "code", 37, 32_000),
+         ("prose-32k", "prose", 53, 32_000),
+         ("tool-128k", "tool", 71, 128_000))
 ALL_CELLS = tuple(cell[0] for cell in CELLS)
+_TARGET = {cell[0]: cell[3] for cell in CELLS}
 
 
 def corpus(keep=ALL_CELLS) -> list:
     """The prompts, each a pure function of the constants in this file."""
     prompts = []
-    for label, kind, seed, chars in CELLS:
+    for label, kind, seed, tokens in CELLS:
         if label not in keep:
             continue
-        body = _fill(kind, seed, chars)
-        prompts.append({"label": label, "kind": kind, "messages": _ask(kind, body),
+        body = _fill(kind, seed, int(tokens * CPT[kind]))
+        prompts.append({"label": label, "kind": kind, "target_tokens": tokens,
+                        "messages": _ask(kind, body),
                         "sha256": hashlib.sha256(body.encode()).hexdigest()[:16]})
     return prompts
 
@@ -241,6 +249,64 @@ def chat(base: str, key: str, messages: list, max_tokens: int, think: bool,
             "timings": timings, "err": err, "pieces": pieces}
 
 
+def _get(base: str, key: str, path: str, timeout: float = 10):
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers),
+                                timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def busy_slots(base: str, key: str):
+    """How many slots were already generating when this sample was about to go out.
+
+    "Run it at idle" is the right advice and is not something the harness can assume,
+    because this box serves the very session that runs the harness: every tool call made
+    while a run is in progress is inference on the engine under measurement. The first
+    baseline taken here had a 4K prompt waiting 45 s for its first token behind an agent
+    turn, which is four times the real number and larger than any effect in the queue. So
+    the harness records the engine's own answer instead of trusting the operator, and a run
+    with foreign work in it says so rather than passing as a baseline.
+    """
+    try:
+        return sum(1 for s in _get(base, key, "/slots") if s.get("is_processing"))
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def wait_for_quiet(base: str, key: str, hold: float, bound: float, settle: float = 2.0):
+    """Wait until the engine has been idle for `hold` straight seconds. `None` on success,
+    otherwise the reason it gave up.
+
+    This is what makes an unattended baseline possible. The only window in which this box
+    is reliably quiet is one nobody is driving it in, so the run has to be started and then
+    left alone -- and a tool that starts work the moment it is invoked will measure whatever
+    happens to be running. Waiting for the engine's own report turns "run it at idle" from
+    advice into a precondition, and a cron entry at four in the morning either gets its
+    baseline or says why it did not.
+    """
+    t0 = time.perf_counter()
+    idle_for = 0.0
+    while time.perf_counter() - t0 < bound:
+        busy = busy_slots(base, key)
+        if busy == 0:
+            idle_for += settle
+            if idle_for >= hold:
+                return None
+        else:
+            idle_for = 0.0
+        time.sleep(settle)
+    return f"the engine was not idle for {hold:.0f} s within {bound:.0f} s"
+
+
+def loaded_context(base: str, key: str):
+    """The window the engine actually loaded with, which is not necessarily the one the
+    profile asked for."""
+    try:
+        return _get(base, key, "/health").get("max_context")
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
 def digest(r: dict) -> dict:
     """The engine's own numbers for one request, read the way the bench reads them."""
     u, t = r.get("usage") or {}, r.get("timings") or {}
@@ -268,6 +334,36 @@ def boot_ci(values, resamples: int = 2000, seed: int = 20261015):
     n = len(v)
     medians = sorted(statistics.median([v[rnd(n)] for _ in range(n)]) for _ in range(resamples))
     return round(medians[int(0.025 * resamples)], 1), round(medians[int(0.975 * resamples)], 1)
+
+
+def verdict(rows: list, summary: dict):
+    """Whether this run may be used, and what stops it if it may not.
+
+    Ordered by how much damage each does to a claim. A run with the engine busy is not a
+    slow run, it is a different run, and it is the failure most likely to go unnoticed
+    because every number in it looks plausible.
+    """
+    failed = [r for r in rows if not r["ok"]]
+    if failed:
+        return 1, [f"{len(failed)} of {len(rows)} requests failed"]
+    busy = [r for r in rows if r.get("busy_before")]
+    if busy:
+        return 3, [f"{len(busy)} of {len(rows)} samples had the engine already generating when "
+                   f"they went out, so something else was using the box. This is not a "
+                   f"baseline: nothing here compares against anything until it is run with "
+                   f"the host quiet."]
+    unstable = sorted(k for k, s in summary.items() if len(s["answers"]) > 1)
+    if unstable:
+        return 1, [f"greedy answer not stable in: {', '.join(unstable)} -- the replay does not "
+                   f"hold decoding fixed in those cells, so no claim may rest on them"]
+    drifted = sorted({r["label"] for r in rows if r.get("prompt_tokens")
+                      and abs(r["prompt_tokens"] - r["target_tokens"])
+                      > 0.15 * r["target_tokens"]})
+    if drifted:
+        return 1, [f"cell size drifted more than 15% off its name: {', '.join(drifted)} -- the "
+                   f"CPT table no longer describes this tokenizer, so these cells are not the "
+                   f"sizes the recorded run was"]
+    return 0, []
 
 
 def summarise(rows: list) -> dict:
@@ -323,6 +419,10 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--think", action="store_true", help="Leave thinking on (the suite does not)")
     ap.add_argument("--settle", type=float, default=2.0, help="Seconds to rest between requests")
+    ap.add_argument("--require-quiet", type=float, default=20.0,
+                    help="Start only after the engine has been idle this many seconds running")
+    ap.add_argument("--quiet-bound", type=float, default=3600.0,
+                    help="Give up rather than measure a busy box")
     ap.add_argument("--compare", metavar="DIR", help="A previous run's directory to diff against")
     args = ap.parse_args()
 
@@ -337,22 +437,46 @@ def main() -> int:
         return 2
     prompts = corpus(keep)
 
+    window = loaded_context(args.url, args.key)
+    if window:
+        over = [p for p in prompts if p["target_tokens"] + args.max_tokens > window]
+        if over:
+            print("skipping cells that do not fit the loaded window of "
+                  f"{window} tokens: {', '.join(p['label'] for p in over)}", file=sys.stderr)
+            prompts = [p for p in prompts if p not in over]
+    if not prompts:
+        print("nothing left to run", file=sys.stderr)
+        return 2
+
+    if args.require_quiet > 0:
+        print(f"waiting for the engine to be idle {args.require_quiet:.0f} s running "
+              f"(bound {args.quiet_bound:.0f} s)...", flush=True)
+        reason = wait_for_quiet(args.url, args.key, args.require_quiet, args.quiet_bound)
+        if reason:
+            print(f"{reason}: refusing to measure a busy box", file=sys.stderr)
+            return 4
+        print("idle; starting", flush=True)
+
     print("corpus: " + ", ".join(p["label"] + "=" + p["sha256"] for p in prompts))
     rows = []
     for rnd in range(args.rounds):
         for p in prompts:                               # fixed order: drift shows as drift
+            busy = busy_slots(args.url, args.key)
             r = chat(args.url, args.key, p["messages"], args.max_tokens, args.think,
                      timeout=3600)
             d = digest(r)
             d.update(label=p["label"], kind=p["kind"], round=rnd, corpus_sha256=p["sha256"],
+                     target_tokens=p["target_tokens"], busy_before=busy,
                      phase="cold" if rnd < args.warmup else "warm")
             rows.append(d)
+            note = "  CONTAMINATED: engine was busy" if busy else ""
             if not d["ok"]:
                 print(f"  run {rnd + 1} {p['label']}: FAILED {d['err']}", file=sys.stderr)
             else:
                 print(f"  run {rnd + 1} [{d['phase']:4s}] {p['label']}: decode "
                       f"{d['decode_tps']} tok/s, first token {d['ttft_s']} s, "
-                      f"{d['generated_tokens']} tokens, answer {d['answer_sha256']}")
+                      f"{d['prompt_tokens']} prompt tokens, {d['generated_tokens']} tokens, "
+                      f"answer {d['answer_sha256']}{note}")
             time.sleep(args.settle)
 
     warm = [r for r in rows if r["phase"] == "warm"]
@@ -401,16 +525,10 @@ def main() -> int:
                    "summary": summary, "cold": summarise(cold), "rows": rows}, f, indent=1)
     print(f"\nwrote {os.path.join(args.out, 'results.json')}")
 
-    failed = [r for r in rows if not r["ok"]]
-    if failed:
-        print(f"{len(failed)} of {len(rows)} requests failed", file=sys.stderr)
-        return 1
-    unstable = [k for k, s in summary.items() if len(s["answers"]) > 1]
-    if unstable:
-        print(f"greedy answer not stable in: {', '.join(unstable)} -- the replay does not hold "
-              f"decoding fixed in those cells, so no claim may rest on them", file=sys.stderr)
-        return 1
-    return 0
+    code, reasons = verdict(rows, summary)
+    for reason in reasons:
+        print(reason, file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":
