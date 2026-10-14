@@ -77,7 +77,8 @@
       "/tmp:rw,nosuid,size=2g"
     ],
     "environment": {
-      "CUDA_VISIBLE_DEVICES": "0,1,2,3"
+      "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+      "STRATA_PREFILL_AUTO_MAX": "16384"
     },
     "networks": {
       "router": {
@@ -125,6 +126,7 @@
       "Strata is not llama.cpp: it configures itself from the environment, keeps its own pack, logs and MTP layer in ai/strata-trial/data, and needs a writable root. Unrestricted output is stated because the deployment sets no output ceiling; it has not been attested on this quant, which is a plain Qwen release rather than an unrestricted fine-tune. nsfw is therefore false.",
       "Exclusive profile: Nighttime is stopped and removed while this profile is active; requests for it fail until a paired Daytime profile is selected.",
       "Four text cards only (RTX 3090, RTX 4080 SUPER, RTX 4080, 3080 Ti) with auto layer placement; the RTX 3080 is not in this container at all, so this backend serves no vision and the shared projector path is idle.",
+      "Prompt chunks are doubled to 16384 tokens (STRATA_PREFILL_AUTO_MAX; the engine's own default is 8192). Every expert a chunk routes to is streamed once per chunk, so a bigger chunk moves fewer bytes per prompt token, and PCIe is what this box is short of: two PEX8747 switches put each GPU pair behind one x16 uplink, about 7.9 GB/s per card, which the engine itself reports as pcie_frac 0.22. The engine still refuses a chunk whose buffers the expert cache cannot lend, so this raises a ceiling and does not force an allocation.",
       "160K is the total prompt, history, reasoning, and output capacity.",
       "A fresh container reads all 94 GB of its shards before it answers, because the engine keeps its verified-checksum markers in its own tree rather than beside the read-only model files; the readiness window allows for it."
     ],

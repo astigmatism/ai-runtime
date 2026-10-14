@@ -304,6 +304,24 @@ Sources, all of them the machine's own words: the engine's durable log `ai/strat
 
 **One method rule, learned the hard way.** The engine under test is the engine answering the session that runs the test, so any prose generated while the suite runs is load on the measurement. A run is taken with the session silent, in one blocking call, and the log window either side is then audited for foreign requests — the silent run's window held 40 requests, all of them the suite's own, with no large one among them.
 
+**The fixed replay is that missing instrument now, and this is what it measures.** `scripts/strata_replay.py` resends identical greedy text so draft acceptance is held constant; recorded 2026-10-14 as `data/replay-results/replay-baseline-2026-10-14-1922/`, five cells over six rounds with the first round reported apart as cold:
+
+| cell | warm decode | 95% CI | prefill | first token | acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| code-4k | 164.0 | [162.8, 165.1] | 871.3 | 4.60 s | 94.6% |
+| tool-4k | 170.2 | [169.2, 171.7] | 881.4 | 4.58 s | 99.4% |
+| code-32k | 155.7 | [153.8, 156.7] | 2,123.7 | 14.54 s | 93.0% |
+| prose-32k | 159.6 | [153.9, 161.1] | 2,078.2 | 14.52 s | 98.9% |
+| tool-128k | 148.1 | [144.6, 148.8] | 2,674.4 | 47.48 s | 94.8% |
+
+**Decode is dominated by cache warmth, not by context length.** The first pass over a prompt decodes 30–60% slower than every pass after it with time-to-first-token unchanged (code-4k: 112.5 cold against 164.0 warm), so round 1 is never pooled with the rest. Warm decode here is 148–170 where the recorded `bench.sh` figure is 104–109: two regimes of one engine, and only replay-against-replay in the same regime means anything.
+
+**Sharp inside a run, soft between runs: about 1% within one run and about 2% from one run to the next.** The same four cells moved 161.1→164.0, 168.3→170.2, 156.0→155.7 and 146.7→148.1 across two runs, so a lever has to clear roughly 3% rather than 1% — and a bootstrap interval taken inside a single run cannot show that, which is why two runs per side are the unit of comparison.
+
+**The floor is on the cold path.** Cold decode came back at 112.5 for code-4k and 100.7 for prose-32k, so the owner's 100 tok/s floor is met with about one token per second to spare exactly where a fresh session first meets the engine. That is the argument for taking the accuracy-positive `STRATA_HC_Q8` before any lever that only moves the warm median.
+
+**Three guards the live box taught the harness.** Cells are sized from chars-per-token measured against the served tokenizer (code 3.836, prose 4.726, JSON 2.183 — a uniform guess built a cell named 128k that was 208,561 tokens and was refused as over context); every sample records whether `/slots` was already generating, and a run taken over foreign work exits as "not a baseline" rather than as a slow run, with `--require-quiet` making idleness a precondition so an unattended run either gets its baseline or says why it did not; and a cell whose median answer is under 60% of `--max-tokens` fails, because a task that stops at 35 tokens produces a full table of plausible numbers that measure nothing.
+
 **And the suite agrees with production, which is what makes it trustworthy and what corrected one of the levers above.** The suite's fresh 4K prompt measures 882.5 tok/s; production's fresh reads averaging 4,019 tokens measure 881 tok/s. Laying the two side by side, effective prefill throughput is strongly sublinear in the size of the read:
 
 | Fresh read | 469 tok | 1,335 | 4,019 | 13,649 | 20,943 | 53,014 |
