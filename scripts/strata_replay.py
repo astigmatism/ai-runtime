@@ -157,10 +157,9 @@ def _ask(kind: str, body: str) -> list:
         task = ("List every `path` value that appears in the records above, one per line, in "
                 "the order they first appear, with no count and no commentary.")
     else:
-        task = ("List, one per line, every word from this set that occurs in the passage "
-                "above, in the order of first occurrence: render, collect, resolve, "
-                "materialize, truncate, coalesce, dispatch, normalize, acquire, settle, "
-                "provision, reconcile, publish, observe. No commentary.")
+        task = ("Quote the opening of the passage above verbatim, one sentence per line, "
+                "starting from its first sentence and continuing in order. Do not summarise, "
+                "do not reorder, and add no commentary.")
     return [{"role": "system",
              "content": "You are a careful senior engineer. Answer exactly as asked."},
             {"role": "user", "content": body + "\n\n" + task}]
@@ -336,7 +335,7 @@ def boot_ci(values, resamples: int = 2000, seed: int = 20261015):
     return round(medians[int(0.025 * resamples)], 1), round(medians[int(0.975 * resamples)], 1)
 
 
-def verdict(rows: list, summary: dict):
+def verdict(rows: list, summary: dict, min_tokens: float = None):
     """Whether this run may be used, and what stops it if it may not.
 
     Ordered by how much damage each does to a claim. A run with the engine busy is not a
@@ -363,6 +362,18 @@ def verdict(rows: list, summary: dict):
         return 1, [f"cell size drifted more than 15% off its name: {', '.join(drifted)} -- the "
                    f"CPT table no longer describes this tokenizer, so these cells are not the "
                    f"sizes the recorded run was"]
+    if min_tokens:
+        short = []
+        for label in sorted({r["label"] for r in rows}):
+            got = [r["generated_tokens"] for r in rows
+                   if r["label"] == label and r["ok"] and r["phase"] == "warm"]
+            if got and statistics.median(got) < min_tokens:
+                short.append(f"{label} ({int(statistics.median(got))} tokens)")
+        if short:
+            return 1, [f"answer too brief to measure decode: {', '.join(short)} -- a rate "
+                       f"over a handful of tokens is dominated by the first tokens, where "
+                       f"acceptance is lowest, so make the task enumerate until it hits the "
+                       f"cap"]
     return 0, []
 
 
@@ -539,7 +550,7 @@ def main() -> int:
                    "discarded": discarded}, f, indent=1)
     print(f"\nwrote {os.path.join(args.out, 'results.json')}")
 
-    code, reasons = verdict(rows, summary)
+    code, reasons = verdict(rows, summary, min_tokens=0.6 * args.max_tokens)
     for reason in reasons:
         print(reason, file=sys.stderr)
     return code

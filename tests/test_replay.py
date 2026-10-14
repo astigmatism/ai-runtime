@@ -66,11 +66,15 @@ class TheCorpusIsFixed(unittest.TestCase):
 
     def test_the_shapes_ask_for_something_long_enough_to_measure_decode(self):
         """A task the model answers in twenty tokens measures nothing: decode is the rate
-        over a few hundred tokens. The enumeration tasks are here for that reason, and a
-        rewrite that turns them back into summaries would quietly break the instrument."""
+        over a few hundred tokens. The first prose task asked for the members of a
+        fourteen-word set, so it answered in 35 tokens, acceptance fell to 60%, and greedy
+        stopped being reproducible -- and none of that failed loudly, it just measured
+        nothing. So the task must ask for a line-per-item answer, which is what the live
+        check in `verdict` then confirms actually happened."""
         for p in replay.corpus():
-            task = p["messages"][1]["content"].rsplit("\n\n", 1)[1]
-            self.assertRegex(task.lower(), r"one per line")
+            task = p["messages"][1]["content"].rsplit("\n\n", 1)[1].lower()
+            self.assertIn("per line", task, f"{p['label']} does not ask for a line-per-item "
+                                            f"answer, so it will stop too early to measure")
 
 
 class TheStatisticsAreReproducible(unittest.TestCase):
@@ -150,7 +154,8 @@ class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
 
     def _row(self, **over):
         row = {"label": "code-4k", "ok": True, "busy_before": 0, "prompt_tokens": 4000,
-               "target_tokens": 4000, "decode_tps": 150.0}
+               "target_tokens": 4000, "decode_tps": 150.0, "generated_tokens": 256,
+               "phase": "warm"}
         row.update(over)
         return row
 
@@ -188,6 +193,21 @@ class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("drifted", reasons[0])
 
+    def test_a_cell_that_answers_too_briefly_to_measure_decode_is_caught(self):
+        """The prose cell answered in 35 tokens and every number in the table still looked
+        fine. A rate over 35 tokens is mostly the first tokens, where acceptance is lowest,
+        so it is not decode -- and nothing about it fails except the science."""
+        code, reasons = replay.verdict([self._row(generated_tokens=35)], self._summary(),
+                                       min_tokens=150)
+        self.assertEqual(code, 1)
+        self.assertIn("too brief", reasons[0])
+
+    def test_a_cell_that_runs_to_the_cap_is_allowed(self):
+        code, reasons = replay.verdict([self._row(generated_tokens=256)], self._summary(),
+                                       min_tokens=150)
+        self.assertEqual((code, reasons), (0, []))
+
+
 
 class ItWaitsForTheBoxToBeAlone(unittest.TestCase):
     """The baseline can only be taken unattended, and unattended means nobody can promise
@@ -209,6 +229,7 @@ class ItWaitsForTheBoxToBeAlone(unittest.TestCase):
         seen = iter([0, 0, 1, 0, 0, 0, 0, 0])
         with unittest.mock.patch.object(replay, "busy_slots", side_effect=lambda *a: next(seen)):
             self.assertIsNone(replay.wait_for_quiet("u", "k", hold=0.04, bound=5, settle=0.01))
+
 
 
 if __name__ == "__main__":
