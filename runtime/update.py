@@ -82,19 +82,53 @@ class Updater:
             tar.extractall(source, filter='data')
         return source
 
+    # The names a revision keeps its selectable configurations under. Both are read because the
+    # revision doing this work is the one already deployed, and a rename of the constant itself is
+    # only deployable if the old revision can still read the new one.
+    PROFILE_CONSTANTS = ('CONFIGURATIONS', 'DAYTIME_PROFILES')
+
     def target_profiles(self, target):
-        """Daytime profiles selectable by the target revision, from its published source."""
+        """Configurations the target revision offers, read from its published source.
+
+        Returns what is selectable there and what the active release may be recorded as. Those differ
+        by PROFILE_ALIASES, and the difference is the whole point: a configuration that was *renamed*
+        is still the configuration running, so a release that renames one must not refuse itself,
+        while a configuration that was *retired* has no backends left to launch and still refuses.
+        """
         code = self.git('show', target + ':runtime/config.py', check=False)
         require(code, 'Cannot read runtime/config.py from the target revision')
+        literals, bound = {}, {}
         for node in ast.walk(ast.parse(code)):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
-                    isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'DAYTIME_PROFILES':
-                profiles = ast.literal_eval(node.value)
-                require(isinstance(profiles, tuple) and len(profiles) > 0 and
-                    all(isinstance(name, str) for name in profiles),
-                    'Target revision defines an invalid DAYTIME_PROFILES')
-                return profiles
-        raise RuntimeError('Target revision does not define DAYTIME_PROFILES')
+            if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)):
+                continue
+            key = node.targets[0].id
+            if isinstance(node.value, ast.Name):
+                # `NEW = OLD`, the transitional spelling a rename leaves behind.
+                bound[key] = node.value.id
+                continue
+            try:
+                literals[key] = ast.literal_eval(node.value)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                pass
+
+        def named(key, seen=()):
+            require(key not in seen, 'Target revision defines ' + key + ' through a cycle')
+            if key in literals:
+                return literals[key]
+            if key in bound:
+                return named(bound[key], (*seen, key))
+            return None
+
+        selected = next((named(key) for key in self.PROFILE_CONSTANTS
+            if isinstance(named(key), tuple) and named(key) and all(isinstance(x, str) for x in named(key))), None)
+        require(selected is not None, 'Target revision defines no selectable configurations as '
+            + ' or '.join(self.PROFILE_CONSTANTS) + ' (a non-empty tuple of ids)')
+        aliases = named('PROFILE_ALIASES') or {}
+        require(isinstance(aliases, dict) and all(isinstance(k, str) and isinstance(v, str)
+            for k, v in aliases.items()), 'Target revision defines PROFILE_ALIASES as something '
+            'other than a mapping of retired id to current id')
+        return tuple(selected), tuple(selected) + tuple(old for old, new in aliases.items() if new in selected)
 
     def candidate(self, image, action, full_hash=False, capture=False):
         host = read(self.state / 'host.json')
@@ -149,11 +183,11 @@ class Updater:
                 return
             active_profile = previous.get('bundle', {}).get('profile')
             if active_profile:
-                selectable = self.target_profiles(target)
-                require(active_profile in selectable,
-                    f"Active profile '{active_profile}' is retired in target revision {target}; on the deployed "
-                    f"revision, switch to a profile selectable there ({', '.join(selectable)}) before "
-                    f're-running the update')
+                selectable, accepted = self.target_profiles(target)
+                require(active_profile in accepted,
+                    f"Active configuration '{active_profile}' is retired in target revision {target}; on the "
+                    f"deployed revision, switch to a configuration selectable there ({', '.join(selectable)}) "
+                    f'before re-running the update')
             source = self.export(target)
             image = 'local/ai-runtime:git-' + target
             print('Building published revision ' + target, flush=True)

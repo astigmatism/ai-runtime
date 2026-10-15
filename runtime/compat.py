@@ -1,7 +1,12 @@
 """Compatibility with the existing home-folder commands; executed inside the image."""
 import sys
 from .__main__ import main
-from .config import DAYTIME_PROFILES
+from .config import CONFIGURATIONS, resolve_profile, unknown_profile
+
+# Names the home wrappers have accepted for years. They name a resident, not a configuration, and
+# were never passed through as one -- which is exactly why they outlive a rename of the
+# configurations that happen to load it.
+RESIDENT_NAMES = ('primary', 'nighttime', 'daytime-256', 'nighttime-256')
 
 
 def dispatch(argv):
@@ -16,10 +21,12 @@ def dispatch(argv):
         'render-runtime': 'render', 'active-check': 'inspect'}.get(action, action)
     if action not in ('list', 'render', 'inspect', 'validate', 'status', 'apply'):
         raise RuntimeError('Use list, status, apply, validate, plan, or active-check; historical restore commands are retired')
-    profile_args = ['--profile', profile] if profile in DAYTIME_PROFILES else []
-    if profile not in (*DAYTIME_PROFILES, 'primary', 'nighttime', 'daytime-256', 'nighttime-256'):
-        raise RuntimeError('Unknown or retired profile ' + repr(profile) + '; current configurations: ' + ', '.join(DAYTIME_PROFILES))
-    return [action, *profile_args]
+    # A renamed configuration is applied under the id this revision knows; a retired one is refused,
+    # and the refusal names what to use instead.
+    selected = resolve_profile(profile)
+    if selected not in CONFIGURATIONS and profile not in RESIDENT_NAMES:
+        raise RuntimeError(unknown_profile(profile))
+    return [action, *( ['--profile', selected] if selected in CONFIGURATIONS else [] )]
 
 
 if __name__ == '__main__':

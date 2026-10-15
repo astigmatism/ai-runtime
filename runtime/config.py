@@ -1,29 +1,84 @@
-"""Render launch configuration and discovery from the same profile definitions."""
+"""Render launch configuration and discovery from the same profile definitions.
+
+Three words carry the whole model, and none of them is a time of day:
+
+* a **configuration** is one selectable set of launch definitions -- what this module used to call a
+  "Daytime profile", because it named the resident that happened to be loaded on the first GPU pair;
+* a **resident** is one model a configuration keeps loaded, identified by its `role` (`coding`,
+  `everyday`), which is also its Compose service key. Two configurations load two residents on two
+  GPU pairs; one loads a single resident across all four;
+* a **service ID** is the name a client sends. It belongs to the LLM Router contract, not to this
+  vocabulary: `daytime` and `nighttime` are service IDs, and a configuration may point any of them at
+  whichever residents it actually runs. `nighttime` answering from the same backend as `daytime` is a
+  placement fact, not a contradiction.
+
+GPU group keys in `.state/host.json` (`gpu_ids`, `gpu_names`, `cuda_order`) and the container names
+are operational identifiers, deliberately still the historical ones; see docs/deployment.md.
+"""
 import copy
 import hashlib
 import json
 import re
 from pathlib import Path
 
-# Selectable configurations. Paired profiles run on the Daytime pair beside Nighttime; exclusive
-# (solo) profiles hold every GPU and stop Nighttime. Display names come from each profile file.
-# The Strata entry is a trial. It publishes its own service alias, `trial`, and never `daytime`,
-# `local-active` or `nighttime`: selecting some other configuration therefore never routes to it, it
-# never shadows the active profile, and nothing reaches it until an operator who selected it is asked
-# for by name. While it is selected there is likewise no `daytime` service to ask for, because this
-# configuration replaces the Daytime resident. What is not an option is publishing no service alias
-# at all: that is a catalog a client following the router contract cannot address, which is the same
-# hole as nothing serving (asserted for every profile by ServiceIdentityTests in tests/test_config.py).
-DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-    'flash-next-solo-160k', 'flash-next-strata-160k')
+# Selectable configurations. A paired configuration runs its own resident beside the Everyday
+# resident; a solo configuration holds every text GPU and runs the Everyday resident's service ID from
+# its own backend instead. Display names come from each profile file.
+#
+# Every one of these publishes a service alias a contract client can address, and every one publishes
+# `daytime`: a client that only ever sends `daytime` -- which is what LLM Router's CLIENT_CONTRACT.md
+# tells it to do -- always has something to send, whichever configuration is selected. Asserted for
+# every configuration by ServiceIdentityTests in tests/test_config.py. Publishing no service alias at
+# all is not an option: that is a catalog a contract client cannot address, which is the same hole as
+# nothing serving.
+CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo')
+# Transitional spelling of the name above, for one release, and a literal tuple on purpose rather
+# than a binding to CONFIGURATIONS. The updater running on an already-deployed revision parses the
+# *target* revision's source for this constant and ast.literal_eval's its value, then refuses the
+# release if the configuration it is running is not in it. Two consequences, both deliberate:
+#
+#   * `= CONFIGURATIONS` would crash literal_eval and refuse the release, so the ids are repeated;
+#   * during a rename release the tuple is the union of the old and new ids, because the deployed
+#     updater does not know PROFILE_ALIASES and would otherwise refuse a release whose only crime is
+#     renaming the configuration that happens to be running -- leaving the operator with no lever.
+#
+# It is a superset, not a lie: every id in it resolves to a selectable configuration, which
+# tests/test_config.py pins. Once a revision that reads CONFIGURATIONS is deployed, this line goes;
+# target_profiles() already resolves a plain binding, so the next rename needs no such scaffolding.
+DAYTIME_PROFILES = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
+    'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
-DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
-NIGHTTIME_PROFILE = 'nighttime'
-# Nighttime variants a paired configuration may name with "nighttime"; NIGHTTIME_PROFILE is the default.
-NIGHTTIME_PROFILES = ('nighttime',)
+DEFAULT_PROFILE = 'qwen27b-q8-pair'
+# Configurations that used to be selectable, and what replaced them. A retired name is never
+# selectable and never silently resolves -- it refuses and says what to use instead -- because its
+# backends are described nowhere any more and launching one from memory is the drift this house
+# refuses. A *renamed* one does resolve, for the opposite reason: the same backends are still there.
+RETIRED_PROFILES = {
+    'flash-next-solo-128k': 'flash-next-strata-solo',
+    'flash-next-solo-160k': 'flash-next-strata-solo',
+}
+# Renamed configurations: old id -> new id. Resolved by render() before a file is read, accepted by
+# update.target_profiles() so a rename cannot refuse its own release, and honoured by the home
+# wrappers and the status page. Because Compose services are keyed by role and the canonical model id
+# is the model alias, a rename launches byte-identical backends; tests/fixtures/renamed-profiles.json
+# is what proves it, and it is the reason a rename is a naming change and not a redeploy.
+PROFILE_ALIASES = {
+    'qwen27b-q8-with-nighttime': 'qwen27b-q8-pair',
+    'qwen27b-q6k-with-nighttime': 'qwen27b-q6k-pair',
+    'flash-next-strata-160k': 'flash-next-strata-solo',
+}
+# The second resident: the model a paired configuration loads on the other GPU pair.
+EVERYDAY_PROFILE = 'everyday'
+# Everyday-resident variants a paired configuration may name with "everyday"; EVERYDAY_PROFILE is the
+# default.
+EVERYDAY_PROFILES = ('everyday',)
 PAIR_GROUPS = ('daytime', 'nighttime')
-# An exclusive Daytime profile reserves both text pairs, in this order, and runs without Nighttime.
+# A solo configuration reserves both text pairs, in this order, and runs no second resident.
 EXCLUSIVE_GROUP = 'all'
+GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+# LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
+# native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
+ROUTER_CONTEXT_LIMIT = 262144
 GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 # LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
 # native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
@@ -37,6 +92,27 @@ def require_router_context(tokens):
 
 def read(path):
     return json.loads(Path(path).read_text())
+
+
+def resolve_profile(profile):
+    """Map a renamed configuration id to the id this revision uses.
+
+    Only PROFILE_ALIASES resolves: a retired name is not a rename and must keep refusing, because a
+    retired configuration's backends are no longer described anywhere and launching one from memory is
+    exactly the drift this house refuses. Callers that report the failure to a person use
+    unknown_profile() instead, which says what to select.
+    """
+    return PROFILE_ALIASES.get(profile, profile)
+
+
+def unknown_profile(profile):
+    """The refusal for a name this revision does not run, naming what it does."""
+    message = 'Unknown or retired configuration ' + repr(profile) + '; current configurations: ' \
+        + ', '.join(CONFIGURATIONS)
+    replacement = RETIRED_PROFILES.get(profile)
+    if replacement is not None:
+        message += '. ' + str(profile) + ' was retired; select ' + replacement
+    return message
 
 
 def context_label(tokens):
@@ -65,22 +141,22 @@ def service_engine(bundle, role):
 
 
 def is_exclusive(definition):
-    """An exclusive profile owns all four text GPUs; Nighttime is not run while it is selected."""
+    """A solo configuration owns all four text GPUs; no second resident runs while it is selected."""
     exclusive = definition.get('exclusive', False)
     require(exclusive is True or exclusive is False, definition['id'] + ': exclusive must be true or false')
     if exclusive:
         require(definition['role'] == 'coding' and definition['gpu_group'] == EXCLUSIVE_GROUP,
-            definition['id'] + ': an exclusive profile is a coding profile on the "all" GPU group')
+            definition['id'] + ': a solo configuration is a coding configuration on the "all" GPU group')
     else:
         require(definition['gpu_group'] in PAIR_GROUPS, definition['id'] + ': unknown GPU group')
     return exclusive
 
 
 def parallel_slots(definition):
-    """Backend slots: one by default; an exclusive profile, which has every GPU, may run two."""
+    """Backend slots: one by default; a solo configuration, which has every GPU, may run two."""
     slots = definition.get('parallel_slots', 1)
     require(type(slots) is int and slots in (1, 2), definition['id'] + ': parallel_slots must be 1 or 2')
-    require(slots == 1 or is_exclusive(definition), definition['id'] + ': only an exclusive profile may run two slots')
+    require(slots == 1 or is_exclusive(definition), definition['id'] + ': only a solo configuration may run two slots')
     return slots
 
 
@@ -103,11 +179,12 @@ def gpu_names(host, definition):
     return [name for group in groups for name in names.get(group, [])]
 
 
-def nighttime_for(definition):
-    """The Nighttime profile a paired configuration runs beside it."""
-    name = definition.get('nighttime', NIGHTTIME_PROFILE)
-    require(name in NIGHTTIME_PROFILES, definition['id'] + ': unknown Nighttime profile ' + str(name))
-    require(not is_exclusive(definition) or 'nighttime' not in definition, definition['id'] + ': an exclusive profile runs no Nighttime')
+def everyday_for(definition):
+    """The resident a paired configuration loads on the other GPU pair beside its own."""
+    name = definition.get('everyday', EVERYDAY_PROFILE)
+    require(name in EVERYDAY_PROFILES, definition['id'] + ': unknown everyday resident profile ' + str(name))
+    require(not is_exclusive(definition) or 'everyday' not in definition,
+        definition['id'] + ': a solo configuration runs no second resident')
     return name
 
 
@@ -147,9 +224,9 @@ def vision_devices(host, group, options, draft_on_vision=False):
 
 
 def exclusive_devices(host, options, text):
-    """CUDA order for an exclusive profile: the four text GPUs, then the vision GPU.
+    """CUDA order for a solo configuration: the four text GPUs, then the vision GPU.
 
-    Nighttime is not running, so the vision GPU is not shared: it carries the projector and
+    No second resident is running, so the vision GPU is not shared: it carries the projector and
     may also carry the MTP draft. The language model itself stays on the four text GPUs.
     """
     vision = host.get('vision_gpu_id')
@@ -355,37 +432,68 @@ def profile_summary(config_dir, name, shared, host=None):
     # environment, so it is only merged for the engines that actually receive it.
     options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
         else dict(definition['arguments'])
+    # Resolved for a solo configuration too, and then dropped: naming a second resident you will
+    # never load is a configuration lying about what it launches, and everyday_for refuses it.
+    second = everyday_for(definition) if definition['role'] == 'coding' else None
     return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
+        # The service IDs a client sends to reach this resident. Listed for every configuration,
+        # including the ones not running, because "what would answer" is a different question from
+        # "what is loaded" and the status page has to be able to tell them apart.
+        'service_ids': sorted(definition['catalog'].get('aliases', [])),
         'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1),
-        **({'nighttime': nighttime_for(definition)} if definition['role'] == 'coding' and not is_exclusive(definition) else {}),
+        **({'everyday': second} if second is not None and not is_exclusive(definition) else {}),
         **({'variant_label': definition['variant_label']} if definition.get('variant_label') else {})}
 
 
 def available_profiles(config_dir, host=None):
-    """Every configuration this revision can apply: the selectable Daytime set plus the paired Nighttime backend."""
+    """Every configuration this revision can apply, plus the second resident a paired one loads."""
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
     def describe(name):
         return profile_summary(config_dir, name, shared, host)
-    selectable = [describe(name) for name in DAYTIME_PROFILES]
-    used = {entry['nighttime'] for entry in selectable if 'nighttime' in entry}
+    residents = {name: describe(name) for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS)}
+    selectable = [residents[name] for name in CONFIGURATIONS]
+    for entry in selectable:
+        # What a client can ask for while this configuration is selected. For a paired configuration
+        # that is the two residents together: `nighttime` is answered by the second one, and a page
+        # that read only the first resident's aliases would report a service as missing while it was
+        # answering.
+        second = residents.get(entry.get('everyday'))
+        if second:
+            entry['service_ids'] = sorted(set(entry['service_ids']) | set(second['service_ids']))
+    used = {entry['everyday'] for entry in selectable if 'everyday' in entry}
     return {'selectable': selectable,
-        'always_included': [describe(name) for name in NIGHTTIME_PROFILES if name == NIGHTTIME_PROFILE or name in used]}
+        'always_included': [residents[name] for name in EVERYDAY_PROFILES
+            if name == EVERYDAY_PROFILE or name in used]}
 
 
-def offline_services(config_dir, shared, host, exclusive):
-    """Services this configuration deliberately does not run, so the router can report them as
-    temporarily offline rather than unknown. An exclusive profile stops Nighttime."""
-    if not exclusive:
-        return []
-    night = read(Path(config_dir) / 'profiles' / (NIGHTTIME_PROFILE + '.json'))
-    summary = profile_summary(config_dir, NIGHTTIME_PROFILE, shared, host)
-    return [{'model': summary['model'], 'aliases': list(night['catalog'].get('aliases', [])),
-        'display_name': summary['display_name'], 'role': night['role'], 'reason': 'exclusive_configuration'}]
+def offline_services(config_dir, shared, host, loaded):
+    """Service IDs this configuration deliberately does not run, so the router can report them as
+    temporarily offline rather than unknown.
+
+    The rule is about service IDs, not about roles: a service ID is offline here when the resident
+    that normally carries it publishes it somewhere in this house and nothing loaded by *this*
+    configuration publishes it. A solo configuration that answers `nighttime` from its own backend
+    therefore declares nothing offline, and one that stopped offering it would. Roles and service IDs
+    are separate facts -- `offline_roles` says what is loaded, this says what answers -- and
+    conflating them is how a status page comes to tell you a model is off while it is answering.
+    """
+    published = {alias for definition in loaded for alias in definition['catalog'].get('aliases', [])}
+    offline = []
+    for name in EVERYDAY_PROFILES:
+        definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
+        aliases = [alias for alias in definition['catalog'].get('aliases', []) if alias not in published]
+        if not aliases:
+            continue
+        summary = profile_summary(config_dir, name, shared, host)
+        offline.append({'model': summary['model'], 'aliases': aliases,
+            'display_name': summary['display_name'], 'role': definition['role'],
+            'reason': 'exclusive_configuration'})
+    return offline
 
 
 def require_open_generation_policy(name, entry):
@@ -406,7 +514,8 @@ def require_open_generation_policy(name, entry):
 
 def render(config_dir, host, profile):
     config_dir = Path(config_dir)
-    require(profile in DAYTIME_PROFILES, 'Unknown or retired daytime profile')
+    profile = resolve_profile(profile)
+    require(profile in CONFIGURATIONS, unknown_profile(profile))
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
     root = Path(host['model_root'])
@@ -416,10 +525,16 @@ def render(config_dir, host, profile):
     models, artifacts, manifests, gpu_ids = [], {}, [], []
     selected = read(config_dir / 'profiles' / (profile + '.json'))
     exclusive_profile = is_exclusive(selected)
-    night_profile = nighttime_for(selected)  # also refuses a Nighttime named by an exclusive profile
-    night_profile = None if exclusive_profile else night_profile
-    for name in (profile,) if exclusive_profile else (profile, night_profile):
-        definition = read(config_dir / 'profiles' / (name + '.json'))
+    # Also refuses a second resident named by a solo configuration, which has no other GPU pair.
+    # Resolved before the exclusivity check for the same reason profile_summary resolves it: a solo
+    # configuration that names a second resident is refused, not quietly ignored.
+    second = everyday_for(selected)
+    if exclusive_profile:
+        second = None
+    loaded = [selected] if second is None else [selected,
+        read(config_dir / 'profiles' / (second + '.json'))]
+    for definition in loaded:
+        name = definition['id']
         role = definition['role']
         engine = shared['engines'][definition['engine']]
         ctx = definition['context_tokens']
@@ -570,11 +685,11 @@ def render(config_dir, host, profile):
     catalog = {**copy.deepcopy(models[0]), 'schema_version': 3,
         'default_model': models[0]['model'], 'models': models,
         'configuration': {'id': profile, 'exclusive': exclusive_profile},
-        'offline_services': offline_services(config_dir, shared, host, exclusive_profile)}
+        'offline_services': offline_services(config_dir, shared, host, loaded)}
     bundle = {'schema_version': 1, 'profile': profile, 'compose': compose, 'catalog': catalog,
         'manifest': {'schema_version': 2, 'services': manifests},
         'artifacts': list(artifacts.values())}
-    if night_profile not in (None, NIGHTTIME_PROFILE):
-        bundle['nighttime_profile'] = night_profile
+    if second not in (None, EVERYDAY_PROFILE):
+        bundle['everyday_profile'] = second
     bundle['config_sha256'] = digest(bundle)
     return bundle

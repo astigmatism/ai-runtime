@@ -7,16 +7,16 @@ Containerization makes the application replaceable. It does not back up model we
 | Item | Recovery source |
 | --- | --- |
 | Runtime source, launch definitions, catalog generation, home wrappers | Public repository and `runtime.git.bundle` |
-| Selected profile, GPU UUIDs, private router token, deployment/recovery journals | Private `.state/` and `.env` in `private-state.tar.gz` |
+| Selected configuration, GPU UUIDs, private router token, deployment/recovery journals | Private `.state/` and `.env` in `private-state.tar.gz` |
 | Exact pinned inference engines, current and previous controller images | `images.tar`; verify IDs against `inventory.json` after loading |
 | Model artifacts | Separate model backup, or immutable download URLs in `model-downloads.json`; validate sizes and SHA-256 |
 | Router API, credentials, runtime catalog directory, network | Router deployment and private configuration backup |
 | Router conversation data, Open WebUI data, other application volumes | Separate consistent application backups |
 | OS, LAN address, user IDs, NVIDIA driver/toolkit, Docker/Compose | Host provisioning; record installed versions in the private recovery inventory |
 
-The current model definitions require 42 files (179,538,157,024 bytes) for every profile, or five files (54,702,891,968 bytes) for `daytime-27b` plus Nighttime. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
+The current model definitions require nine files (173,684,537,856 bytes) across all three configurations, or five files (54,702,891,968 bytes) for `qwen27b-q8-pair` together with its everyday resident. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
 
-The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. `qwen38-dual-836d571`, the only Qwen3.8-27B engine and also the engine of the `daytime-flash-next` Flash-Next experiment (the `8ea2902` engine and its image were retired on 2026-10-04), was built on the host from upstream llama.cpp `836d57176dc699a726c55418e4f96b8ca628e1bf` with its unmodified `.devops/cuda.Dockerfile` (`--target full`, `CUDA_VERSION=12.8.1`, `CUDA_DOCKER_ARCH=86;89`); see `docs/deployment.md` for the exact command. The private export saves it with the Flash-Next engine. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
+The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. `qwen38-dual-836d571`, the only Qwen3.8-27B engine and also the engine of the `daytime-flash-next` Flash-Next experiment (the `8ea2902` engine and its image were retired on 2026-10-04), was built on the host from upstream llama.cpp `836d57176dc699a726c55418e4f96b8ca628e1bf` with its unmodified `.devops/cuda.Dockerfile` (`--target full`, `CUDA_VERSION=12.8.1`, `CUDA_DOCKER_ARCH=86;89`); see `docs/deployment.md` for the exact command. The private export saves every engine registered in `config/shared.json` — since 2026-10-15 that is this engine and the two Strata tags, and not the `qwen38-dual-43fe9c6` image the retired llama.cpp Flash-Next configurations used. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
 
 ## Make a private export
 
@@ -71,7 +71,7 @@ PY
 python3 -m runtime.recovery install-wrappers --home /home/astigmatism
 ```
 
-9. Check `http://192.168.1.4:11436/healthz`, profile/context/GPU identities, router catalog, both direct backends and a bounded request through the router. Confirm Service Portal discovers AI Runtime and its update action. Test a reboot in a maintenance window before declaring the machine recovery-tested.
+9. Check `http://192.168.1.4:11436/healthz`, configuration/context/GPU identities, router catalog, the direct backends the selected configuration loads, and a bounded request through the router. Confirm Service Portal discovers AI Runtime and its update action. Test a reboot in a maintenance window before declaring the machine recovery-tested.
 
 The Docker socket grants the controller and update runner host-level Docker control. Containerization makes software ownership and packaging clearer; it does not remove the need to protect that socket or back up private application data.
 

@@ -11,7 +11,7 @@ from runtime.compat import dispatch
 
 class StatusTests(unittest.TestCase):
     def setUp(self):
-        self.state = {'status': {'ready': False, 'profile': 'qwen27b-q8-with-nighttime'}}
+        self.state = {'status': {'ready': False, 'profile': 'qwen27b-q8-pair'}}
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(None, self.state))
         thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
         self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
@@ -42,27 +42,38 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn('innerHTML', urllib.request.urlopen(self.base + '/app.js').read().decode())
 
     def test_status_passes_the_configuration_registry_through_unchanged(self):
-        self.state['status']['configurations'] = {'active': 'qwen27b-q8-with-nighttime', 'selectable':
-            [{'profile': 'qwen27b-q8-with-nighttime'}, {'profile': 'qwen27b-q6k-with-nighttime'}], 'always_included': [{'profile': 'nighttime'}]}
+        self.state['status']['configurations'] = {'active': 'qwen27b-q8-pair', 'selectable':
+            [{'profile': 'qwen27b-q8-pair'}, {'profile': 'qwen27b-q6k-pair'}], 'always_included': [{'profile': 'everyday'}]}
         with urllib.request.urlopen(self.base + '/api/status') as response:
             self.assertEqual(json.load(response)['configurations'], self.state['status']['configurations'])
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
         # The legacy home commands for retired configurations name the current ones instead of guessing.
         for retired in ('daytime', 'daytime-27b'):
-            with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-solo-128k'): dispatch([retired])
-        self.assertEqual(dispatch(['flash-next-solo-160k']), ['apply', '--profile', 'flash-next-solo-160k'])
-        self.assertEqual(dispatch(['qwen27b-q6k-with-nighttime']), ['apply', '--profile', 'qwen27b-q6k-with-nighttime'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-with-nighttime']),
-            ['apply', '--profile', 'qwen27b-q6k-with-nighttime'])
-        self.assertEqual(dispatch(['qwen27b-q6k-with-nighttime', 'status']), ['status', '--profile', 'qwen27b-q6k-with-nighttime'])
+            with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-strata-solo'): dispatch([retired])
+        # A retired id refuses and says what to select; a renamed id is applied under the id this
+        # revision has, so an old habit reaches the backend that exists rather than a description of
+        # one that does not.
+        with self.assertRaisesRegex(RuntimeError, 'retired.*select flash-next-strata-solo'):
+            dispatch(['flash-next-solo-160k'])
+        self.assertEqual(dispatch(['flash-next-strata-160k']), ['apply', '--profile', 'flash-next-strata-solo'])
+        self.assertEqual(dispatch(['flash-next-strata-solo']), ['apply', '--profile', 'flash-next-strata-solo'])
+        self.assertEqual(dispatch(['qwen27b-q6k-pair']), ['apply', '--profile', 'qwen27b-q6k-pair'])
+        self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-pair']),
+            ['apply', '--profile', 'qwen27b-q6k-pair'])
+        self.assertEqual(dispatch(['qwen27b-q6k-pair', 'status']), ['status', '--profile', 'qwen27b-q6k-pair'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['daytime-swift'])
         self.assertEqual(dispatch(['nighttime']), ['apply'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'qwen27b-q8-with-nighttime']), ['render', '--profile', 'qwen27b-q8-with-nighttime'])
+        self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'qwen27b-q8-pair']), ['render', '--profile', 'qwen27b-q8-pair'])
         with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['primary', 'rollback'])
 
 
-from test_operations import OperationFixture
+try:
+    from test_operations import OperationFixture
+except ModuleNotFoundError:
+    # Run as `python3 -m unittest tests.test_web` from the repository root, the fixtures are reached
+    # through the package instead of the tests directory, which is not on the import path.
+    from tests.test_operations import OperationFixture
 from runtime.operations import public_operation
 from runtime.web import refresh
 

@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import DAYTIME_PROFILES, read, render
+from runtime.config import CONFIGURATIONS, read, render
 from runtime.controller import Controller
 from runtime.system import atomic_json
 from tests.test_controller import FakeSystem
@@ -25,10 +25,10 @@ def vision_host():
 class VisionTests(unittest.TestCase):
     def test_all_profiles_only_change_encoder_and_visibility(self):
         host = vision_host()
-        gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')['compose']['services']['everyday']
+        gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services']['everyday']
         # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests. Nighttime's MTP
         # draft also lives on the vision GPU, so on a CPU-vision host it runs without the draft.
-        for profile in (p for p in DAYTIME_PROFILES if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
+        for profile in (p for p in CONFIGURATIONS if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
             self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)
@@ -64,23 +64,23 @@ class VisionTests(unittest.TestCase):
         h = vision_host(); h['cuda_order']['daytime'] = h['gpu_ids']['nighttime']; bad.append(h)
         h = vision_host(); h['gpu_ids']['nighttime'][0] = h['gpu_ids']['daytime'][0]; h['cuda_order']['nighttime'] = h['gpu_ids']['nighttime'][:]; bad.append(h)
         for host in bad:
-            with self.subTest(host=host), self.assertRaises(RuntimeError):render(ROOT / 'config', host, 'qwen27b-q8-with-nighttime')
+            with self.subTest(host=host), self.assertRaises(RuntimeError):render(ROOT / 'config', host, 'qwen27b-q8-pair')
 
     def test_text_draft_and_tensor_placement_cannot_use_vision_gpu(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            p = config / 'profiles/qwen27b-q8-with-nighttime.json'; original = read(p)
+            p = config / 'profiles/qwen27b-q8-pair.json'; original = read(p)
             for key, value in [('--device', 'CUDA0,CUDA1,CUDA2'), ('--spec-draft-device', 'CUDA2'),
                     ('--tensor-split', '60,40,0'), ('--override-tensor', ['blk.*=CUDA2'])]:
                 definition = copy.deepcopy(original); definition['arguments'][key] = value
                 p.write_text(json.dumps(definition))
-                with self.subTest(key=key), self.assertRaises(RuntimeError):render(config, vision_host(), 'qwen27b-q8-with-nighttime')
+                with self.subTest(key=key), self.assertRaises(RuntimeError):render(config, vision_host(), 'qwen27b-q8-pair')
 
     def test_live_gpu_order_reservations_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp); host = vision_host(); atomic_json(state/'host.json', host)
             (state/'router-token').write_text('synthetic')
-            bundle = render(ROOT/'config', host, 'qwen27b-q8-with-nighttime'); system = FakeSystem(bundle)
+            bundle = render(ROOT/'config', host, 'qwen27b-q8-pair'); system = FakeSystem(bundle)
             atomic_json(state/'active.json', {'revision': 'a'*40, 'bundle': bundle})
             c = Controller(ROOT/'config', state, 'a'*40, system)
             self.assertTrue(c.status()['ready'])

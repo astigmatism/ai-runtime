@@ -4,7 +4,7 @@ import re
 import threading
 import uuid
 
-from .config import DAYTIME_PROFILES, is_exclusive, nighttime_for, read
+from .config import CONFIGURATIONS, everyday_for, is_exclusive, read, resolve_profile
 from .controller import PENDING_PHASES
 from .system import lock, now
 
@@ -14,11 +14,14 @@ PENDING = PENDING_PHASES
 MESSAGES = {
     'checking': 'Checking the configuration, model files, and runtime.',
     'draining': 'Waiting for existing requests to finish. New requests are paused.',
-    'loading': 'Loading Daytime. Nighttime stays loaded; new requests remain paused.',
-    'loading-stops-nighttime': 'Stopping Nighttime, then loading Daytime on all four text GPUs; new requests remain paused.',
-    'loading-starts-nighttime': 'Loading Daytime, then starting Nighttime again; new requests remain paused.',
-    'loading-nighttime-off': 'Loading Daytime. Nighttime stays off; new requests remain paused.',
-    'loading-changes-nighttime': 'Restarting Nighttime with the selected variant, and Daytime if it changed; new requests remain paused.',
+    'loading': 'Loading the selected model. The Everyday resident stays loaded; new requests remain paused.',
+    'loading-stops-everyday': ('Stopping the Everyday resident, then loading the selected model on all four '
+        'text GPUs; new requests remain paused.'),
+    'loading-starts-everyday': ('Loading the selected model, then starting the Everyday resident again; new '
+        'requests remain paused.'),
+    'loading-everyday-off': 'Loading the selected model. The Everyday resident stays off; new requests remain paused.',
+    'loading-changes-everyday': ('Restarting the Everyday resident with the selected variant, and the model '
+        'beside it if that changed; new requests remain paused.'),
     'verifying': 'Checking generation and model discovery before reopening requests.',
     'restoring': 'The switch did not complete. Restoring the previous configuration.',
     'succeeded': 'The selected configuration is ready. Requests are open.',
@@ -46,9 +49,9 @@ def public_operation(operation):
         return None
     result = {k: operation[k] for k in PUBLIC_FIELDS if k in operation}
     key = operation.get('error_code') or (operation['phase'] if operation['status'] == 'running' else operation['status'])
-    if key == 'loading' and operation.get('nighttime') in ('stops', 'starts', 'off', 'changes'):
-        key = {'stops': 'loading-stops-nighttime', 'starts': 'loading-starts-nighttime', 'off': 'loading-nighttime-off',
-            'changes': 'loading-changes-nighttime'}[operation['nighttime']]
+    if key == 'loading' and operation.get('everyday') in ('stops', 'starts', 'off', 'changes'):
+        key = {'stops': 'loading-stops-everyday', 'starts': 'loading-starts-everyday',
+            'off': 'loading-everyday-off', 'changes': 'loading-changes-everyday'}[operation['everyday']]
     if operation.get('kind') == 'restore':
         # A restoration is a different promise from a switch, so it is described in its own words
         # even when it ends in a phase a switch would also have used.
@@ -115,11 +118,15 @@ class Operations:
         fields = {'profile', 'request_id', 'expected_revision', 'expected_profile'}
         if (not isinstance(request, dict) or set(request) != fields
                 or any(not isinstance(request[k], str) for k in fields)
-                or request['profile'] not in DAYTIME_PROFILES
-                or request['expected_profile'] not in DAYTIME_PROFILES
+                or resolve_profile(request['profile']) not in CONFIGURATIONS
+                or resolve_profile(request['expected_profile']) not in CONFIGURATIONS
                 or not OPERATION_ID.fullmatch(request['request_id'])
                 or not re.fullmatch(r'[0-9a-f]{40}', request['expected_revision'])):
             raise OperationError(400, 'invalid-request', 'Provide a registered profile, request UUID, and observed profile/revision.')
+        # A renamed configuration is still the configuration the page showed a moment ago, so the old
+        # id resolves rather than refusing. The request is stored as sent, which is what makes
+        # replaying it by request id the same request.
+        profile, expected = resolve_profile(request['profile']), resolve_profile(request['expected_profile'])
         with self.mutex:
             existing = self.read(request['request_id'])
             if existing:
@@ -139,18 +146,18 @@ class Operations:
                 active = self.controller.load('active.json', {})
                 if (active.get('revision') != request['expected_revision']
                         or self.controller.revision != request['expected_revision']
-                        or active.get('bundle', {}).get('profile') != request['expected_profile']):
+                        or active.get('bundle', {}).get('profile') != expected):
                     raise OperationError(409, 'stale-selection', 'The active profile or revision changed. Refresh before switching.')
-                # What the switch does to Nighttime, so progress says it truthfully: an exclusive
+                # What the switch does to the second resident, so progress says it truthfully: a solo
                 # configuration stops it, and leaving one starts it again.
                 definitions = [read(self.controller.config_dir / 'profiles' / (name + '.json'))
-                    for name in (request['expected_profile'], request['profile'])]
+                    for name in (expected, profile)]
                 solo = [is_exclusive(definition) for definition in definitions]
-                nighttime = {(False, False): 'stays', (False, True): 'stops', (True, False): 'starts', (True, True): 'off'}[tuple(solo)]
-                if nighttime == 'stays' and nighttime_for(definitions[0]) != nighttime_for(definitions[1]):
-                    nighttime = 'changes'
-                operation = {'id': request['request_id'], 'request': dict(request), 'nighttime': nighttime,
-                    'from_profile': request['expected_profile'], 'target_profile': request['profile'],
+                everyday = {(False, False): 'stays', (False, True): 'stops', (True, False): 'starts', (True, True): 'off'}[tuple(solo)]
+                if everyday == 'stays' and everyday_for(definitions[0]) != everyday_for(definitions[1]):
+                    everyday = 'changes'
+                operation = {'id': request['request_id'], 'request': dict(request), 'everyday': everyday,
+                    'from_profile': expected, 'target_profile': profile,
                     'revision': request['expected_revision'], 'status': 'running', 'phase': 'checking', 'started_at': now()}
                 self.save(operation)
                 self.controller.save('latest-operation.json', {'id': operation['id']})
@@ -310,7 +317,7 @@ class Operations:
             if not c.status()['ready']:
                 raise RuntimeError('Runtime is no longer ready')
             result = c._transition_locked(operation['target_profile'], operation_id=operation['id'],
-                progress=progress, daytime_only=True)
+                progress=progress, keep_everyday=True)
             operation['already_active'] = result.get('already_active', False)
             self.publish_status(c.status())
             self.complete(operation, 'succeeded')

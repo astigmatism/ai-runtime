@@ -140,7 +140,7 @@ class RestorationTests(unittest.TestCase):
         self.system.draining = True
         self.system.reason = 'local-ai-runtime:' + transaction['id']
 
-    def failed_switch_transaction(self, target_profile='flash-next-strata-160k'):
+    def failed_switch_transaction(self, target_profile='flash-next-strata-solo'):
         """The transaction a refused switch leaves behind: pending, its drain still owned, the
         target recorded - the same shape the 2026-10-12 host carried across its reboot."""
         target = render(ROOT / 'config', fixture.HOST, target_profile)
@@ -155,7 +155,7 @@ class RestorationTests(unittest.TestCase):
 
     def switch_to_other_daytime(self):
         """The alias the other Daytime launches on, to make one backend of it refuse readiness."""
-        target = render(ROOT / 'config', fixture.HOST, 'qwen27b-q6k-with-nighttime')
+        target = render(ROOT / 'config', fixture.HOST, 'qwen27b-q6k-pair')
         self.assertNotEqual(target['config_sha256'], self.bundle['config_sha256'])
         argv = target['compose']['services']['coding']['command']
         return argv[argv.index('--alias') + 1]
@@ -187,14 +187,14 @@ class RestorationTests(unittest.TestCase):
         """
         self.system.never_healthy_alias = self.switch_to_other_daytime()
         with self.assertRaisesRegex(RuntimeError, 'Deployment failed'):
-            self.c.transition('qwen27b-q6k-with-nighttime')
+            self.c.transition('qwen27b-q6k-pair')
         transaction = self.c.load('transaction.json')
         self.assertNotIn('recovery needs attention', str(transaction.get('error') or ''),
             'the restoration was supposed to finish, not stop for an operator')
         self.assertFalse(self.system.draining, 'the router was left drained with nothing serving')
         self.assertTrue(self.c.serving(), 'no healthy backend is serving after the failure')
         self.assertEqual(transaction['phase'], 'recovered')
-        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertFalse(self.c.restoration_pending(), 'a finished restoration is still an open action')
         # Every phase the restoration reached is in the record, because the record is the evidence.
         steps = [x['step'] for x in transaction.get('restoration', {}).get('phases', [])]
@@ -207,7 +207,7 @@ class RestorationTests(unittest.TestCase):
         # `last-deployment` is the attempt, not the outcome: it names the profile that was tried
         # and says, in phase and error, that the machine was put back afterwards.
         deployment = self.c.load('last-deployment.json')
-        self.assertEqual(deployment['profile'], 'qwen27b-q6k-with-nighttime')
+        self.assertEqual(deployment['profile'], 'qwen27b-q6k-pair')
         self.assertEqual(deployment['phase'], 'recovered')
         self.assertEqual(deployment['intent'], 'deployment')
         self.assertIn('readiness', str(deployment['error']))
@@ -217,7 +217,7 @@ class RestorationTests(unittest.TestCase):
         self.system.never_healthy_alias = self.switch_to_other_daytime()
         self.system.failed_generations = 1  # the restoration trips over its own acceptance check
         with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'):
-            self.c.transition('qwen27b-q6k-with-nighttime')
+            self.c.transition('qwen27b-q6k-pair')
         self.assertTrue(self.system.draining)
         self.assertFalse(self.c.serving())
         self.assertTrue(self.c.restoration_pending())
@@ -247,7 +247,7 @@ class RestorationTests(unittest.TestCase):
         self.strand_the_backend(drained=False)
         self.system.fail_reconcile = True  # nothing can be brought up, so no attempt may rest
         with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'):
-            self.c.transition('qwen27b-q6k-with-nighttime')
+            self.c.transition('qwen27b-q6k-pair')
         first = self.c.restoration()
         self.assertEqual(first['attempts'], 1)
         self.assertFalse(self.c.serving())
@@ -276,10 +276,10 @@ class RestorationTests(unittest.TestCase):
         self.strand_the_backend()
         result = self.c.restore_last_known_good()
         self.assertTrue(result['restored'])
-        self.assertEqual(result['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(result['profile'], 'qwen27b-q8-pair')
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining)
-        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertFalse(self.c.restoration_pending())
 
     def test_the_one_action_is_enough_when_the_record_is_the_only_thing_left(self):
@@ -299,12 +299,12 @@ class RestorationTests(unittest.TestCase):
         self.strand_the_backend(drained=False)
         self.system.fail_reconcile = True
         with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'):
-            self.c.transition('qwen27b-q6k-with-nighttime')
+            self.c.transition('qwen27b-q6k-pair')
         status = self.c.status()
         self.assertFalse(status['service']['serving'])
         self.assertTrue(status['service']['restorable'])
         self.assertTrue(status['service']['pending'])
-        self.assertEqual(status['service']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(status['service']['profile'], 'qwen27b-q8-pair')
         self.assertIn('Simulated load failure', status['restoration']['last_error'])
         browser = public_status({'status': status})
         text = json.dumps(browser)
@@ -401,9 +401,9 @@ class RestorationTests(unittest.TestCase):
         self.strand_the_backend(drained=False)
         self.system.fail_reconcile = True
         with self.assertRaisesRegex(RuntimeError, 'recovery needs attention'):
-            self.c.transition('qwen27b-q6k-with-nighttime')
+            self.c.transition('qwen27b-q6k-pair')
         with self.assertRaisesRegex(RuntimeError, 'interrupted deployment'):
-            self.c.transition('qwen27b-q8-with-nighttime')
+            self.c.transition('qwen27b-q8-pair')
         self.assertEqual(self.ops.restore_blockers(), None)
         self.make_restoration_due()
         self.assertIsNotNone(self.ops.restore_if_due())
@@ -444,7 +444,7 @@ class RestorationTests(unittest.TestCase):
         self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
         self.c._kinds_cache = None
         self.c.publish(self.bundle)
-        target = render(ROOT / 'config', self.c.host, 'flash-next-strata-160k')
+        target = render(ROOT / 'config', self.c.host, 'flash-next-strata-solo')
         for service in target['manifest']['services']:
             self.system.services[service['container_name']] = service
         catalog_path = Path(self.c.host['router_state_dir']) / 'active-model.json'
@@ -538,9 +538,9 @@ class RestorationTests(unittest.TestCase):
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining)
         self.assertFalse(self.c.restoration_pending())
-        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         record = self.c.restoration()
-        self.assertIn('qwen27b-q8-with-nighttime', record['note'])
+        self.assertIn('qwen27b-q8-pair', record['note'])
         self.assertNotIn('flash-next', record['note'])
 
     def test_a_reboot_converges_a_wedged_host_without_human_intervention(self):
@@ -568,20 +568,20 @@ class RestorationTests(unittest.TestCase):
         self.assertTrue(rebooted.serving())
         self.assertFalse(self.system.draining)
         self.assertFalse(rebooted.restoration_pending())
-        self.assertEqual(rebooted.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(rebooted.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
 
     def test_a_switch_to_an_unsupported_kind_is_refused_before_the_drain(self):
         """The gate the 22:20 click should have been: a catalog of a kind the deployed router
         cannot serve is refused before the drain is taken, the machine keeps serving what it
         serves, and nothing is left behind that a reboot could then resurrect."""
         with self.assertRaisesRegex(RuntimeError, 'does not support backend kind strata'):
-            self.c.transition('flash-next-strata-160k')
+            self.c.transition('flash-next-strata-solo')
         self.assertFalse(self.system.draining, 'the drain was taken to reach the refusal')
         self.assertNotIn(('drain', True), self.system.events)
-        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertTrue(self.c.serving())
         # The card says it before the click, because the verdict is the gate.
-        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-160k')
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo')
         self.assertTrue(any('does not support backend kind strata' in r for r in self.c.verdict(bundle)))
 
     def test_the_router_gate_passes_a_kind_the_router_reports(self):
@@ -590,7 +590,7 @@ class RestorationTests(unittest.TestCase):
         self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
         # The status poll in setUp cached the old router's answer; the clock moves past it.
         self.c._kinds_cache = None
-        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-160k')
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo')
         self.c.require_router_supports(bundle)  # must not raise
         self.assertFalse(any('does not support backend kind' in r for r in self.c.verdict(bundle)))
 

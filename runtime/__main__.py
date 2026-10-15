@@ -6,7 +6,8 @@ import sys
 
 from .controller import Controller
 from .system import System
-from .config import DAYTIME_PROFILES, available_profiles
+from .config import (CONFIGURATIONS, PROFILE_ALIASES, available_profiles, require,
+    resolve_profile, unknown_profile)
 
 
 def describe(entry, note=''):
@@ -17,11 +18,14 @@ def listed(config_dir):
     """The supported configurations straight from the profile registry, so the CLI, the
     container CLI consumers, and the status page can never disagree."""
     registry = available_profiles(config_dir)
-    night = registry['always_included'][0]
-    rows = [f"primary: the selected Daytime configuration + {night['display_name']}"]
-    rows += [describe(entry, ' (all four text GPUs; stops Nighttime)' if entry['exclusive'] else '')
+    second = registry['always_included']
+    # `always_included` is empty on a host whose every configuration runs alone; the listing has to
+    # say that rather than reach for a second resident that no configuration loads.
+    rows = ['primary: the selected configuration' +
+        (f" + {second[0]['display_name']}" if second else ' (no second resident in any configuration)')]
+    rows += [describe(entry, ' (all four text GPUs; runs without a second resident)' if entry['exclusive'] else '')
         for entry in registry['selectable']]
-    rows += [describe(entry, ' (paired with every non-exclusive Daytime configuration)') for entry in registry['always_included']]
+    rows += [describe(entry, ' (the second resident a paired configuration loads beside it)') for entry in second]
     return '\n'.join(rows)
 
 
@@ -31,10 +35,17 @@ def main():
         'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'serve', 'list', 'check',
         'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
-    parser.add_argument('--profile', choices=DAYTIME_PROFILES)
+    # Not `choices`: argparse prints "invalid choice" and exits 2, which tells an operator that a
+    # name they typed for three years is simply wrong. resolve_profile says what it means -- a
+    # renamed configuration is what they typed, a retired one names its replacement.
+    parser.add_argument('--profile')
     parser.add_argument('--phase', choices=['provision', 'warm'], default='provision')
     parser.add_argument('--full-hash', action='store_true')
     args = parser.parse_args()
+    if args.profile:
+        require(args.profile in CONFIGURATIONS or args.profile in PROFILE_ALIASES,
+            unknown_profile(args.profile))
+        args.profile = resolve_profile(args.profile)
     if args.action == 'list':
         print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')))
         return

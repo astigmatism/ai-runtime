@@ -9,34 +9,42 @@ const node = (tag, text = '', cls = '') => {
 // Names come from the configuration registry in /api/status, so the page never needs a code change
 // when a configuration is added or renamed.
 const configurations = () => status?.configurations?.selectable || [];
-const nighttime = profile => {
+// The second resident a paired configuration loads. `everyday` is its role; `nighttime` is the
+// service ID a client sends to reach it, and the two are not the same fact.
+const everyday = profile => {
   const variants = status?.configurations?.always_included || [];
   return variants.find(n => n.profile === profile) || variants[0];
 };
+// Whether a configuration answers a service ID at all, whichever resident it points it at.
+const answers = (config, id) => !!config && (config.service_ids || []).includes(id);
 const configFor = profile => configurations().find(c => c.profile === profile);
 const profileName = profile => configFor(profile)?.display_name || profile || 'Unknown configuration';
 const gpuList = names => names?.length ? names.join(' + ') : 'GPUs unavailable';
 // Only added where a display name does not already say how many requests run at once.
 const slotsText = (slots, name = '') => slots > 1 && !/request/i.test(name) ? ` · ${slots} requests at once` : '';
 function configTitle(config) {
-  if (config.exclusive) return `${config.display_name} · Nighttime off`;
-  const label = nighttime(config.nighttime)?.variant_label;
-  return `${config.display_name} + Nighttime${label ? ` (${label})` : ''}`;
+  if (config.exclusive) return `${config.display_name} · one model, all four text GPUs`;
+  const variant = everyday(config.everyday);
+  const label = variant?.variant_label;
+  return `${config.display_name} + Everyday${label ? ` (${label})` : ''}`;
 }
 function configRows(config) {
-  const night = nighttime(config.nighttime);
+  const second = everyday(config.everyday);
   return [
-    ['Daytime', `${config.display_name}${slotsText(config.parallel_slots, config.display_name)} · ${gpuList(config.gpu_names)}`],
-    ['Nighttime', config.exclusive ? 'Off while this configuration uses its GPUs'
-      : night ? `${night.display_name} · ${gpuList(night.gpu_names)}` : 'Unavailable']];
+    ['Coding', `${config.display_name}${slotsText(config.parallel_slots, config.display_name)} · ${gpuList(config.gpu_names)}`],
+    ['Everyday', config.exclusive
+      ? answers(config, 'nighttime') ? `Not loaded · ${config.display_name} answers its requests`
+        : 'Not loaded while this configuration uses its GPUs'
+      : second ? `${second.display_name} · ${gpuList(second.gpu_names)}` : 'Unavailable']];
 }
 function switchImpact(target) {
   const current = configFor(status?.profile);
   if (!target || !current) return 'Existing requests finish first. New requests pause during the switch.';
-  const night = !target.exclusive && !current.exclusive ? 'Nighttime stays loaded.'
-    : target.exclusive && current.exclusive ? 'Nighttime stays off.'
-    : target.exclusive ? 'Nighttime will be stopped while this configuration runs.' : 'Nighttime will be started again.';
-  const base = `Existing requests finish first. New requests pause during the switch. ${night}`;
+  const second = !target.exclusive && !current.exclusive ? 'The Everyday model stays loaded.'
+    : target.exclusive && current.exclusive ? 'The Everyday model stays unloaded.'
+    : target.exclusive ? 'The Everyday model will be stopped while this configuration runs.'
+      : 'The Everyday model will be started again.';
+  const base = `Existing requests finish first. New requests pause during the switch. ${second}`;
   // What the selection will do, from the same read-only verdict the gate reports: a refusal is
   // shown instead of inviting a click that only fails, and a build is announced before it happens.
   if (target.reasons?.length) return `${base} ${target.reasons[0]}`;
@@ -155,13 +163,13 @@ function renderTopology() {
   const shared = services.find(s => s.vision_gpu_id);
   graph.classList.toggle('no-vision', !shared);
   services.forEach((service, index) => {
-    const daytime = service.role ? service.role === 'coding' : index === 0;
-    const group = daytime ? 'day' : 'night';
-    const changing = daytime && running() && ['loading','verifying','restoring'].includes(operation.phase);
+    const coding = service.role ? service.role === 'coding' : index === 0;
+    const group = coding ? 'day' : 'night';
+    const changing = coding && running() && ['loading','verifying','restoring'].includes(operation.phase);
     const bubble = node('article', '', `model-bubble ${group}${(!service.healthy || changing) ? ' unavailable' : ''}`); bubble.dataset.model = group;
-    const slots = daytime ? configFor(status.profile)?.parallel_slots : 1;
+    const slots = coding ? configFor(status.profile)?.parallel_slots : 1;
     const label = service.name || service.model || 'Model unavailable';
-    bubble.append(node('h3', daytime ? 'Daytime' : 'Nighttime'), node('p', `${label}${slotsText(slots, label)}`));
+    bubble.append(node('h3', coding ? 'Coding' : 'Everyday'), node('p', `${label}${slotsText(slots, label)}`));
     if (changing) {
       bubble.querySelector('p').textContent = operation.phase === 'restoring' ? `Restoring ${profileName(operation.from_profile)}` : `Loading ${profileName(operation.target_profile)}`;
     }
@@ -175,10 +183,14 @@ function renderTopology() {
     });
     graph.append(set);
   });
-  if (status?.offline_roles?.includes('everyday')) {
-    // Not a connected model: an exclusive Daytime profile holds Nighttime's GPUs.
+  // A resident that is not loaded is only worth a bubble when nothing answers its service ID
+  // either. A solo configuration that answers `nighttime` from its own model has the role offline
+  // and no offline service, and saying "off" there would be a lie the page tells about a model
+  // that is answering.
+  const stopped = (status?.offline_services || []).find(s => (s.aliases || []).includes('nighttime'));
+  if (status?.offline_roles?.includes('everyday') && stopped) {
     const offline = node('article', '', 'model-bubble night unavailable');
-    offline.append(node('h3', 'Nighttime'), node('p', `${nighttime()?.display_name || 'Nighttime'} is off while ${profileName(status.profile)} uses its GPUs`), node('p', 'Not running', 'model-health'));
+    offline.append(node('h3', 'Everyday'), node('p', `${stopped.display_name || 'The Everyday model'} is not loaded while ${profileName(status.profile)} uses its GPUs`), node('p', 'Not running', 'model-health'));
     graph.append(offline);
   }
   if (shared) graph.append(gpuNode(shared.vision_gpu_name || 'Vision GPU', shared.exclusive ? 'Vision + MTP draft' : 'Shared vision', 'shared vision-node'));
@@ -362,7 +374,11 @@ el('switch-form').addEventListener('submit',async event => {
   event.preventDefault();
   if (el('apply').disabled) return;
   const target = status?.configurations?.selectable?.find(c => c.profile === selected);
-  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs, so Nighttime will be stopped until you choose a configuration that includes it. Continue?`)) return;
+  // What happens to the second resident is stated from the target's own service IDs, not from the
+  // word "exclusive": stopping a resident and stopping a service are different promises.
+  const stopped = answers(target, 'nighttime') ? `${profileName(selected)} answers its requests in the meantime`
+    : 'its requests will fail until you choose a configuration that loads it again';
+  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs, so the Everyday model will stop. ${stopped}. Continue?`)) return;
   submitting=true; actionError=''; tellError(''); updateControls(); clearTimeout(timer);
   const request = pending && pending.profile===selected && pending.expected_profile===status.profile && pending.expected_revision===status.deployed_revision ? pending : {profile:selected,request_id:uuid(),expected_profile:status.profile,expected_revision:status.deployed_revision};
   remember(request);

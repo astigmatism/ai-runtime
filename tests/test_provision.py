@@ -15,14 +15,21 @@ from pathlib import Path
 from unittest import main
 from unittest.mock import patch
 
-import test_controller as fixture
+try:
+    import test_controller as fixture
+except ModuleNotFoundError:
+    # Run as `python3 -m unittest tests.test_provision` from the repository root, the fixtures are
+    # reached through the package instead of the tests directory, which is not on the import path.
+    from tests import test_controller as fixture
 from runtime.config import read, render
 from runtime.controller import Controller
 from runtime.provision import (PROJECT, matching, measurement, ready_files, throwaway, workspace_ready,
     workspace_target)
 from runtime.system import atomic_json
 
-PROFILE = 'flash-next-strata-160k'
+# The state file of a run is written under the resolved configuration id, so the exemplar is named
+# by that id and not by the alias a client may still send for it.
+PROFILE = 'flash-next-strata-solo'
 
 
 class ProvisioningSystem(fixture.FakeSystem):
@@ -116,7 +123,7 @@ class ProvisionTests(unittest.TestCase):
         atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
         # The box is serving llama.cpp and the trial is the thing being asked for; a measurement is
         # only interesting while something else holds the cards.
-        self.serving = render(fixture.ROOT / 'config', host, 'qwen27b-q8-with-nighttime')
+        self.serving = render(fixture.ROOT / 'config', host, 'qwen27b-q8-pair')
         self.system = ProvisioningSystem(self.serving)
         self.c = Controller(fixture.ROOT / 'config', self.state, 'a' * 40, self.system)
         atomic_json(self.state / 'active.json',
@@ -194,7 +201,7 @@ class ProvisionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Setup stopped'):
             c.transition(PROFILE)
         self.assertFalse(any(e[0] == 'drain' for e in system.events))
-        self.assertEqual(c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         transaction = c.load('transaction.json')
         self.assertEqual(transaction['phase'], 'failed')
         self.assertIn('could not build its workspace', str(transaction.get('error')))
@@ -212,7 +219,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(self.c.switchable(self.bundle), None)
         self.assertTrue(any('build it first' in note for note in self.c.verdict_notes(self.bundle)))
 
-    def test_a_workspace_that_never_came_up_healthy_ends_the_trial(self):
+    def test_a_workspace_that_never_came_up_healthy_ends_the_switch(self):
         """An engine that cannot boot from its own provisioned state is not switchable, full stop:
         the switch would only spend a drain and a restoration to relearn what the measurement knew."""
         self.receipt(healthy_warm_boot=False,
@@ -253,7 +260,7 @@ class ProvisionTests(unittest.TestCase):
         for service in self.serving['compose']['services'].values():
             self.assertEqual(service['user'], f"{self.HOST['uid']}:{self.HOST['gid']}")
 
-    def test_the_trial_asks_for_the_quant_its_files_are(self):
+    def test_the_resident_asks_for_the_quant_its_files_are(self):
         """The staged files are Unsloth's UD-IQ4_XS; naming the other family makes the engine refuse.
 
         This is not a style point: with the wrong family the engine stops at its second step saying
@@ -516,7 +523,7 @@ class ProvisionTests(unittest.TestCase):
         # It waited while the engine was still loading, and failed the moment it was not.
         self.assertTrue(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
         # The house is back to what it was before the attempt.
-        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-with-nighttime')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
 
 
 if __name__ == '__main__':

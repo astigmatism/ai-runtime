@@ -19,7 +19,7 @@ class Harness:
         self.branch = 'main'; self.upstream = 'origin/main'; self.remote = REMOTE
         self.dirty = ''; self.diverged = False; self.fail_build = False; self.fail_health = False
         self.stale_old_health = False
-        self.target_config = 'DAYTIME_PROFILES = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
+        self.target_config = 'CONFIGURATIONS = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
 
     def __call__(self, args, **kw):
         args = tuple(args); self.calls.append(args)
@@ -109,16 +109,19 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
         self.assertEqual(self.h.upstream_head, A)
 
-    def test_retired_active_profile_refuses_before_build_with_actionable_error(self):
+    def test_retired_active_configuration_refuses_before_build_with_actionable_error(self):
         self.active = {'revision': A, 'image': 'old-image', 'bundle': {'profile': 'daytime-27b-ram64'}}
         atomic_json(self.state / 'active.json', self.active)
-        self.h.target_config = 'DAYTIME_PROFILES = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
+        self.h.target_config = 'CONFIGURATIONS = ("daytime", "daytime-27b", "daytime-flash-f16")\n'
         with self.assertRaises(RuntimeError) as raised:
             self.u.update()
         message = str(raised.exception)
-        self.assertIn("Active profile 'daytime-27b-ram64' is retired in target revision " + B, message)
+        self.assertIn("Active configuration 'daytime-27b-ram64' is retired in target revision " + B, message)
+        # The list is the actionable half: the operator reading this is still on the old revision,
+        # where the target's names do not exist yet, so the refusal has to say what to switch to
+        # before the retry rather than leave the retry to guess.
         self.assertIn('daytime, daytime-27b, daytime-flash-f16', message)
-        self.assertIn('switch to a profile selectable there', message)
+        self.assertIn('switch to a configuration selectable there', message)
         self.assertFalse(any(x[:2] == ('docker', 'build') for x in self.h.calls))
         self.assertFalse(any(x[0] == 'candidate' for x in self.h.calls))
         self.assertEqual(read(self.state / 'active.json'), self.active)

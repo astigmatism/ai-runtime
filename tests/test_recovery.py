@@ -19,7 +19,7 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'runtime'; state = root / '.state'
             active = {'revision': 'a' * 40, 'image': 'local/controller:current',
-                      'bundle': {'profile': 'qwen27b-q6k-with-nighttime'}}
+                      'bundle': {'profile': 'qwen27b-q6k-pair'}}
             atomic_json(state / 'active.json', active)
             atomic_json(state / 'host.json', {'model_root': '/models'})
             (state / 'router-token').write_text('synthetic-private-value')
@@ -103,12 +103,17 @@ class RecoveryTests(unittest.TestCase):
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
-        # The Strata trial adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all.
+        # The Strata resident adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all.
         # The XL trial's UD-Q4_K_XL -- four shards, 111,334,654,784 bytes, four rather than three, which
         # is the difference between that quant and this one -- left with the profile on 2026-10-15. It
         # lost to UD-IQ4_XS on every measured cell, so its shards are not an inventory item.
-        self.assertEqual(len(artifacts), 44)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 271313589312)
+        # The two llama.cpp Flash-Next solo configurations shared one 35-artifact set -- 33 shards of
+        # AD-4.27bpw-Q4_K_M, the F16 multimodal projector, and the Q4_0 MTP draft, 97,629,051,456 bytes
+        # -- and it goes with them on 2026-10-15. An artifact no configuration mounts is still verified
+        # on every validation pass and still occupies the model root, so it belongs to the inventory
+        # only while something can run it.
+        self.assertEqual(len(artifacts), 9)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 173684537856)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

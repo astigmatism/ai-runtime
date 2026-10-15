@@ -1,8 +1,8 @@
 """Serialized, recoverable reconciliation of the existing backend containers.
 
-Paired profiles run Daytime and Nighttime side by side. An exclusive Daytime profile owns
-all four text GPUs, so selecting it stops and removes Nighttime, and selecting a paired
-profile again recreates it.
+A configuration loads one resident, or two side by side on the two text GPU pairs. A solo
+configuration owns all four text GPUs, so selecting it stops and removes the second resident,
+and selecting a paired configuration again recreates it.
 """
 import copy
 import datetime
@@ -15,8 +15,8 @@ import urllib.error
 import uuid
 
 from . import provision as provision_tool
-from .config import (DAYTIME_PROFILES, DEFAULT_PROFILE, NIGHTTIME_PROFILE, available_profiles, digest, read, render,
-    require, service_engine)
+from .config import (CONFIGURATIONS, DEFAULT_PROFILE, EVERYDAY_PROFILE, available_profiles, digest, read, render,
+    require, resolve_profile, service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # A transaction that has not reached a terminal phase. While one exists the runtime holds its
@@ -120,28 +120,39 @@ class Controller:
 
     def desired(self, profile=None):
         current = self.load('active.json', {})
-        initial = self.host.get('initial_profile')
+        initial = resolve_profile(self.host.get('initial_profile'))
         # A host's initial_profile may name a configuration later retired; start the default instead.
+        # A renamed one still resolves, so a rename never strands a host on its recorded release.
         selected = profile or current.get('bundle', {}).get('profile') or (
-            initial if initial in DAYTIME_PROFILES else DEFAULT_PROFILE)
+            initial if initial in CONFIGURATIONS else DEFAULT_PROFILE)
         return render(self.config_dir, self.host, selected)
 
     def backend_url(self, cfg):
         return 'http://' + cfg['container_name'] + ':8080'
 
-    def nighttime_container(self):
-        return read(self.config_dir / 'profiles' / (NIGHTTIME_PROFILE + '.json'))['container_name']
+    def everyday_container(self):
+        """The container a second resident occupies, for the two callers that run only when this
+        configuration loads none.
+
+        A paired bundle already carries its own variant's name, and `removed_backends` collects it
+        from the previous bundle; this fallback is reached only when nothing is loaded beside the
+        coding resident, where the question is not which variant was asked for but which container
+        could be holding these GPUs. That is the registered everyday profile, and there is one. A
+        solo configuration that wanted a differently named container would have to declare which,
+        and none does -- declaring one would also make it a paired configuration.
+        """
+        return read(self.config_dir / 'profiles' / (EVERYDAY_PROFILE + '.json'))['container_name']
 
     def removed_backends(self, bundle, previous_bundle):
         """Existing containers that must not run beside `bundle`, so they release their GPUs first.
 
         These are the previous release's services that the target omits, plus any leftover
-        Nighttime container when the target is exclusive.
+        second resident when the target is solo.
         """
         services = services_of(bundle)
         names = [cfg['container_name'] for role, cfg in services_of(previous_bundle).items() if role not in services]
         if 'everyday' not in services:
-            names.append(self.nighttime_container())
+            names.append(self.everyday_container())
         return [name for name in dict.fromkeys(names) if self.system.inspect(name)]
 
     def release(self, names):
@@ -555,9 +566,9 @@ class Controller:
                     result['health_error'] = 'Backend readiness unavailable'
             observed[role] = result
         if 'everyday' not in bundle['compose']['services'] and 'coding' in observed:
-            night = self.system.inspect(self.nighttime_container())
+            night = self.system.inspect(self.everyday_container())
             if night and night['State']['Running']:
-                observed['coding']['differences'].append('competing Nighttime backend running')
+                observed['coding']['differences'].append('competing everyday backend running')
                 observed['coding']['healthy'] = False
         legacy = self.system.inspect('local-ai-llama-cpp')
         require(not legacy or not legacy['State']['Running'], 'Legacy inference backend is running; refusing competing GPU ownership')
@@ -647,8 +658,9 @@ class Controller:
         self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path), 'config', '--quiet')
 
     def reconcile(self, bundle, roles, sequential=False):
-        """Start the changed roles; across a topology change Daytime starts first, then Nighttime,
-        so the outgoing Daytime has released every GPU before Nighttime loads."""
+        """Start the changed roles; across a topology change the coding resident starts first and the
+        everyday resident after it, so the outgoing coding backend has released every GPU before the
+        second one loads."""
         if roles:
             path = self.compose_path(bundle)
             batches = [[role] for role in sorted(roles, key=lambda role: role != 'coding')] if sequential else [roles]
@@ -987,8 +999,8 @@ class Controller:
         self.mark(transaction, 'restoring', 'draining')
         protected = transaction.get('protected_services', {})
         topology = set(services_of(old)) != set(services_of(target))
-        # Leaving an exclusive target frees the GPUs it took before the paired release returns;
-        # restoring an exclusive release first removes a Nighttime the failed target started.
+        # Leaving a solo target frees the GPUs it took before the paired release returns; restoring a
+        # solo release first removes the second resident the failed target started.
         extra = self.removed_backends(old, target)
         require(not extra or not protected, 'Recovery would replace a protected backend; operator attention required')
         self.release(extra)
@@ -1030,7 +1042,7 @@ class Controller:
             return self._transition_locked(profile, deploy=deploy, adopt=adopt)
 
     def _transition_locked(self, profile=None, deploy=False, adopt=False, *, operation_id=None,
-                           progress=lambda phase: None, daytime_only=False):
+                           progress=lambda phase: None, keep_everyday=False):
         """Caller must hold runtime.lock for the entire transaction, including recovery."""
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
         require(not self.load('router-maintenance.json', {}).get('reserved'),
@@ -1050,15 +1062,15 @@ class Controller:
         prior = services_of(previous['bundle']) if previous else {}
         roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
             prior.get(role) != bundle['compose']['services'][role])]
-        # Selecting or leaving an exclusive profile deliberately removes or restores Nighttime.
+        # Selecting or leaving a solo configuration deliberately removes or restores the second resident.
         topology = bool(previous) and set(prior) != set(bundle['compose']['services'])
-        # So does choosing a paired configuration that names a different Nighttime variant.
+        # So does choosing a paired configuration that names a different second resident.
         night_change = bool(previous) and not topology and 'everyday' in bundle['compose']['services'] and (
-            previous['bundle'].get('nighttime_profile', NIGHTTIME_PROFILE) != bundle.get('nighttime_profile', NIGHTTIME_PROFILE))
+            previous['bundle'].get('everyday_profile', EVERYDAY_PROFILE) != bundle.get('everyday_profile', EVERYDAY_PROFILE))
         removed = self.removed_backends(bundle, previous['bundle'] if previous else None)
         require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
-        require(not daytime_only or topology or night_change or 'everyday' not in roles,
-            'Profile switch would replace Nighttime; operator attention required')
+        require(not keep_everyday or topology or night_change or 'everyday' not in roles,
+            'The switch would replace the second resident; operator attention required')
         state = self.admin_healing('runtime-state')['runtime']
         require(not state['draining'], 'Another operation owns the router drain')
         if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles and not removed:
@@ -1073,7 +1085,7 @@ class Controller:
             'config_sha256': bundle['config_sha256']}
         if removed:
             tx['removed_backends'] = removed
-        if daytime_only and not topology and not night_change and 'everyday' in observed:
+        if keep_everyday and not topology and not night_change and 'everyday' in observed:
             tx['protected_services'] = {'everyday': observed['everyday']['id']}
         self.save('transaction.json', tx)
         changed = False
@@ -1198,6 +1210,11 @@ class Controller:
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
             'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
+            # Two different facts, and the page must not read one as the other: `offline_roles` is
+            # placement (a resident this configuration does not load), `offline_services` is what a
+            # client can ask for (a service ID nothing answers). A solo configuration that answers
+            # `nighttime` from its own backend has the role offline and no offline service.
+            'offline_services': copy.deepcopy(bundle['catalog'].get('offline_services', [])),
             'last_deployment': self.load('last-deployment.json'), 'updated_at': now()}
         # Read-only presentation of the profile registry. It is reported before the live
         # checks below so an unreadable definition never hides the health of the pair. Each
