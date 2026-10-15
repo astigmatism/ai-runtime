@@ -190,18 +190,25 @@ Measured on 2026-10-06, direct to the backend: two recorded Bench Studio session
 
 `flash-next-strata-160k` is a **trial**, added 2026-10-11: the same four text GPUs and the same 163,840-token window as `flash-next-solo-160k`, but the model served by [Strata](https://github.com/Niko1221/Strata) instead of llama.cpp, from Unsloth's dynamic 4-bit `UD-IQ4_XS` quant (93,682,584,224 bytes, revision `38bb39ee97821de2c9009abb7e93950eec396e66`). It exists to answer one question: whether Strata's profiled expert caching beats llama.cpp's resident layout where llama.cpp is weakest, which is decode in a long context (measured below: 97 tokens per second at 4K falling to 35 at 128K).
 
-**The XL sibling** (`flash-next-strata-xl-160k`, added 2026-10-15) changes exactly one variable: the
-same model at `UD-Q4_K_XL` (111,334,654,784 bytes in four shards, not three) on the same engine, the
-same four cards and the same argument vector, reached through `trial-xl`. It is a second profile
-rather than an edit to the first so that the comparison is a profile switch in both directions and the
-measured quant stays live underneath it. What it tests is expert residency, not bit depth: 0.1.44.1
-writes no `--resident-budget-gib` when the experts fit beside 16 GiB of working set (77.0 + 16.0 = 93.0
-GiB against 123.2 GiB of RAM here), which on paper puts every expert in RAM and deletes the cold path
-measured at 30–60% below warm. Two things could still stop that — `split_budget()` is unchanged between
-the versions and drops the flag on a layer split anyway (#498), and the release figures come from
-single-GPU arena mode — so the engine's own start-up log decides, not the release note. Sharing one
-engine is what forced the ready marker in `provisioning` to stop naming a quant; see
-`ready_files` in `runtime/provision.py`.
+**The XL sibling** (`flash-next-strata-xl-160k`, added and retired on 2026-10-15) changed exactly one
+variable: the same model at `UD-Q4_K_XL` (111,334,654,784 bytes in four shards, not three) on the same
+engine, the same four cards and the same argument vector, reached through `trial-xl`. It was a second
+profile rather than an edit to the served one so that the comparison was a profile switch in both
+directions and the measured quant stayed live underneath it. What it tested was expert residency, not
+bit depth: 0.1.44.1 writes no `--resident-budget-gib` when the experts fit beside 16 GiB of working set
+(77.0 + 16.0 = 93.0 GiB against 123.2 GiB of RAM here), which on paper puts every expert in RAM and
+deletes the cold path measured at 30–60% below warm.
+
+**It lost on every cell, and so did the hypothesis.** With residency verified — 71.73 GiB of experts in
+RAM, no budget flag — `UD-Q4_K_XL` measured 7–15% slower decode and 41% slower prefill than the serving
+`UD-IQ4_XS`, gaps 2–10× the 3% this instrument resolves, on identical answer hashes. Residency was the
+wrong cold path: the binding constraint is RAM→GPU PCIe streaming, which fatter experts worsen, and
+residency only deletes disk→RAM reads. Decision: keep `UD-IQ4_XS`, do not re-run for speed. Full record
+with data, timeline and audit at `ops/reports/20261015-strata-xl-trial-result/`; the 112 GB of shards and
+workspace were released with the profile. Two things it found stay in source: sharing one engine across
+two quants is what forced the ready marker in `provisioning` to stop naming a quant (see `ready_files`
+in `runtime/provision.py`), and `$STRATA_ALLOWED_HOSTS` is how a Strata profile names the hosts its
+server will answer to (see `tests/test_config.py`).
 
 - **Its own service ID, and never anybody else's.** It declares `"aliases": ["trial"]`: `trial` is the ID a client sends for it — `GET /v1/router/capabilities` reports `models[].service == "trial"`, and `POST /v1/chat/completions {"model": "trial"}` resolves to this backend — and it carries no `daytime`, `local-active` or `nighttime` alias, so selecting some other configuration can never route to it and no client that was told to send `daytime` lands on it by accident. Selecting it is an explicit act, and only the owner does it. What that costs is stated plainly, in the catalog itself and in `deployment_warnings`: **while this profile is active there is no `daytime` service on the router at all** — `daytime` is refused as `MODEL_NOT_FOUND`, not answered from this backend — because this configuration replaces the Daytime resident instead of adding a second one. A client that only ever sends `daytime`, which is what LLM Router's `CLIENT_CONTRACT.md` §3 tells it to do, has nothing to send until a Daytime profile is selected again; `trial` has to be a name it knows, and does not become one on its own.
 - **Two properties, both tested** (`tests/test_config.py`, `ServiceIdentityTests`). Every selectable configuration has to publish a service alias a contract client can address: LLM Router names an entry by the first of its aliases that is not the compatibility alias and otherwise falls back to the canonical ID (`src/capabilities.js`), and a client forbidden from sending canonical IDs cannot ask for such a model at all — a backend that is healthy, selected, and impossible to reach. That hole existed: the trial published `aliases: []` from 2026-10-11 to 2026-10-13 and the primary client on this machine had no model while it was selected. The other half is that `trial` is only ever the trial, and never `daytime`, `local-active` or `nighttime`, in this configuration or any other.

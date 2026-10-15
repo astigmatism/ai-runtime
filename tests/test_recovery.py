@@ -104,10 +104,11 @@ class RecoveryTests(unittest.TestCase):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
         # The Strata trial adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all.
-        # The XL trial adds the same revision's UD-Q4_K_XL: four shards, 111,334,654,784 bytes in all -- four
-        # shards, not three, which is the difference between this quant and that one.
-        self.assertEqual(len(artifacts), 48)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 382648244096)
+        # The XL trial's UD-Q4_K_XL -- four shards, 111,334,654,784 bytes, four rather than three, which
+        # is the difference between that quant and this one -- left with the profile on 2026-10-15. It
+        # lost to UD-IQ4_XS on every measured cell, so its shards are not an inventory item.
+        self.assertEqual(len(artifacts), 44)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 271313589312)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

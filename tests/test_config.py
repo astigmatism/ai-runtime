@@ -326,7 +326,6 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
             'flash-next-strata-160k': 'strata-296b59d2f73c',
-            'flash-next-strata-xl-160k': 'strata-296b59d2f73c',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -396,7 +395,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'flash-next-strata-160k', 'flash-next-strata-xl-160k'))
+            'flash-next-solo-160k', 'flash-next-strata-160k'))
         self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         # Every Nighttime variant a configuration names is listed, the default first.
@@ -649,8 +648,14 @@ class EnvironmentEngineTests(unittest.TestCase):
     # two backups records when the names went in, which is part of why they are easy to lose. It is
     # exempt only because declaring them in the profile recreates the container that is serving
     # right now. The next time that profile restarts for any reason, put the variable in its
-    # container.environment and drop the name from this list.
-    WORKSPACE_CARRIED_HOSTS = ('flash-next-strata-160k',)
+    # container.environment and drop it from this map.
+    #
+    # The value is the hand edit as it stands in the workspace, read off its live config. An
+    # exemption that records no content is a hole wearing a check: with the XL trial retired this is
+    # the only environment-interface profile left, so the loop below would compare nothing at all,
+    # and an alias rename would leave the serving container refusing the very name the controller
+    # probes for it -- the failure this test exists to catch, arriving by a different route.
+    WORKSPACE_CARRIED_HOSTS = {'flash-next-strata-160k': ('qwen38-daytime', 'strata-trial', 'qwen38-strata')}
 
     def test_an_environment_engine_names_the_hosts_its_server_will_answer(self):
         """A Strata server refuses a request whose Host name it was never told to answer.
@@ -671,28 +676,43 @@ class EnvironmentEngineTests(unittest.TestCase):
         every alias the profile claims on the router, because those are exactly the names the
         controller and clients can reach it by. Equality, not containment, so an alias rename that
         leaves a stale name behind fails too.
+
+        A profile whose names are carried by its workspace instead of its source is held to the same
+        equality, against the edit recorded in WORKSPACE_CARRIED_HOSTS: the deviation is allowed to
+        exist, not to go quietly stale.
         """
-        for name in sorted(n for n in DAYTIME_PROFILES if interface_of(n) == 'environment'):
-            if name in self.WORKSPACE_CARRIED_HOSTS:
-                continue
+        environment = sorted(n for n in DAYTIME_PROFILES if interface_of(n) == 'environment')
+        self.assertEqual(set(self.WORKSPACE_CARRIED_HOSTS).difference(environment), set(),
+            'WORKSPACE_CARRIED_HOSTS exempts a profile that is not an environment-interface Daytime '
+            'profile; retire the exemption with the profile')
+        for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
             reached = {definition['container_name'], *container['networks']['router']['aliases']}
-            declared = {h.strip().lower() for h in container['environment']['STRATA_ALLOWED_HOSTS'].split(',')}
             with self.subTest(profile=name):
+                if name in self.WORKSPACE_CARRIED_HOSTS:
+                    self.assertEqual(set(self.WORKSPACE_CARRIED_HOSTS[name]), reached,
+                        '%s answers to %s in its workspace and is reached by %s: the hand edit no '
+                        'longer covers this profile, so declare STRATA_ALLOWED_HOSTS in the profile '
+                        '(that recreates the container) rather than editing the workspace again'
+                        % (name, sorted(self.WORKSPACE_CARRIED_HOSTS[name]), sorted(reached)))
+                    continue
+                declared = {h.strip().lower() for h in container['environment']['STRATA_ALLOWED_HOSTS'].split(',')}
                 self.assertEqual(declared, reached)
 
 
 class ProvisioningWorkspaceTests(unittest.TestCase):
     """Two profiles may share an engine. They may not share a provisioning workspace.
 
-    provisioning() reads the contract off the engine, so once one Strata engine serves two quants the
-    ready marker can no longer name a quant -- and it cannot list one marker per quant either, because
-    workspace_ready() requires every declared pattern to match, which would leave the first profile
-    watching for a file the second one will never write. What makes a workspace-relative marker say
-    what the literal one said is that no two provisioning profiles look at the same directory. If they
-    ever do, whichever finishes first declares the other's half-built workspace ready, and the switch
-    spends its readiness window on a machine that has not packed its model yet.
+    provisioning() reads the contract off the engine, so the ready marker must not name a quant: on
+    2026-10-15 one Strata engine served two profiles with two quants, and listing one marker per
+    quant is no fix either, because workspace_ready() requires every declared pattern to match, which
+    would leave the first profile watching for a file the second one will never write. What makes a
+    workspace-relative marker say what the literal one said is that no two provisioning profiles look
+    at the same directory. If they ever do, whichever finishes first declares the other's half-built
+    workspace ready, and the switch spends its readiness window on a machine that has not packed its
+    model yet. The second quant that exposed this was retired the same day; the invariant and the
+    broadened marker stay, because the next quant trial is exactly what they were written for.
     """
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
@@ -707,7 +727,7 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
                 '%s and %s share workspace %s: a ready marker read off the engine would let either '
                 'one answer for the other' % (name, seen.get(workspace), workspace))
             seen[workspace] = name
-        self.assertEqual(sorted(seen.values()), ['flash-next-strata-160k', 'flash-next-strata-xl-160k'])
+        self.assertEqual(sorted(seen.values()), ['flash-next-strata-160k'])
 
 
 class ServiceIdentityTests(unittest.TestCase):

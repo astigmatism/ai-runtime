@@ -56,14 +56,15 @@ def ready_files(workspace, provision):
     The trial's build run waited for a file the engine had already written under a name nobody had
     written down, and then kept watching while the engine went on to load a model its cards had no
     room for. The quant used to stay literal for the same reason. It cannot any more: provisioning is
-    read off the engine (controller.provisioning), and since 2026-10-15 one Strata engine is shared
-    by two profiles with two quants, so no single quant name says what the workspace is building.
-    Listing one marker per quant is not the fix either -- workspace_ready() wants every declared
-    pattern to match, so the first profile would then wait forever for the second's file, which is
-    the same silent wait this function exists to avoid. What carries the guarantee now is that the
-    path is workspace-relative and every provisioning profile has a workspace of its own; that
-    invariant is asserted by ProvisioningWorkspaceTests, because two Strata profiles sharing one
-    workspace would let the first to finish declare the second's half-built workspace ready.
+    read off the engine (controller.provisioning), so a marker naming a quant stops saying what the
+    workspace is building the moment one engine serves two of them -- as it did on 2026-10-15, for the
+    XL quant trial that ran on this engine and was rejected the same day. Listing one marker per quant
+    is not the fix either -- workspace_ready() wants every declared pattern to match, so the first
+    profile would then wait forever for the second's file, which is the same silent wait this function
+    exists to avoid. What carries the guarantee now is that the path is workspace-relative and every
+    provisioning profile has a workspace of its own; that invariant is asserted by
+    ProvisioningWorkspaceTests, because two profiles sharing one workspace would let the first to
+    finish declare the second's half-built workspace ready.
     """
     return [workspace / name for name in provision.get('ready_files', [])]
 

@@ -22,7 +22,6 @@ Choosing a configuration sets the Daytime model and whether Nighttime runs besid
 | `flash-next-solo-128k` | Qwen3.8 Flash-Next (AtomicChat AD-4.27, MTP3), 128K: the fastest configuration | Off | All four text GPUs; RTX 3080 for vision and the MTP draft |
 | `flash-next-solo-160k` | Same Flash-Next with a 160K window and q8_0 K/V | Off | Same |
 | `flash-next-strata-160k` | **Trial:** the same window on the same cards, served by Strata `v0.1.44.1` from Unsloth UD-IQ4_XS (4-bit, 94 GB), text only, reached through its own `trial` service ID | Off | The four text GPUs; the RTX 3080 is not in the container |
-| `flash-next-strata-xl-160k` | **Trial:** the same model one quant up — Unsloth UD-Q4_K_XL (4-bit K-quant experts, 111 GB) on the same engine and the same cards, text only, reached through its own `trial-xl` service ID | Off | The four text GPUs; the RTX 3080 is not in the container |
 
 Nighttime has run MTP3 since 2026-10-07, using the base 27B MTP head on the shared RTX 3080.
 - **Speed:** a 16K planning prompt decoded at 65.7 tokens per second, against 37.8 without a draft.
