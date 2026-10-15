@@ -645,8 +645,9 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertGreater(engine['readiness_wait_seconds'], 450)
 
     # flash-next-strata-160k answers to these names through a hand edit inside its own workspace's
-    # engine config (strata-unsloth-ud-iq4_xs.json, the 2026-10-12 "hostfix"), not through source.
-    # It is exempt only because declaring them in the profile recreates the container that is serving
+    # engine config (strata-unsloth-ud-iq4_xs.json), not through source. Neither of that file's
+    # two backups records when the names went in, which is part of why they are easy to lose. It is
+    # exempt only because declaring them in the profile recreates the container that is serving
     # right now. The next time that profile restarts for any reason, put the variable in its
     # container.environment and drop the name from this list.
     WORKSPACE_CARRIED_HOSTS = ('flash-next-strata-160k',)
