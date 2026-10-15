@@ -308,7 +308,15 @@ class ConfigurationTests(unittest.TestCase):
         # The Flash-Next branch engine retired with the paired Flash-Next profiles; the 27B pair and
         # Nighttime use 836d571, the Flash-Next solo profiles use 43fe9c6, and the Strata trial is the
         # only non-llama.cpp engine in the house.
-        self.assertEqual(set(engines), {'qwen38-dual-836d571', 'qwen38-dual-43fe9c6', 'strata-7695859aa13a'})
+        #
+        # Two Strata engines are registered on purpose, and only for as long as the 0.1.44.1 candidate
+        # is under evaluation (since 2026-10-15): 7695859aa13a is the one that was serving when the
+        # candidate was built, and the agreed rollback for a candidate that fails its gates is to
+        # repoint the profile, not to re-add an entry and pay a second drain to reconstruct it. When
+        # the candidate is decided either way, this set goes back to three keys and the losing entry
+        # is removed reference-aware (ops/reports/20261015-strata-engine-0.1.44.1-build/README.md).
+        self.assertEqual(set(engines), {'qwen38-dual-836d571', 'qwen38-dual-43fe9c6',
+                                        'strata-7695859aa13a', 'strata-296b59d2f73c'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
@@ -317,7 +325,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(engines['qwen38-dual-43fe9c6'][key], engine[key])  # same Dockerfile inputs, newer source
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
-            'flash-next-strata-160k': 'strata-7695859aa13a',
+            'flash-next-strata-160k': 'strata-296b59d2f73c',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -622,9 +630,14 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(cfg['stop_grace_period'], '180s')
     def test_the_engine_identity_is_pinned(self):
         engine = ENGINES[read(ROOT / 'config/profiles' / (TRIAL + '.json'))['engine']]
-        self.assertEqual(engine['revision'], '7695859aa13afb248bdb4d36f9b2e95707db079d')
-        self.assertEqual(engine['tag'], 'local/strata:7695859aa13a')
-        self.assertEqual(engine['release'], 'v0.1.43')
+        self.assertEqual(engine['revision'], '296b59d2f73c8f04a805df29c2fa97655adace78')
+        self.assertEqual(engine['tag'], 'local/strata:296b59d2f73c')
+        self.assertEqual(engine['release'], 'v0.1.44.1')
+        # Built on this host from the pinned revision, not downloaded: the upstream releases ship
+        # Windows zips only. Receipt and image digest in
+        # ops/reports/20261015-strata-engine-0.1.44.1-build/README.md.
+        self.assertEqual(engine['image_id'],
+                         'sha256:2c6b8332effd8630cabe6ab033ee953ed9fdaecf7d979f5dba36380db94ad057')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')

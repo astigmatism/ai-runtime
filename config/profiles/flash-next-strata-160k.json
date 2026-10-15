@@ -2,14 +2,14 @@
   "id": "flash-next-strata-160k",
   "role": "coding",
   "display_name": "Qwen3.8 Flash-Next (Strata trial)",
-  "engine": "strata-7695859aa13a",
+  "engine": "strata-296b59d2f73c",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
   "gpu_group": "all",
   "exclusive": true,
   "context_tokens": 163840,
   "retention": {
-    "image": "Keep exactly the tag registered in shared.json for as long as this profile exists; a superseded Strata tag is removed reference-aware, never with a blanket prune.",
+    "image": "Keep exactly the tag registered in shared.json for as long as this profile exists; a superseded Strata tag is removed reference-aware, never with a blanket prune. Exception, dated: while the 0.1.44.1 candidate is under evaluation (from 2026-10-15) both it and the 0.1.43 tag it may be rolled back to stay registered, so that rolling back is a profile change and not a second drain to re-add an entry; when the candidate is decided, the losing entry and its tag go.",
     "model": "The UD-IQ4_XS shards are retained only while this profile is registered; retiring the profile releases them to the library retention pass like any other revision.",
     "workspace": "ai/strata-trial/data holds the engine pack, its MTP layer and its own logs; it is bounded by the engine and is removed with the profile.",
     "reports": "Trial measurements go to ops/reports/<date>-strata-trial and follow the existing reports aging convention."
