@@ -83,7 +83,8 @@
       "/tmp:rw,nosuid,size=2g"
     ],
     "environment": {
-      "CUDA_VISIBLE_DEVICES": "0,1,2,3"
+      "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-xl-trial,qwen38-strata-xl"
     },
     "networks": {
       "router": {

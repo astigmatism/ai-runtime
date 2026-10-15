@@ -644,6 +644,43 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(engine['interface'], 'environment')
         self.assertGreater(engine['readiness_wait_seconds'], 450)
 
+    # flash-next-strata-160k answers to these names through a hand edit inside its own workspace's
+    # engine config (strata-unsloth-ud-iq4_xs.json, the 2026-10-12 "hostfix"), not through source.
+    # It is exempt only because declaring them in the profile recreates the container that is serving
+    # right now. The next time that profile restarts for any reason, put the variable in its
+    # container.environment and drop the name from this list.
+    WORKSPACE_CARRIED_HOSTS = ('flash-next-strata-160k',)
+
+    def test_an_environment_engine_names_the_hosts_its_server_will_answer(self):
+        """A Strata server refuses a request whose Host name it was never told to answer.
+
+        DNS rebinding protection (serve/server.py: allowed_hosts_of, applied where the service is
+        built) checks the Host header against the config's allowed_hosts plus $STRATA_ALLOWED_HOSTS,
+        and the controller probes a backend by its container name on the router network. A workspace
+        built from scratch has no config to put those names in, so the profile has to carry them.
+
+        Selecting flash-next-strata-xl-160k on 2026-10-15 loaded 71.73 GiB of experts into RAM, came
+        ready on :8080, and then failed the controller's readiness verification with
+
+            refused a request for Host 'qwen38-daytime:8080' from 172.18.0.4: not a name this server
+            answers to (add it to "allowed_hosts" in the config or STRATA_ALLOWED_HOSTS, ...)
+
+        The transition recovered by itself. The model was never the problem: the profile could not
+        have passed, and nothing in source said which names it needed. They are the container name and
+        every alias the profile claims on the router, because those are exactly the names the
+        controller and clients can reach it by. Equality, not containment, so an alias rename that
+        leaves a stale name behind fails too.
+        """
+        for name in sorted(n for n in DAYTIME_PROFILES if interface_of(n) == 'environment'):
+            if name in self.WORKSPACE_CARRIED_HOSTS:
+                continue
+            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+            container = definition['container']
+            reached = {definition['container_name'], *container['networks']['router']['aliases']}
+            declared = {h.strip().lower() for h in container['environment']['STRATA_ALLOWED_HOSTS'].split(',')}
+            with self.subTest(profile=name):
+                self.assertEqual(declared, reached)
+
 
 class ProvisioningWorkspaceTests(unittest.TestCase):
     """Two profiles may share an engine. They may not share a provisioning workspace.
