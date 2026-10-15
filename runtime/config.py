@@ -15,7 +15,7 @@ from pathlib import Path
 # at all: that is a catalog a client following the router contract cannot address, which is the same
 # hole as nothing serving (asserted for every profile by ServiceIdentityTests in tests/test_config.py).
 DAYTIME_PROFILES = ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-    'flash-next-solo-160k', 'flash-next-strata-160k')
+    'flash-next-solo-160k', 'flash-next-strata-160k', 'flash-next-strata-xl-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-with-nighttime'
 NIGHTTIME_PROFILE = 'nighttime'

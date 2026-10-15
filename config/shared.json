@@ -44,8 +44,8 @@
       "readiness_wait_seconds": 3600,
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-*-ud-iq4_xs.json"],
-        "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed."
+        "ready_files": ["config/strata-*.json"],
+        "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed. The marker used to name the quant -- config/strata-*-ud-iq4_xs.json -- and cannot any more: provisioning is read off the engine, and one engine now serves two quants, while workspace_ready() requires every declared pattern to match, so a second pattern would leave the first profile waiting for a file it will never write. The path is workspace-relative and each Strata profile has its own workspace, which is what makes the broadened glob say what the literal one said. That invariant is asserted, not assumed: ProvisioningWorkspaceTests in tests/test_config.py."
       },
       "environment": {
         "--family": "FAMILY",
@@ -100,8 +100,8 @@
       "readiness_wait_seconds": 3600,
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-*-ud-iq4_xs.json"],
-        "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed."
+        "ready_files": ["config/strata-*.json"],
+        "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed. The marker used to name the quant -- config/strata-*-ud-iq4_xs.json -- and cannot any more: provisioning is read off the engine, and one engine now serves two quants, while workspace_ready() requires every declared pattern to match, so a second pattern would leave the first profile waiting for a file it will never write. The path is workspace-relative and each Strata profile has its own workspace, which is what makes the broadened glob say what the literal one said. That invariant is asserted, not assumed: ProvisioningWorkspaceTests in tests/test_config.py."
       },
       "environment": {
         "--family": "FAMILY",

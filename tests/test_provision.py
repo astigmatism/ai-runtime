@@ -263,18 +263,24 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(environment['FAMILY'], 'unsloth')
         self.assertEqual(environment['MODEL'], 'UD-IQ4_XS')
 
-    def test_the_ready_file_is_named_for_the_family_the_engine_was_given(self):
+    def test_the_ready_file_finishes_a_workspace_without_naming_a_quant(self):
         """A literal file name rots the day the arguments change, and it rots as a silent wait.
 
         The engine finished its whole build on the trial host in under ten minutes and wrote
         ``config/strata-unsloth-ud-iq4_xs.json``; the declaration still asked for the name the other
         family would have used, so the run kept watching a workspace that was already finished, and
-        the engine went on to load a model its cards had no room for and died. The quant stays
-        literal because that is what the profile is about; the family follows the arguments.
+        the engine went on to load a model its cards had no room for and died.
+
+        The quant used to stay literal for that same reason, and since 2026-10-15 it cannot: one
+        Strata engine serves two quants and provisioning is read off the engine, so no quant name
+        describes the workspace. Nor is a marker per quant the answer -- workspace_ready() requires
+        every declared pattern to match, so adding the second would leave the first profile watching
+        for a file it will never write, which is the identical silent wait. The marker is therefore
+        workspace-relative, and the per-profile workspace is what makes it mean anything; that is
+        asserted for every profile by ProvisioningWorkspaceTests in tests/test_config.py.
         """
         provision = self.c.provisioning(self.bundle)[2]
-        self.assertEqual([Path(name).name for name in provision['ready_files']],
-            ['strata-*-ud-iq4_xs.json'])
+        self.assertEqual([Path(name).name for name in provision['ready_files']], ['strata-*.json'])
         declared = ready_files(self.workspace, provision)
         self.assertFalse(workspace_ready(declared))
         (self.workspace / 'config').mkdir(parents=True, exist_ok=True)
@@ -282,7 +288,15 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(workspace_ready(declared))
         self.assertEqual([Path(path).name for path in matching(declared)],
             ['strata-unsloth-ud-iq4_xs.json'])
-
+        # And the other quant on the same engine satisfies it exactly the same way. That is the
+        # hazard the broadened glob accepts, stated where it can be seen: this marker cannot tell the
+        # two quants apart, so it only means what the literal one meant because the workspace holds
+        # one profile's engine and nothing else.
+        (self.workspace / 'config' / 'strata-unsloth-ud-iq4_xs.json').unlink()
+        (self.workspace / 'config' / 'strata-unsloth-ud-q4_k_xl.json').write_text('{}')
+        self.assertTrue(workspace_ready(declared))
+        (self.workspace / 'config' / 'strata-unsloth-ud-q4_k_xl.json').unlink()
+        self.assertFalse(workspace_ready(declared))
     def test_a_container_that_refuses_to_start_is_not_waited_out(self):
         """A setup error printed once is a finding, not two hours of ``workspace=False``.
 

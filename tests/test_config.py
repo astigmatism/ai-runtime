@@ -326,6 +326,7 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'qwen27b-q8-with-nighttime': 'qwen38-dual-836d571', 'qwen27b-q6k-with-nighttime': 'qwen38-dual-836d571',
             'flash-next-solo-128k': 'qwen38-dual-43fe9c6', 'flash-next-solo-160k': 'qwen38-dual-43fe9c6',
             'flash-next-strata-160k': 'strata-296b59d2f73c',
+            'flash-next-strata-xl-160k': 'strata-296b59d2f73c',
             NIGHTTIME_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*DAYTIME_PROFILES, *NIGHTTIME_PROFILES})
         for name, engine_name in expected.items():
@@ -395,7 +396,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(DAYTIME_PROFILES, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-solo-128k',
-            'flash-next-solo-160k', 'flash-next-strata-160k'))
+            'flash-next-solo-160k', 'flash-next-strata-160k', 'flash-next-strata-xl-160k'))
         self.assertEqual(PAIRED, ('qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(DAYTIME_PROFILES))
         # Every Nighttime variant a configuration names is listed, the default first.
@@ -642,6 +643,33 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
         self.assertGreater(engine['readiness_wait_seconds'], 450)
+
+
+class ProvisioningWorkspaceTests(unittest.TestCase):
+    """Two profiles may share an engine. They may not share a provisioning workspace.
+
+    provisioning() reads the contract off the engine, so once one Strata engine serves two quants the
+    ready marker can no longer name a quant -- and it cannot list one marker per quant either, because
+    workspace_ready() requires every declared pattern to match, which would leave the first profile
+    watching for a file the second one will never write. What makes a workspace-relative marker say
+    what the literal one said is that no two provisioning profiles look at the same directory. If they
+    ever do, whichever finishes first declares the other's half-built workspace ready, and the switch
+    spends its readiness window on a machine that has not packed its model yet.
+    """
+
+    def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
+        engines = read(ROOT / 'config/shared.json')['engines']
+        seen = {}
+        for name in (*DAYTIME_PROFILES, *NIGHTTIME_PROFILES):
+            profile = read(ROOT / 'config/profiles' / (name + '.json'))
+            if not engines[profile['engine']].get('provisioning'):
+                continue
+            workspace = profile['workspace']['path']
+            self.assertNotIn(workspace, seen,
+                '%s and %s share workspace %s: a ready marker read off the engine would let either '
+                'one answer for the other' % (name, seen.get(workspace), workspace))
+            seen[workspace] = name
+        self.assertEqual(sorted(seen.values()), ['flash-next-strata-160k', 'flash-next-strata-xl-160k'])
 
 
 class ServiceIdentityTests(unittest.TestCase):
