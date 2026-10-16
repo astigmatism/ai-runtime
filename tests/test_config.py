@@ -710,7 +710,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         # same revision is a different image with a different digest, because the encoder is compiled
         # in at build time and is not a runtime switch.
         self.assertEqual(engine['image_id'],
-                         'sha256:68f09e6146699286059e3bbbae1f62b37e8e0a9bcf4981a2547000b0213196a3')
+                         'sha256:294c987a8282b63a58a2e631c5f3c5653baa4eeeda3e6a91a7f4e62902504608')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')

@@ -532,12 +532,14 @@ class ProvisionTests(unittest.TestCase):
 class VisionEntrypointOverlayTests(unittest.TestCase):
     """This house's entry point inside the vision image, run the way the container runs it.
 
-    Which card an image encoder runs on is a fact about the machine, and Strata reads that fact from
-    one place: the ``cuda_device`` key of the ``vision`` section of its own run config. Nothing
-    upstream can be told the number, so the image carries an entry point that writes it into the
-    config it is about to start. That is behaviour, so it is tested -- against the real script, in a
-    directory laid out like ``/opt/strata``, with a stub standing in for the upstream entry point it
-    has to reach.
+    The run config this entry point is about to start has to carry a ``vision`` section, and that
+    section has to name the card the profile states as ``VISION_DEVICE``. The section is written by
+    setup.py's setup pass, which the upstream entry point runs only for a workspace that has no
+    config yet; a workspace set up before vision was asked for would boot text-only with the
+    encoder never started and nothing in any log (2026-10-16). So this entry point runs that pass
+    itself where the section is missing, and it is tested -- against the real script, in a directory
+    laid out like ``/opt/strata``, with a stub standing in for the upstream entry point it has to
+    reach and one for the engine's python the pass calls.
     """
     OVERLAY = 'runtime/overlay/strata-vision-entrypoint.sh'
     CONFIG = 'config/strata-unsloth-ud-iq4_xs.json'
@@ -553,24 +555,75 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         upstream.write_text('#!/bin/sh\necho "upstream $*"\n')
         upstream.chmod(0o755)  # The Dockerfile does the same to the file it moved aside.
         self.config = self.workspace / self.CONFIG
+        self.calls = root / 'setup-calls.log'
+        self.install_stub_python()
+
+    def install_stub_python(self):
+        # setup.py as this entry point sees it: it records the call, and where a setup pass is asked
+        # for it writes the config the way the real one does -- next to itself (the working
+        # directory, standing in for the container's /opt/strata) -- with a "vision" section only
+        # when --vision says one runs, carrying over the top-level keys of a config already there.
+        venv = self.opt / '.venv' / 'bin'
+        venv.mkdir(parents=True)
+        stub = venv / 'python'
+        stub.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json, os, sys\n'
+            'args = sys.argv[1:]\n'
+            'with open(os.environ["SETUP_CALL_LOG"], "a") as f:\n'
+            '    f.write(" ".join(args) + chr(10))\n'
+            'if "--setup" in args:\n'
+            '    family, model = os.environ.get("FAMILY", "qwen"), os.environ.get("MODEL", "")\n'
+            '    tag = ("" if family == "qwen" else family + "-") + model.lower()\n'
+            '    cfg_path = os.path.join(os.environ["STRATA_DATA"], "config", "strata-%s.json" % tag)\n'
+            '    try:\n'
+            '        old = json.load(open(cfg_path, encoding="utf-8-sig"))\n'
+            '    except (OSError, ValueError):\n'
+            '        old = {}\n'
+            '    cfg = dict(old)\n'
+            '    cfg.setdefault("model", model)\n'
+            '    value = args[args.index("--vision") + 1] if "--vision" in args else "no"\n'
+            '    if value in ("yes", "gpu", "cpu"):\n'
+            '        kept = {k: v for k, v in (old.get("vision") or {}).items()\n'
+            '                if k not in ("exe", "mmproj", "model", "gpu", "max_tokens", "threads")}\n'
+            '        cfg["vision"] = {"exe": "/opt/strata/engine/strata-vision",\n'
+            '                         "mmproj": "/weights/mmproj.gguf",\n'
+            '                         "model": "/weights/shard-00001-of-00003.gguf",\n'
+            '                         "gpu": value != "cpu", "max_tokens": 1536, **kept}\n'
+            '    else:\n'
+            '        cfg.pop("vision", None)\n'
+            '    with open("strata-%s.json" % tag, "w") as f:\n'
+            '        json.dump(cfg, f, indent=1)\n')
+        stub.chmod(0o755)
 
     def given(self, config):
         if config is not None:
             self.config.parent.mkdir(parents=True, exist_ok=True)
             self.config.write_text(json.dumps(config))
 
-    def start(self, device='4', family='unsloth', model='UD-IQ4_XS'):
-        env = {**os.environ, 'STRATA_DATA': str(self.workspace), 'FAMILY': family, 'MODEL': model}
+    def start(self, device='4', family='unsloth', model='UD-IQ4_XS', extra=None, expect_fail=False):
+        env = {**os.environ, 'STRATA_DATA': str(self.workspace), 'FAMILY': family, 'MODEL': model,
+               'VISION': 'yes', 'SETUP_CALL_LOG': str(self.calls)}
+        if extra:
+            env.update(extra)
         env.pop('VISION_DEVICE', None)
         if device is not None:
             env['VISION_DEVICE'] = device
         run = subprocess.run(['sh', './docker-entrypoint.sh', '--serve'], cwd=self.opt, env=env,
             capture_output=True, text=True)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        # Handing over is the entry point's whole second job: the engine has to start with the
-        # arguments the container was given, or the placement was applied to a boot that never ran.
-        self.assertIn('upstream --serve', run.stdout)
+        if expect_fail:
+            self.assertNotEqual(run.returncode, 0)
+        else:
+            self.assertEqual(run.returncode, 0, run.stderr)
+            # Handing over is the entry point's whole second job: the engine has to start with the
+            # arguments the container was given, or the placement was applied to a boot that never ran.
+            self.assertIn('upstream --serve', run.stdout)
         return run
+
+    def setup_calls(self):
+        if not self.calls.exists():
+            return []
+        return [line.split() for line in self.calls.read_text().splitlines() if line]
 
     def test_the_declared_card_is_written_into_the_config_the_engine_reads(self):
         self.given({'model': 'UD-IQ4_XS', 'vision': {'cuda_device': 0, 'max_tokens': 1536}})
@@ -578,6 +631,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.assertEqual(json.loads(self.config.read_text())['vision'],
             {'cuda_device': 4, 'max_tokens': 1536})
         self.assertIn('image encoder on CUDA device 4', run.stdout)
+        self.assertEqual(self.setup_calls(), [])
 
     def test_a_workspace_that_has_been_placed_once_is_left_as_it_is(self):
         self.given({'vision': {'cuda_device': 2}})
@@ -585,18 +639,61 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.assertEqual(json.loads(self.config.read_text())['vision'], {'cuda_device': 4})
         self.assertIn('already on CUDA device 4', self.start().stdout)
 
-    def test_a_config_that_is_not_there_yet_is_not_made_here(self):
-        # setup.py writes the first config, and the provisioning flow's warm boot -- the boot the
-        # receipt is measured on -- starts from the file that boot finished, which is the one this
-        # overlay places the encoder in.
+    def test_a_workspace_without_a_config_gets_the_setup_pass_with_vision(self):
+        # A fresh workspace has no config, so the upstream entry point would run the setup pass
+        # itself after this one -- and the encoder would start on the pass's default card. This
+        # entry point runs the pass first, with vision on, so the card the profile states is in the
+        # file the engine reads on this very boot, not the next.
         self.start()
-        self.assertFalse(self.config.exists())
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['vision']['cuda_device'], 4)
+        self.assertEqual(cfg['vision']['gpu'], True)
+        calls = self.setup_calls()
+        self.assertEqual(len(calls), 1)
+        args = calls[0]
+        self.assertIn('--setup', args)
+        self.assertIn('--yes', args)
+        self.assertIn('--no-start', args)
+        self.assertEqual(args[args.index('--vision') + 1], 'yes')
+        self.assertIn('--data-dir', args)
 
-    def test_a_model_started_without_a_vision_section_is_left_alone(self):
-        self.given({'model': 'UD-IQ4_XS', 'vision': None})
+    def test_a_config_without_a_vision_section_gets_the_setup_pass(self):
+        # The 2026-10-16 state: a workspace set up before vision was asked for. The upstream entry
+        # point skips its setup pass for a config that exists and would serve text-only with the
+        # encoder never started; this entry point runs the pass instead, so the boot that asks for
+        # a card gets the card, and the pass carries the existing config's keys over.
+        self.given({'model': 'UD-IQ4_XS', 'allowed_hosts': ['qwen38-daytime']})
         run = self.start()
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['vision']['cuda_device'], 4)
+        self.assertEqual(cfg['allowed_hosts'], ['qwen38-daytime'])
+        self.assertEqual(len(self.setup_calls()), 1)
         self.assertIn('no vision section', run.stdout)
-        self.assertEqual(json.loads(self.config.read_text()), {'model': 'UD-IQ4_XS', 'vision': None})
+
+    def test_the_setup_pass_runs_once_and_then_the_patch_keeps_the_card(self):
+        self.start()
+        self.start()
+        self.assertEqual(len(self.setup_calls()), 1)
+        self.assertEqual(json.loads(self.config.read_text())['vision']['cuda_device'], 4)
+
+    def test_the_setup_pass_takes_the_profile_arguments(self):
+        # The pass has to set up the model this container serves, not a default one: the profile's
+        # arguments ride the environment the renderer states, and the pass takes them verbatim.
+        self.start(extra={'KV': 'k8v4', 'GPUS': '0,1,2,3', 'LAYER_SPLIT': 'auto', 'GGUF_DIR': '/weights',
+                          'KV_STREAMING': 'auto', 'LOW_RAM': 'off'})
+        args = self.setup_calls()[0]
+        for flag, value in (('--kv', 'k8v4'), ('--gpus', '0,1,2,3'), ('--layer-split', 'auto'),
+                            ('--gguf-dir', '/weights'), ('--kv-streaming', 'auto'), ('--low-ram', 'off')):
+            self.assertEqual(args[args.index(flag) + 1], value)
+
+    def test_a_card_with_vision_off_fails_the_boot(self):
+        # A misconfiguration, not a boot state this house renders (the renderer states VISION=yes
+        # with VISION_DEVICE): a card for an encoder vision is told not to run must fail the boot,
+        # not serve text-only with a log gap.
+        self.given({'model': 'UD-IQ4_XS'})
+        run = self.start(extra={'VISION': 'no'}, expect_fail=True)
+        self.assertNotIn('upstream --serve', run.stdout)
+        self.assertIn('still has no vision section', run.stderr)
 
     def test_the_text_only_container_rewrites_nothing(self):
         # No VISION_DEVICE is the text-only image: it has no encoder, and an entry point that rewrote
@@ -605,6 +702,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         before = self.config.read_text()
         self.start(device=None)
         self.assertEqual(self.config.read_text(), before)
+        self.assertEqual(self.setup_calls(), [])
 
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()
