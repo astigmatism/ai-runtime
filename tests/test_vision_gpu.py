@@ -17,7 +17,7 @@ VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 
 def vision_host():
     host = copy.deepcopy(BASE)
-    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080',
+    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080', vision_cuda_device=4,
         cuda_order={'daytime': host['gpu_ids']['daytime'][::-1], 'nighttime': host['gpu_ids']['nighttime'][:]})
     return host
 

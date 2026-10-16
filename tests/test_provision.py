@@ -9,6 +9,9 @@ evidence backs.
 """
 import copy
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -524,6 +527,93 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
         # The house is back to what it was before the attempt.
         self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
+
+
+class VisionEntrypointOverlayTests(unittest.TestCase):
+    """This house's entry point inside the vision image, run the way the container runs it.
+
+    Which card an image encoder runs on is a fact about the machine, and Strata reads that fact from
+    one place: the ``cuda_device`` key of the ``vision`` section of its own run config. Nothing
+    upstream can be told the number, so the image carries an entry point that writes it into the
+    config it is about to start. That is behaviour, so it is tested -- against the real script, in a
+    directory laid out like ``/opt/strata``, with a stub standing in for the upstream entry point it
+    has to reach.
+    """
+    OVERLAY = 'runtime/overlay/strata-vision-entrypoint.sh'
+    CONFIG = 'config/strata-unsloth-ud-iq4_xs.json'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.opt = root / 'opt'; self.opt.mkdir()
+        self.workspace = root / 'data'
+        shutil.copyfile(fixture.ROOT / self.OVERLAY, self.opt / 'docker-entrypoint.sh')
+        upstream = self.opt / 'docker-entrypoint.upstream.sh'
+        upstream.write_text('#!/bin/sh\necho "upstream $*"\n')
+        upstream.chmod(0o755)  # The Dockerfile does the same to the file it moved aside.
+        self.config = self.workspace / self.CONFIG
+
+    def given(self, config):
+        if config is not None:
+            self.config.parent.mkdir(parents=True, exist_ok=True)
+            self.config.write_text(json.dumps(config))
+
+    def start(self, device='4', family='unsloth', model='UD-IQ4_XS'):
+        env = {**os.environ, 'STRATA_DATA': str(self.workspace), 'FAMILY': family, 'MODEL': model}
+        env.pop('VISION_DEVICE', None)
+        if device is not None:
+            env['VISION_DEVICE'] = device
+        run = subprocess.run(['sh', './docker-entrypoint.sh', '--serve'], cwd=self.opt, env=env,
+            capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # Handing over is the entry point's whole second job: the engine has to start with the
+        # arguments the container was given, or the placement was applied to a boot that never ran.
+        self.assertIn('upstream --serve', run.stdout)
+        return run
+
+    def test_the_declared_card_is_written_into_the_config_the_engine_reads(self):
+        self.given({'model': 'UD-IQ4_XS', 'vision': {'cuda_device': 0, 'max_tokens': 1536}})
+        run = self.start()
+        self.assertEqual(json.loads(self.config.read_text())['vision'],
+            {'cuda_device': 4, 'max_tokens': 1536})
+        self.assertIn('image encoder on CUDA device 4', run.stdout)
+
+    def test_a_workspace_that_has_been_placed_once_is_left_as_it_is(self):
+        self.given({'vision': {'cuda_device': 2}})
+        self.start(); self.start()
+        self.assertEqual(json.loads(self.config.read_text())['vision'], {'cuda_device': 4})
+        self.assertIn('already on CUDA device 4', self.start().stdout)
+
+    def test_a_config_that_is_not_there_yet_is_not_made_here(self):
+        # setup.py writes the first config, and the provisioning flow's warm boot -- the boot the
+        # receipt is measured on -- starts from the file that boot finished, which is the one this
+        # overlay places the encoder in.
+        self.start()
+        self.assertFalse(self.config.exists())
+
+    def test_a_model_started_without_a_vision_section_is_left_alone(self):
+        self.given({'model': 'UD-IQ4_XS', 'vision': None})
+        run = self.start()
+        self.assertIn('no vision section', run.stdout)
+        self.assertEqual(json.loads(self.config.read_text()), {'model': 'UD-IQ4_XS', 'vision': None})
+
+    def test_the_text_only_container_rewrites_nothing(self):
+        # No VISION_DEVICE is the text-only image: it has no encoder, and an entry point that rewrote
+        # a workspace it was never asked to configure would be drift with a log line.
+        self.given({'vision': {'cuda_device': 2}})
+        before = self.config.read_text()
+        self.start(device=None)
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
+        dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()
+        self.assertIn('mv /opt/strata/docker-entrypoint.sh /opt/strata/docker-entrypoint.upstream.sh',
+            dockerfile)
+        self.assertIn('COPY strata-vision-entrypoint.sh /opt/strata/docker-entrypoint.sh', dockerfile)
+        # The overlay is only ever an addition to a pinned upstream image; it never names a base.
+        self.assertIn('FROM ${UPSTREAM}', dockerfile)
+        self.assertNotIn('FROM local/', dockerfile)
 
 
 if __name__ == '__main__':

@@ -126,6 +126,70 @@
           "start_period": "3600s"
         }
       }
+    },
+    "strata-vision-296b59d2f73c": {
+      "image_id": "sha256:68f09e6146699286059e3bbbae1f62b37e8e0a9bcf4981a2547000b0213196a3",
+      "tag": "local/strata:296b59d2f73c-vision",
+      "revision": "296b59d2f73c8f04a805df29c2fa97655adace78",
+      "release": "v0.1.44.1",
+      "repository": "https://github.com/Niko1221/Strata",
+      "cuda_architectures": [
+        "86",
+        "89"
+      ],
+      "build_base_digest": "sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
+      "runtime_base_digest": "sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
+      "interface": "environment",
+      "runs_as_image_user": true,
+      "readiness_wait_seconds": 3600,
+      "vision": {
+        "encoder": "strata-vision, the llama.cpp mtmd encoder, compiled into engine/ with BUILD_VISION=1; engine/BUILD.json in the image reports vision gpu. Same source revision as strata-296b59d2f73c, because BUILD_VISION is not a runtime switch: one revision, built twice, and a profile picks one. Rolling back to the text-only tag is a profile change.",
+        "placement": "VISION_DEVICE names the card the encoder runs on alone. The engine reads that fact from one place, vision.cuda_device in its own run config, and setup.py has no flag for it, so this image carries this house's entry point (runtime/overlay/), which writes the declared value into that file on every start and then execs the upstream entry point unchanged. The encoder is a separate process from the engine, so the text placement is untouched and the reserve the text cards no longer need for an on-card encoder is a separate measurement.",
+        "weights": "mmproj-Qwen3.8-Flash-Next-BF16.gguf, mounted beside the shards in GGUF_DIR. setup.py looks in GGUF_DIR before it reaches for Hugging Face, which is what keeps a first start on a fresh workspace off the network."
+      },
+      "provisioning": {
+        "workspace_target": "/data",
+        "ready_files": [
+          "config/strata-*.json"
+        ],
+        "why": "Same engine and same first start as strata-296b59d2f73c: the pack and the MTP layer are built in the workspace before a health check is answered, so the readiness window is measured on this host. One marker per workspace and not per quant, for the reasons recorded there."
+      },
+      "environment": {
+        "--family": "FAMILY",
+        "--quant": "MODEL",
+        "--kv": "KV",
+        "--kv-streaming": "KV_STREAMING",
+        "--vision": "VISION",
+        "--vision-device": "VISION_DEVICE",
+        "--gpus": "GPUS",
+        "--layer-split": "LAYER_SPLIT",
+        "--low-ram": "LOW_RAM",
+        "--host": "HOST",
+        "--port": "PORT"
+      },
+      "model_directory": "GGUF_DIR",
+      "context_environment": "CONTEXT",
+      "container_defaults": {
+        "entrypoint": [
+          "./docker-entrypoint.sh"
+        ],
+        "read_only": false,
+        "ulimits": {
+          "core": 0
+        },
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:8080/health"
+          ],
+          "interval": "30s",
+          "timeout": "5s",
+          "retries": 8,
+          "start_period": "3600s"
+        }
+      }
     }
   },
   "container_defaults": {

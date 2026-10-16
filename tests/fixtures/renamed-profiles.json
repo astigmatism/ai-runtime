@@ -11,8 +11,8 @@
  },
  "flash-next-strata-solo": {
   "previous_id": "flash-next-strata-160k",
-  "compose_sha256": "444be23232cfd6ab83b19bec709b8ff3c9e8b31d0241bf03c3a07276b7653184",
-  "coding_service_sha256": "d3752cc3cebfbadf8deb996d9a2166a711d193fff84e7696585cb25b1d84851d",
-  "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move."
+  "compose_sha256": "e88852b6452ceb0ef30f943db626aaf3c150c750c87e1822ed290b355d77e3c5",
+  "coding_service_sha256": "4e7f762c8c7fa0e3f42f05d0a03a89a3a381e19db5b9c127c852c8d5a1beccb9",
+  "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move. Re-pinned on 2026-10-16 for a change that is not the rename: the encoder image, the fifth GPU the shared vision card brings, and the two variables that place the encoder on it. Both digests move together and only that; the text placement inside the four cards is byte-for-byte what it was, which is what the pair of them now pins."
  }
 }

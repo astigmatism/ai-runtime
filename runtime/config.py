@@ -12,8 +12,9 @@ Three words carry the whole model, and none of them is a time of day:
   whichever residents it actually runs. `nighttime` answering from the same backend as `daytime` is a
   placement fact, not a contradiction.
 
-GPU group keys in `.state/host.json` (`gpu_ids`, `gpu_names`, `cuda_order`) and the container names
-are operational identifiers, deliberately still the historical ones; see docs/deployment.md.
+GPU group keys in `.state/host.json` (`gpu_ids`, `gpu_names`, `cuda_order`), the shared vision GPU
+(`vision_gpu_id`, `vision_gpu_name`, `vision_cuda_device`) and the container names are operational
+identifiers, deliberately still the historical ones; see docs/deployment.md and docs/shared-vision.md.
 """
 import copy
 import hashlib
@@ -256,6 +257,50 @@ def exclusive_devices(host, options, text):
     return [*text, vision], vision_cuda
 
 
+def engine_vision_gpu(name, host, engine, options, environment, text_devices):
+    """The shared vision GPU as an engine that configures itself from the environment sees it.
+
+    Two facts have to arrive, and neither of them is an argument this engine takes: the card has to
+    be in the container at all, and the image encoder has to be told to run on it alone. The first
+    is the reservation plus the visible list; the second is the variable this house's entrypoint
+    overlay writes into the engine's own run config, because the engine reads the encoder's card
+    from that file and its setup has no flag for it (docs/shared-vision.md).
+
+    The direction is the one the llama.cpp profiles already take: the profile states the cheaper
+    default and host.json opts into the shared card. So the profile keeps `--vision no`, and a host
+    that names a vision_gpu_id turns it on. Returns the GPUs to reserve and the encoder's device
+    index, or the text GPUs and None where the host has no vision GPU or the engine has no switch
+    for one, which is a card nothing in that container would ever use.
+    """
+    vision = host.get('vision_gpu_id')
+    if vision is None:
+        return list(text_devices), None
+    require(re.fullmatch(GPU_UUID, vision) and vision not in text_devices,
+        'Shared vision GPU must be distinct from all text GPUs')
+    device_variable = engine['environment'].get('--vision-device')
+    if device_variable is None:
+        # An engine that cannot be told which card its encoder runs on keeps that card out of its
+        # container, which is what it was built for: a visible GPU nothing in the container can name
+        # is a card taken off the table for no reason. The mapping is the engine's declaration.
+        return list(text_devices), None
+    require(engine['environment'].get('--vision') is not None, name +
+        ': this engine maps --vision-device but not --vision, so it can place an encoder it is '
+        'never told to start')
+    requested = str(options.get('--vision', 'no')).lower()
+    require(requested in ('no', 'none', 'yes', 'gpu'), name + ': --vision states ' + requested +
+        '; a profile for a host with a shared vision GPU states the text-only default and lets the '
+        'renderer move the encoder onto that card, and a CPU encoder is not what the card is for')
+    index = host.get('vision_cuda_device')
+    require(type(index) is int and index == len(text_devices), name +
+        ': vision_cuda_device must be ' + str(len(text_devices)) + ', the index this container '
+        'numbers the shared vision GPU at. The encoder is placed by that number alone, so it has to '
+        'be the last of the reserved cards in nvidia-smi order; a card that is not last on the bus '
+        'is not the card the text GPUs leave free.')
+    environment[engine['environment']['--vision']] = 'yes'
+    environment[device_variable] = str(index)
+    return [*text_devices, vision], index
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
     environment.
@@ -382,11 +427,23 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # What the profile states about the environment comes first: the engine's own settings are the
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}
+    reserved, vision_index = engine_vision_gpu(name, host, engine, options, environment, text_devices)
+    if vision_index is not None:
+        # The engine numbers the cards itself, so the profile states which of them the language
+        # model runs on and the renderer only grows the visible list by the card the host lends.
+        # Indices rather than UUIDs, because that is what this engine is addressed in: the encoder
+        # is placed by the same numbering, so `--gpus 0,1,2,3` keeps meaning the text cards.
+        stated = [item.strip() for item in str(environment.get('CUDA_VISIBLE_DEVICES', '')).split(',')]
+        require(stated == [str(index) for index in range(len(text_devices))], name +
+            ': the container-visible GPU list must state the text cards as ' +
+            ','.join(str(index) for index in range(len(text_devices))) +
+            '; the shared vision GPU is appended by the renderer, being a fact of the host')
+        environment['CUDA_VISIBLE_DEVICES'] = ','.join(str(index) for index in range(len(reserved)))
     cfg.update(image=engine['tag'], container_name=definition['container_name'], command=[],
         environment=environment, volumes=mounts,
         ports=[f"127.0.0.1:{definition['host_port']}:8080"],
         deploy={'resources': {'reservations': {'devices': [{
-            'driver': 'nvidia', 'device_ids': text_devices, 'capabilities': ['gpu']}]}}})
+            'driver': 'nvidia', 'device_ids': reserved, 'capabilities': ['gpu']}]}}})
     # The house default is the deployment user, which can write the workspace and the model files but
     # nothing inside a prebuilt image. An engine that installs into its own virtualenv on first start
     # therefore says so on its engine entry, and gets the user the image was built for instead. It is
@@ -404,15 +461,36 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # Same rule as the llama.cpp path: the router never infers this from a model name.
     require(type(entry['capability_profile'].get('nsfw')) is bool,
         name + ': capability_profile.nsfw must be declared true or false')
+    declares_vision = list(entry['input_modalities']) == ['text', 'image']
+    require(declares_vision == (entry['capability_profile'].get('vision') is True),
+        name + ': input_modalities and capability_profile.vision must agree')
     entry.update(model=options['--alias'], context_length=ctx,
         total_context_length=ctx * slots, max_active_requests=slots, gpu_uuids=text_devices,
         model_path=targets[model_target], backend_revision=engine['revision'],
         display_name=display_name(definition), gpu_names=gpu_names(host, definition),
         source='local-ai-runtime', updated_at=None)
+    # What the profile declares is what this configuration is for; what the host has is what it
+    # delivers, and the router is published the second. A profile that promises pictures on a host
+    # with no vision GPU serves text, exactly as a projector stays on the CPU there.
+    if vision_index is not None:
+        entry.update(gpu_uuids=reserved, text_gpu_uuids=text_devices,
+            vision_gpu_uuid=host['vision_gpu_id'], vision_device=f'CUDA{vision_index}',
+            vision_gpu_shared=not exclusive,
+            # What this container was actually told, in the notation it was told it in. This engine is
+            # addressed by index, so its visible list is indices and the encoder's number is a position
+            # in it; the argument-vector path exports UUIDs and publishes those. Publishing UUIDs here
+            # would state an order the container does not use.
+            cuda_visible_devices=environment['CUDA_VISIBLE_DEVICES'],
+            vision_gpu_name=host.get('vision_gpu_name'), mmproj_offload='gpu',
+            input_modalities=['text', 'image'])
+        entry['capability_profile']['vision'] = True
+    else:
+        entry.update(mmproj_offload='none', input_modalities=['text'])
+        entry['capability_profile']['vision'] = False
     if exclusive:
         entry['exclusive'] = True
     require_open_generation_policy(name, entry)
-    return cfg, entry, mounts, targets, text_devices
+    return cfg, entry, mounts, targets, reserved, text_devices
 
 
 def profile_summary(config_dir, name, shared, host=None):
@@ -547,12 +625,12 @@ def render(config_dir, host, profile):
             # the engine needs. Everything the router and the controller still have to agree on —
             # image identity, mounts, ports, the GPU reservation, the discovery entry — is stated here
             # in the same shape as the llama.cpp path.
-            cfg, entry, mounts, targets, devices = environment_service(name, definition, engine, shared,
+            cfg, entry, mounts, targets, devices, text = environment_service(name, definition, engine, shared,
                 host, root, ctx, slots, exclusive_profile)
             for artifact in definition['artifacts']:
                 source = str(root / Path(artifact['path']))
                 artifacts[source] = {**artifact, 'source': source}
-            gpu_ids.extend(devices)
+            gpu_ids.extend(text)
             require_container_contract(role, cfg)
             compose['services'][role] = cfg
             models.append(entry)

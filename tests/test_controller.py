@@ -18,7 +18,7 @@ VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 
 def vision_host():
     host = copy.deepcopy(HOST)
-    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080',
+    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080', vision_cuda_device=4,
         cuda_order={'daytime': host['gpu_ids']['daytime'][::-1], 'nighttime': host['gpu_ids']['nighttime'][:]})
     return host
 
@@ -320,7 +320,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
-        self.assertEqual(configs['selectable'][2]['engine'], 'strata-296b59d2f73c')
+        self.assertEqual(configs['selectable'][2]['engine'], 'strata-vision-296b59d2f73c')
         # What a client can ask each configuration for. The solo one answers all three IDs from the
         # one resident it loads; a paired one answers `nighttime` through the resident it loads beside
         # its own, so the pair's list is the two residents together.
@@ -468,9 +468,10 @@ class ExclusiveProfileTests(unittest.TestCase):
         self.assertTrue(service['exclusive'])
         self.assertEqual(service['gpu_ids'], [*self.HOST['gpu_ids']['daytime'], *self.HOST['gpu_ids']['nighttime']])
         self.assertEqual(service['gpu_names'], [*self.HOST['gpu_names']['daytime'], *self.HOST['gpu_names']['nighttime']])
-        # The engine was built without a vision encoder, so no text card carries an encoder beside
-        # the model and none is shared with a second backend: vision runs where the engine says.
-        self.assertEqual((service['vision_device'], service['vision_gpu_shared']), ('CPU', False))
+        # The encoder runs on the shared card, and this configuration loads no second resident, so it
+        # has that card to itself: `vision_gpu_shared` false is the difference from a paired
+        # configuration, where the projector is a guest on the Everyday resident's host.
+        self.assertEqual((service['vision_device'], service['vision_gpu_shared']), ('CUDA4', False))
         self.assertTrue(self.c.transition()['already_active'])
         # A switch that stays exclusive has nothing to remove and never starts the second resident.
         # One configuration owns all four text GPUs, so this arrives as the same topology under a
@@ -704,12 +705,33 @@ class EnvironmentEngineObservationTests(unittest.TestCase):
                 self.assertEqual({role: x['differences'] for role, x in observed.items()},
                     {role: [] for role in observed})
 
-    def test_the_strata_resident_renders_the_same_whether_the_host_names_a_vision_gpu(self):
+    def test_the_strata_resident_gains_the_vision_card_and_nothing_else_moves(self):
         """The production host pins the RTX 3080 as the vision card; a host here may name none.
 
-        Its engine was built without a vision encoder and takes its cards from its own list, so the
-        two must agree - otherwise the switch would be the place where that difference showed up.
+        Since 2026-10-16 the two renders are expected to differ, and the difference is the encoder's
+        card plus the variables that name it. The engine's own card list, its mounts, its window and
+        its launch environment are byte-identical, which is the property this switch has to keep:
+        lending the resident a fifth card may not move a byte of the four it is laid out across.
         """
-        plain = json.dumps(render(ROOT / 'config', copy.deepcopy(HOST), self.PROFILE), sort_keys=True)
-        with_vision = json.dumps(render(ROOT / 'config', vision_host(), self.PROFILE), sort_keys=True)
-        self.assertEqual(plain, with_vision)
+        plain = render(ROOT / 'config', copy.deepcopy(HOST), self.PROFILE)
+        lent = render(ROOT / 'config', vision_host(), self.PROFILE)
+        before, after = (x['compose']['services']['coding'] for x in (plain, lent))
+        self.assertEqual(after['environment']['CUDA_VISIBLE_DEVICES'],
+            before['environment']['CUDA_VISIBLE_DEVICES'] + ',4')
+        self.assertEqual((after['environment']['VISION'], after['environment']['VISION_DEVICE']),
+            ('yes', '4'))
+        quiet = lambda e: {k: v for k, v in e.items() if k not in ('VISION', 'VISION_DEVICE', 'CUDA_VISIBLE_DEVICES')}
+        self.assertEqual(quiet(after['environment']), quiet(before['environment']))
+        reserved = lambda s: s['deploy']['resources']['reservations']['devices'][0]['device_ids']
+        self.assertEqual(reserved(after)[:4], reserved(before))
+        self.assertEqual(reserved(after)[4], VISION)
+        for key in ('volumes', 'command', 'entrypoint', 'ports', 'healthcheck', 'ulimits'):
+            with self.subTest(service_key=key):
+                self.assertEqual(after[key], before[key])
+        model, image = (x['catalog']['models'][0] for x in (plain, lent))
+        self.assertIs(model['capability_profile']['vision'], False)
+        self.assertIs(image['capability_profile']['vision'], True)
+        self.assertEqual(model['input_modalities'], ['text'])
+        self.assertEqual(image['input_modalities'], ['text', 'image'])
+        self.assertEqual(image['gpu_uuids'], [*model['gpu_uuids'], VISION])
+        self.assertEqual(image['text_gpu_uuids'], model['gpu_uuids'])

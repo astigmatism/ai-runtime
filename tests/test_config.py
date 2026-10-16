@@ -7,7 +7,7 @@ import unittest
 
 from runtime.config import (CONFIGURATIONS, CONTAINER_CONTRACT, DAYTIME_PROFILES, DEFAULT_PROFILE, EVERYDAY_PROFILE,
     EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES, available_profiles, digest, engine_interface,
-    merge_settings, read, render, resolve_profile, service_engine, unknown_profile)
+    merge_settings, read, render, resolve_profile, service_engine, text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -36,7 +36,7 @@ def interface_of(profile):
 
 def vision_host(host=None):
     host = copy.deepcopy(host or BASELINE['host'])
-    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080',
+    host.update(vision_gpu_id=VISION, vision_gpu_name='RTX 3080', vision_cuda_device=4,
         cuda_order={'daytime': host['gpu_ids']['daytime'][::-1], 'nighttime': host['gpu_ids']['nighttime'][:]})
     return host
 
@@ -280,14 +280,20 @@ class ConfigurationTests(unittest.TestCase):
         # repoint the profile, not to re-add an entry and pay a second drain to reconstruct it. When
         # the candidate is decided either way, this set goes back to three keys and the losing entry
         # is removed reference-aware (ops/reports/20261015-strata-engine-0.1.44.1-build/README.md).
+        #
+        # A fourth, dated 2026-10-16: the same revision with the image encoder compiled in, which is a
+        # build-time decision (BUILD_VISION) and not a runtime switch, so giving the resident its
+        # picture encoder means a second image. The text-only entry stays registered for exactly the
+        # same reason the 0.1.43 one does -- undoing the vision step is a repoint, not a rebuild.
         self.assertEqual(set(engines), {'qwen38-dual-836d571',
-                                        'strata-7695859aa13a', 'strata-296b59d2f73c'})
+                                        'strata-7695859aa13a', 'strata-296b59d2f73c',
+                                        'strata-vision-296b59d2f73c'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
         self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
         expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
-            'flash-next-strata-solo': 'strata-296b59d2f73c', EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
+            'flash-next-strata-solo': 'strata-vision-296b59d2f73c', EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
             with self.subTest(profile=name):
@@ -413,14 +419,23 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(paired['gpu_names'], coding['gpu_names'])
         [solo] = render(ROOT / 'config', host, SOLO)['catalog']['models']
         self.assertEqual(solo['gpu_names'], [*names['daytime'], *names['nighttime']])
-        # The solo configuration has no vision card at all: the RTX 3080 stays outside its container,
-        # so there is no projector to place and no card to name.
-        self.assertNotIn('vision_gpu_name', solo)
-        self.assertFalse(solo['capability_profile']['vision'])
+        # The solo configuration holds the shared card to itself from 2026-10-16: it loads no second
+        # resident, so the encoder that runs there shares it with nothing, and `vision_gpu_shared`
+        # says so rather than repeating the paired configurations' answer.
+        self.assertEqual((solo['vision_gpu_name'], solo['vision_gpu_shared']), ('RTX 3080', False))
+        self.assertEqual(solo['vision_device'], 'CUDA4')
+        self.assertTrue(solo['capability_profile']['vision'])
+        self.assertEqual(solo['input_modalities'], ['text', 'image'])
         # Without GPU vision the projector stays on the CPU and no vision card is named.
         cpu = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-pair')['catalog']['models'][0]
         self.assertNotIn('vision_gpu_name', cpu)
         self.assertEqual(cpu['gpu_names'], BASELINE['host']['gpu_names']['daytime'])
+        # The same profile on a host with no vision GPU publishes text, which is what it was until
+        # the shared card was lent to it: the promise and the fact are never allowed to disagree.
+        [text_only] = render(ROOT / 'config', BASELINE['host'], SOLO)['catalog']['models']
+        self.assertNotIn('vision_gpu_uuid', text_only)
+        self.assertFalse(text_only['capability_profile']['vision'])
+        self.assertEqual(text_only['input_modalities'], ['text'])
 
     def test_every_model_declares_whether_it_is_nsfw(self):
         # Router clients pick "the most capable NSFW model" from this flag; only the Everyday
@@ -537,20 +552,96 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(service['entrypoint'], ['./docker-entrypoint.sh'])
         self.assertIs(service['read_only'], False)
         environment = service['environment']
+        # Two of the mapped variables are the renderer's answer to the host, not the profile's: the
+        # shared vision GPU turns the profile's text-only default on, and names the one card its
+        # encoder runs on. The profile keeps the cheaper default; host.json decides (docs/shared-vision).
         for key, variable in ENGINES[definition['engine']]['environment'].items():
+            if key in ('--vision', '--vision-device'):
+                continue
             with self.subTest(argument=key):
                 self.assertEqual(environment[variable], str(definition['arguments'][key]))
+        self.assertEqual(definition['arguments']['--vision'], 'no')
+        self.assertEqual((environment['VISION'], environment['VISION_DEVICE']), ('yes', '4'))
         # The folder the engine reads is the folder the shards are mounted in, and the window is the
         # profile's context: neither is a value a profile could quietly disagree with.
         self.assertEqual(environment['GGUF_DIR'], str(Path(definition['arguments']['--model']).parent))
         self.assertEqual(environment['CONTEXT'], str(definition['context_tokens']))
-        self.assertEqual(environment['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
+        # Five cards are in the container and four are the language model's: --gpus is the engine's
+        # own card list and stops where the text cards stop, so the encoder cannot spill onto one.
+        self.assertEqual(environment['CUDA_VISIBLE_DEVICES'], '0,1,2,3,4')
+        self.assertEqual(environment['GPUS'], '0,1,2,3')
         self.assertEqual(service['ulimits']['memlock'], -1)
         # Only the engine's own workspace is writable; every model file stays a read-only bind.
         writable = [x['target'] for x in service['volumes'] if not x['read_only']]
         self.assertEqual(writable, ['/data'])
         self.assertEqual([x['target'] for x in service['volumes'] if x['read_only']],
             [x['target'] for x in definition['artifacts']])
+
+    def test_the_shared_vision_gpu_is_a_fifth_card_the_language_model_never_sees(self):
+        """The card the encoder runs on joins the container; the text placement does not move.
+
+        This is the whole point of putting the encoder on the shared GPU: the four cards the language
+        model is laid out across keep every byte they have today, and the encoder gets a card of its
+        own instead of a reservation taken out of each of those four.
+        """
+        bundle = self.bundle()
+        service = bundle['compose']['services']['coding']
+        host = host_for(SOLO)
+        text = text_gpus(host, read(ROOT / 'config/profiles' / (SOLO + '.json')))
+        self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'],
+            [*text, VISION])
+        self.assertNotIn(VISION, service['environment']['GPUS'].split(','))
+        entry = bundle['catalog']['models'][0]
+        self.assertEqual((entry['text_gpu_uuids'], entry['vision_gpu_uuid'], entry['vision_device']),
+            (text, VISION, 'CUDA4'))
+        # CUDA_VISIBLE_DEVICES is this container's own numbering and the encoder is placed by a number
+        # in it, so the catalog states what the container was told, not a UUID list it was never given.
+        self.assertEqual(entry['cuda_visible_devices'], '0,1,2,3,4')
+        self.assertEqual(int(service['environment']['VISION_DEVICE']), len(text))
+
+    def test_a_host_with_no_shared_vision_gpu_renders_the_text_only_resident_it_was(self):
+        """host.json is the switch, and the profile is the same file whichever way it is set."""
+        definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
+        service = render(ROOT / 'config', BASELINE['host'], SOLO)['compose']['services']['coding']
+        self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
+        self.assertEqual(service['environment']['VISION'], 'no')
+        self.assertNotIn('VISION_DEVICE', service['environment'])
+        self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'],
+            text_gpus(BASELINE['host'], definition))
+        entry = render(ROOT / 'config', BASELINE['host'], SOLO)['catalog']['models'][0]
+        self.assertEqual(entry['mmproj_offload'], 'none')
+        self.assertNotIn('vision_gpu_uuid', entry)
+
+    def test_the_encoder_is_placed_on_the_card_the_text_model_leaves_free(self):
+        # The encoder takes its card from a number, and that number is the shared card only while the
+        # shared card is the last of the ones this container reserves. Any other value puts the encoder
+        # on a text card and leaves a fifth card idle, which is expensive, quiet, and a render error:
+        # a host that states a number it cannot mean is refused rather than obeyed.
+        for device in (0, 3, 5, '4', None):
+            host = vision_host()
+            host['vision_cuda_device'] = device
+            with self.subTest(vision_cuda_device=device), \
+                self.assertRaisesRegex(RuntimeError, 'vision_cuda_device'):
+                render(ROOT / 'config', host, SOLO)
+
+    def test_an_engine_that_cannot_name_the_encoder_card_is_lent_no_card(self):
+        # Rolling this profile back to the text-only image of the same revision is a profile change, and
+        # it has to render the way it did before the encoder: four cards, no VISION_DEVICE, text in the
+        # catalog. An image with no way to place an encoder is never handed a fifth GPU to wander onto.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / ('profiles/' + SOLO + '.json')
+            definition = read(path)
+            definition['engine'] = 'strata-296b59d2f73c'
+            path.write_text(json.dumps(definition))
+            bundle = render(config, vision_host(), SOLO)
+            service = bundle['compose']['services']['coding']
+            self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
+            self.assertEqual(service['environment']['VISION'], 'no')
+            self.assertNotIn('VISION_DEVICE', service['environment'])
+            self.assertEqual(
+                len(service['deploy']['resources']['reservations']['devices'][0]['device_ids']), 4)
+            self.assertEqual(bundle['catalog']['models'][0]['input_modalities'], ['text'])
 
     def test_the_solo_resident_is_published_without_llama_cpp_only_claims(self):
         bundle = self.bundle()
@@ -565,18 +656,22 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(next(a for a in entry['aliases'] if a != COMPATIBILITY_ALIAS), 'daytime')
         self.assertEqual(entry['context_length'], definition['context_tokens'])
         self.assertEqual(entry['total_context_length'], definition['context_tokens'])
-        self.assertEqual(entry['input_modalities'], ['text'])
-        self.assertIs(entry['capability_profile']['vision'], False)
+        self.assertEqual(entry['input_modalities'], ['text', 'image'])
+        self.assertIs(entry['capability_profile']['vision'], True)
         self.assertIs(entry['capability_profile']['nsfw'], False)
         # The house contract still holds: no server-side output ceiling, and the full window.
         self.assertEqual(entry['output_policy'], 'unrestricted')
-        # Nothing is claimed about caches and projectors this engine was never given.
-        for field in ('kv_cache', 'fit_target', 'global_ram_prompt_cache_mib', 'mmproj_path', 'vision_gpu_uuid'):
+        # Nothing is claimed about caches and projectors this engine was never given. `mmproj_path` is
+        # the llama.cpp projector file the server was handed on its command line; this engine is told
+        # to build an encoder and finds its own weights, so the catalog says which card runs it
+        # instead of which path was passed.
+        for field in ('kv_cache', 'fit_target', 'global_ram_prompt_cache_mib', 'mmproj_path'):
             with self.subTest(field=field):
                 self.assertNotIn(field, entry)
-        # The RTX 3080 stays out of the container entirely.
-        self.assertNotIn(VISION, entry['gpu_uuids'])
-        self.assertEqual(len(entry['gpu_uuids']), 4)
+        # Four text cards plus the shared one, and the entry says which is which.
+        self.assertEqual(len(entry['text_gpu_uuids']), 4)
+        self.assertEqual(entry['gpu_uuids'], [*entry['text_gpu_uuids'], VISION])
+        self.assertEqual(len(entry['gpu_uuids']), 5)
         self.assertTrue(any('not been attested' in warning for warning in entry['deployment_warnings']))
 
 
@@ -607,17 +702,22 @@ class EnvironmentEngineTests(unittest.TestCase):
     def test_the_engine_identity_is_pinned(self):
         engine = ENGINES[read(ROOT / 'config/profiles' / (SOLO + '.json'))['engine']]
         self.assertEqual(engine['revision'], '296b59d2f73c8f04a805df29c2fa97655adace78')
-        self.assertEqual(engine['tag'], 'local/strata:296b59d2f73c')
+        self.assertEqual(engine['tag'], 'local/strata:296b59d2f73c-vision')
         self.assertEqual(engine['release'], 'v0.1.44.1')
-        # Built on this host from the pinned revision, not downloaded: the upstream releases ship
-        # Windows zips only. Receipt and image digest in
-        # ops/reports/20261015-strata-engine-0.1.44.1-build/README.md.
+        # Built on this host from the pinned revision with the image encoder compiled in
+        # (BUILD_VISION=1), not downloaded: the upstream releases ship Windows zips only. Receipt and
+        # image digest in ops/reports/20261016-strata-vision/README.md. The text-only image of the
+        # same revision is a different image with a different digest, because the encoder is compiled
+        # in at build time and is not a runtime switch.
         self.assertEqual(engine['image_id'],
-                         'sha256:2c6b8332effd8630cabe6ab033ee953ed9fdaecf7d979f5dba36380db94ad057')
+                         'sha256:68f09e6146699286059e3bbbae1f62b37e8e0a9bcf4981a2547000b0213196a3')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
         self.assertGreater(engine['readiness_wait_seconds'], 450)
+        # Being told which card its encoder runs on is the whole difference between an engine the
+        # renderer may lend the shared vision GPU to and one it has to leave the card out of.
+        self.assertEqual(engine['environment']['--vision-device'], 'VISION_DEVICE')
 
     # flash-next-strata-solo answers to these names through a hand edit inside its own workspace's
     # engine config (strata-unsloth-ud-iq4_xs.json), not through source. Neither of that file's
@@ -894,7 +994,9 @@ class ConfigurationNamingTests(unittest.TestCase):
         # references is an image kept alive by a config file. The one exception is the engine held for
         # a live rollback, named here so that retiring it is a decision and not an oversight.
         engines = read(ROOT / 'config/shared.json')['engines']
-        rollback = {'strata-7695859aa13a'}  # the 0.1.43 image, until the 0.1.44.1 candidate is decided
+        # The 0.1.43 image, until the 0.1.44.1 candidate is decided; and the text-only image of
+        # 0.1.44.1, until the encoder that joined the resident on 2026-10-16 has earned its place.
+        rollback = {'strata-7695859aa13a', 'strata-296b59d2f73c'}
         used = set()
         for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
