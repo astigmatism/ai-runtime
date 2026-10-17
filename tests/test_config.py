@@ -300,6 +300,8 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-solo': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-solo-thinking-recovery-full-route': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -371,7 +373,9 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-            'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery'))
+            'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
+            'flash-next-strata-solo-thinking-recovery-full-route',
+            'flash-next-strata-solo-thinking-recovery-cache'))
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
@@ -567,7 +571,14 @@ class EnvironmentEngineTests(unittest.TestCase):
             if key in ('--vision', '--vision-device'):
                 continue
             with self.subTest(argument=key):
-                self.assertEqual(environment[variable], str(definition['arguments'][key]))
+                if key not in definition['arguments']:
+                    # An argument a profile may leave unstated -- the two refinements of a
+                    # conversation cache this configuration has not switched on -- is one the renderer
+                    # invents no variable for, because an invented variable is the engine being told
+                    # something no configuration stated.
+                    self.assertNotIn(variable, environment)
+                else:
+                    self.assertEqual(environment[variable], str(definition['arguments'][key]))
         self.assertEqual(definition['arguments']['--vision'], 'no')
         self.assertEqual((environment['VISION'], environment['VISION_DEVICE']), ('yes', '4'))
         # The folder the engine reads is the folder the shards are mounted in, and the window is the
@@ -682,19 +693,20 @@ class EnvironmentEngineTests(unittest.TestCase):
         # Rolling this profile back to the text-only image of the same revision is a profile change, and
         # it has to render the way it did before the encoder: four cards, no VISION_DEVICE, text in the
         # catalog. An image with no way to place an encoder is never handed a fifth GPU to wander onto.
-        # The two statements this house's entry point writes -- the encoder's card and the sampling
-        # preset -- are the image's, so the rollback drops both lines with it rather than rendering a
-        # variable nothing in that image reads.
+        # The statements this house's entry point writes -- the encoder's card, the sampling preset,
+        # the tool-call switch, the conversation cache and the PLE table -- are the image's, so the
+        # rollback drops those lines with it rather than rendering variables nothing in that image reads.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             path = config / ('profiles/' + SOLO + '.json')
             definition = read(path)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
-            # Each of the two statements this entry point writes refuses on its own, and only after
-            # the one before it has been taken out: the refusal is raised at the first argument the
-            # image cannot be told, so a profile that states both names only the first.
-            for flag in ('--sampling', '--tool-call-recovery'):
+            # Each of the statements this entry point writes refuses on its own, and only after the one
+            # before it has been taken out: the refusal is raised at the first argument the image cannot
+            # be told, so a profile that states several names only the first.
+            for flag in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
+                         '--conversation-cache-min-free-mib', '--ple-gguf'):
                 with self.subTest(argument=flag):
                     with self.assertRaisesRegex(RuntimeError, flag + ' has no environment variable'):
                         render(config, vision_host(), SOLO)
@@ -783,8 +795,17 @@ class EnvironmentEngineTests(unittest.TestCase):
         # image digest in ops/reports/20261017-strata-sampling/README.md. The text-only image of the
         # same revision is a different image with a different digest, because the encoder is compiled
         # in at build time and is not a runtime switch.
+        #
+        # Rebuilt on 2026-10-17 for one layer and nothing else: the same upstream base
+        # (strata-upstream:296b59d2f73c-vision, both base digests unchanged) with this house's entry
+        # point, whose sha256 (8b8a5ef3862ce0ac42fd0e4338b933bd303a68ae9005178ff36b605dbe5745a3) is
+        # verified equal to the file in runtime/overlay/ inside the built image, and whose upstream
+        # half (e85f40f57d036d1247804321a1164be707873712851e093998df97a2398b76b2) is the file it execs.
+        # The image this line pointed at before the rebuild is kept on the box as
+        # local/strata:296b59d2f73c-vision-pre-cache, so this line is the rollback: one re-pin, one
+        # deploy, and the box is running the entry point that knows nothing about a conversation cache.
         self.assertEqual(engine['image_id'],
-                         'sha256:16ffa1282a125a633ecff6b465225ccd5ffb6242d38eaa79d50d6be022072c14')
+                         'sha256:071cd6a312db1e29fb75725e0bf6dd06a57247bcad3fbd13a2ebc9e14ef82fe8')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
@@ -825,8 +846,9 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 3, 'the sampling variant and the call-recovery variant '
-            'are expected to be environment-interface configurations beside their greedy original')
+        self.assertEqual(len(environment), 5, 'the sampling, call-recovery, route-tail-skip and '
+            'conversation-cache variants are expected to be environment-interface configurations '
+            'beside their greedy original')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -861,7 +883,9 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     # the sampling preset, then the recovery switch -- and a different quant or window
     # in either one fails that check and restores this invariant by hand.
     SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo',
-        'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery')}
+        'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
+        'flash-next-strata-solo-thinking-recovery-full-route',
+        'flash-next-strata-solo-thinking-recovery-cache')}
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
         engines = read(ROOT / 'config/shared.json')['engines']
@@ -901,15 +925,23 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
 
     # Each step names the configuration it is one variable from, and the variable that may differ.
     # The chain is the point: an operator moving along it changes one thing at a time, and every step
-    # is checked against the configuration before it rather than against the first one.
-    STEPS = (('flash-next-strata-solo-thinking', 'flash-next-strata-solo', 'SAMPLING'),
+    # is checked against the configuration before it rather than against the first one. A step may be
+    # carried by more than one variable where one of them is meaningless without another -- a parked
+    # conversation's slot count and minimum size say nothing about a cache that is off -- and then all
+    # of them come out together, because the question is unchanged: does anything else move?
+    STEPS = (('flash-next-strata-solo-thinking', 'flash-next-strata-solo', ('SAMPLING',)),
         ('flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking',
-            'TOOL_CALL_RECOVERY'))
+            ('TOOL_CALL_RECOVERY',)),
+        ('flash-next-strata-solo-thinking-recovery-full-route',
+            'flash-next-strata-solo-thinking-recovery', ('STRATA_ROUTE_TAIL_SKIP',)),
+        ('flash-next-strata-solo-thinking-recovery-cache', 'flash-next-strata-solo-thinking-recovery',
+            ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')))
 
-    def rendered(self, name, variable):
+    def rendered(self, name, variables):
         bundle = render(ROOT / 'config', BASELINE['host'], name)
-        bundle['compose']['services']['coding']['environment'].pop(variable, None)
-        bundle['manifest']['services'][0]['recommended_environment'].pop(variable, None)
+        for variable in (variables,) if isinstance(variables, str) else variables:
+            bundle['compose']['services']['coding']['environment'].pop(variable, None)
+            bundle['manifest']['services'][0]['recommended_environment'].pop(variable, None)
         bundle.pop('config_sha256')
         # The identity, and the prose that names the difference, are the only other things allowed to
         # differ; both are set aside so a launch change cannot hide behind them.
@@ -923,9 +955,9 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         for name, previous, variable in self.STEPS:
             with self.subTest(step=name):
                 self.assertEqual(self.rendered(name, variable), self.rendered(previous, variable),
-                    name + ' must render identically to ' + previous + ' once ' + variable +
-                    ' is taken back out; only that variable, the profile id and the warning that '
-                    'names the difference may differ')
+                    name + ' must render identically to ' + previous + ' once ' +
+                    ', '.join(variable) + ' are taken back out; only those variables, the profile id '
+                    'and the warning that names the difference may differ')
 
     def test_every_configuration_states_both_switches_rather_than_leaving_one_out(self):
         """`off` and not an omitted line: the workspace outlives the profile, and switching back has
@@ -933,7 +965,9 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         this engine therefore states both switches, including the two that want the defaults."""
         stated = {'flash-next-strata-solo': ('off', 'off'),
             'flash-next-strata-solo-thinking': ('thinking', 'off'),
-            'flash-next-strata-solo-thinking-recovery': ('thinking', 'on')}
+            'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
+            'flash-next-strata-solo-thinking-recovery-full-route': ('thinking', 'on'),
+            'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on')}
         self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
         for name, expectations in stated.items():
             with self.subTest(profile=name):
@@ -941,6 +975,36 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                     ['compose']['services']['coding']['environment']
                 self.assertEqual((environment['SAMPLING'], environment['TOOL_CALL_RECOVERY']),
                     expectations)
+
+    def test_every_configuration_states_the_cache_and_the_table_it_wants(self):
+        """The same rule one switch on: a parked conversation and a PLE table are written into the run
+        config the engine reads from its own workspace, so a configuration that leaves them unsaid
+        inherits whatever the last one that started left behind. The budget and the table are stated
+        by every configuration of this engine, and the two refinements appear only where a budget
+        makes them mean something."""
+        stated = {'flash-next-strata-solo': ('off', 'off'),
+            'flash-next-strata-solo-thinking': ('off', 'off'),
+            'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
+            'flash-next-strata-solo-thinking-recovery-full-route': ('off', 'off'),
+            'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off')}
+        self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
+        for name, (budget, table) in stated.items():
+            with self.subTest(profile=name):
+                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                arguments = definition['arguments']
+                self.assertEqual((arguments['--conversation-cache-mib'], arguments['--ple-gguf']),
+                    (budget, table))
+                # A floor is not optional next to a budget: it is the ceiling that stops a park
+                # displacing the page-locked expert complement this box measures at 32.93 GiB.
+                positive = str(arguments['--conversation-cache-min-free-mib'])
+                self.assertTrue(positive.isdigit() and int(positive) > 0)
+                self.assertIn('--conversation-cache-min-free-mib', definition['argument_order'])
+                for refinement in ('--conversation-cache-slots', '--conversation-cache-min-tokens'):
+                    if budget == 'off':
+                        self.assertNotIn(refinement, arguments,
+                            name + ' refines a conversation cache it has switched off')
+                    else:
+                        self.assertIn(refinement, arguments)
 
     def test_a_value_outside_the_two_words_refuses_before_anything_renders(self):
         # The entry point writes a JSON boolean and the engine starts on nothing else, so the words
@@ -956,6 +1020,57 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError,
                             '--tool-call-recovery states ' + stated):
                         render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
+
+    def test_a_cache_or_table_that_cannot_be_honoured_refuses_before_anything_renders(self):
+        """Values on this switch are refused for the shape of the thing they buy, not for spelling.
+
+        A budget of `8GiB` is a value the entry point could not write and the engine could not read; a
+        budget with no floor is a cache that will outbid the page-locked expert complement for RAM on
+        the same machine that serves; a slot count beside an off cache is a statement about nothing; a
+        table nothing mounts is a boot that either does not happen or happens with one layer's n-gram
+        table quietly absent. All four are refused here, before a drain is spent, because this engine's
+        exclusive resident is the only thing serving and a refused boot is nothing serving.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            name = 'flash-next-strata-solo-thinking-recovery-cache'
+            path = config / ('profiles/' + name + '.json')
+            original = read(path)
+            for argument, stated, refuses in (
+                    ('--conversation-cache-mib', '8GiB', '--conversation-cache-mib states 8GiB'),
+                    ('--conversation-cache-mib', '0', '--conversation-cache-mib states 0'),
+                    ('--conversation-cache-mib', '-1', '--conversation-cache-mib states -1'),
+                    ('--conversation-cache-slots', '0', '--conversation-cache-slots states 0'),
+                    ('--conversation-cache-min-tokens', 'half', 'min-tokens states half'),
+                    ('--ple-gguf', '/weights/never-arrived.gguf',
+                     '--ple-gguf states /weights/never-arrived.gguf')):
+                with self.subTest(argument=argument, value=stated):
+                    definition = json.loads(json.dumps(original))
+                    definition['arguments'][argument] = stated
+                    path.write_text(json.dumps(definition))
+                    with self.assertRaisesRegex(RuntimeError, refuses.replace('-', r'[-]')):
+                        render(config, BASELINE['host'], name)
+            # The floor is required by a number and forbidden by nothing: take it out of the
+            # configuration that turns the cache on and the budget is an unbounded one.
+            definition = json.loads(json.dumps(original))
+            del definition['arguments']['--conversation-cache-min-free-mib']
+            definition['argument_order'].remove('--conversation-cache-min-free-mib')
+            path.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError,
+                    'states a budget and no [-][-]conversation-cache-min-free-mib'):
+                render(config, BASELINE['host'], name)
+            # And a refinement is refused on a configuration that has switched the whole thing off,
+            # which is where an inherited number would otherwise go unnoticed.
+            off = config / 'profiles/flash-next-strata-solo.json'
+            definition = read(off)
+            definition['arguments']['--conversation-cache-slots'] = '4'
+            definition['argument_order'].insert(
+                definition['argument_order'].index('--conversation-cache-mib') + 1,
+                '--conversation-cache-slots')
+            off.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError,
+                    r'refines a conversation cache this configuration has switched off'):
+                render(config, BASELINE['host'], 'flash-next-strata-solo')
 
 
 class ServiceIdentityTests(unittest.TestCase):

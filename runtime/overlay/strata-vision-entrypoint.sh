@@ -1,8 +1,9 @@
 #!/bin/sh
 # This house's overlay on Strata's own entry point, not an upstream file.
 #
-# Three facts about this container have to reach the engine's own run config, and none of them is
-# an argument the engine takes.
+# Six facts about this container have to reach the engine's own run config. Four of them are not
+# arguments the engine takes; the last two are, but they go in the run config's "args" list, which
+# setup.py writes and offers no flag to extend.
 #
 # 1. That it runs an image encoder at all (with which mmproj). The "vision" section of the run
 #    config is written by setup.py's setup pass, and the upstream entry point runs that pass only
@@ -38,6 +39,33 @@
 #    value for the same reason sampling is one: serve/server.py raises SystemExit unless the key is a
 #    JSON true or false, and for an exclusive resident a config it refuses is nothing serving. "off"
 #    is a statement, so it takes the key back out; a profile stating nothing leaves the file alone.
+# 5. Whether a conversation that came back is read again from the start. CONVERSATION_CACHE_MIB is a
+#    RAM budget for parked conversations; the engine's own default is 0, which means every returning
+#    conversation is re-prefilled. Unlike facts 1-4 this IS an engine argument, but it goes in the run
+#    config's "args" list, and setup.py only ever prints a tip about it (its gate, `ram - model_ram_gb
+#    >= 24` GiB, this box passes by 44 GiB) without ever writing it. A profile therefore states the
+#    budget and the RAM floor it will not park beneath -- CONVERSATION_CACHE_MIN_FREE_MIB, required,
+#    because this workspace keeps a 32.93 GiB page-locked expert complement and a cache that outbids
+#    it pays in page faults on the serving path. CONVERSATION_CACHE_SLOTS and CONVERSATION_CACHE_MIN_TOKENS
+#    may go unstated and are then written at the engine's own defaults (4 and 0), because a stated
+#    budget writes all four arguments and a number an older profile wrote must not survive the switch
+#    in silence; CONVERSATION_CACHE_MIN_TOKENS also keeps a short side request from taking the slot a
+#    127,000-token conversation needs. "off" takes all four flags back out, which is the engine's
+#    default.
+#    Only exact token prefixes are reused, so this buys the conversation that was evicted and restored,
+#    and nothing at all for one whose prompt stops matching partway in; the first case is measured
+#    here at 6.3% of prompt time and the second at 25.5%, and the two are told apart by /metrics'
+#    "conversation_cache" counters, not by hope.
+# 6. Which file the n-gram/PLE table is read from. PLE_GGUF is a path, and like fact 5 it is an engine
+#    argument with no setup.py flag: setup.py passes --ple-gguf by itself only at two or fewer shards
+#    (its own `len(shards) <= 2` test), so this three-shard file has the table read out of shard 2, where
+#    it sits at the quantization Unsloth chose for it (IQ4_NL here, and the engine's PLE row reader also
+#    takes Q8_0 and FP8 rows). Pointing the key at a wider table is the one accuracy purchase on this box
+#    that does not go through the RAM-to-GPU expert streaming that cost UD-Q4_K_XL 7-15% of decode and
+#    STRATA_HC_Q8 15% of prefill, because the table is read off the SSD by the CPU path at ~94,000 rows
+#    per second and never streamed to a card. The file is checked to exist before it is written: the
+#    engine's own help says that without this key "LAYER 1's PLE IS SILENTLY SKIPPED", and a silently
+#    missing layer is the failure mode this overlay exists to refuse.
 #
 # So: when the container is told the encoder's card, make sure the config it is about to start
 # carries a vision section, and write the card into it. When it is told a sampling preset, make sure
@@ -68,6 +96,11 @@ RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"
 KV_STREAMING="${KV_STREAMING:-}"
 SAMPLING="${SAMPLING:-}"
 TOOL_CALL_RECOVERY="${TOOL_CALL_RECOVERY:-}"
+CONVERSATION_CACHE_MIB="${CONVERSATION_CACHE_MIB:-}"
+CONVERSATION_CACHE_MIN_FREE_MIB="${CONVERSATION_CACHE_MIN_FREE_MIB:-}"
+CONVERSATION_CACHE_SLOTS="${CONVERSATION_CACHE_SLOTS:-}"
+CONVERSATION_CACHE_MIN_TOKENS="${CONVERSATION_CACHE_MIN_TOKENS:-}"
+PLE_GGUF="${PLE_GGUF:-}"
 
 # The same tag the upstream entry point derives, so what follows writes the file it is about to read.
 case "$FAMILY" in
@@ -296,5 +329,182 @@ else:
           'template\'s form is read as the call (%s)' % (stated, json.dumps(want), path), flush=True)
 PY
 fi
+
+# The argv analogue of the two blocks above. The two facts that follow are engine arguments, and the
+# engine reads them out of the run config's "args" list, which is a flat argv array and not a key:
+# setup.py writes it, offers no flag to extend it, and (for the cache) only prints a tip that the
+# operator has to act on by hand. So this is where a profile's statement has to land. It goes through
+# the same ceremony as the blocks above -- read the file, change one thing, write it back through a
+# temporary file, say out loud what was done -- because an argument the engine refuses is a boot that
+# does not happen, and for an exclusive resident that is nothing serving.
+edit_args() {
+    # $1 = the temporary file's suffix, $2 = "set" or "drop", then the flags to take out or the flag
+    # and value pairs to put in. $cfg comes from the enclosing scope, and the shift below reaches only
+    # this function's own positional parameters, not the argument list this entry point execs with.
+    ea_suffix="$1" ea_op="$2"
+    shift 2
+    python3 - "$cfg" "$ea_suffix" "$ea_op" "$@" <<'PY'
+import json, os, sys
+
+path, suffix, op = sys.argv[1], sys.argv[2], sys.argv[3]
+rest = sys.argv[4:]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+args = cfg.get('args')
+if not isinstance(args, list):
+    print('strata overlay: %s has no args list to write %s into' % (path, suffix), file=sys.stderr,
+          flush=True)
+    sys.exit(1)
+
+
+def strip(current, flags):
+    out, i = [], 0
+    while i < len(current):
+        if current[i] in flags:
+            i += 2
+            continue
+        out.append(current[i])
+        i += 1
+    return out
+
+
+if op == 'drop':
+    present = [flag for flag in rest if flag in args]
+    if not present:
+        print('strata overlay: none of %s is in the args list; the engine keeps its own default'
+              % ', '.join(rest), flush=True)
+        sys.exit(0)
+    want = strip(args, set(rest))
+    action = 'removed %s the profile does not state' % ', '.join(present)
+else:
+    pairs = [(rest[i], rest[i + 1]) for i in range(0, len(rest), 2)]
+    flags = {flag for flag, _ in pairs}
+    have = [(args[i], args[i + 1]) for i in range(len(args) - 1) if args[i] in flags]
+    if sorted(have) == sorted(pairs):
+        print('strata overlay: %s already in the args list (%s)'
+              % (', '.join(sorted(flags)), ', '.join('%s %s' % pair for pair in pairs)), flush=True)
+        sys.exit(0)
+    want = strip(args, flags) + [value for pair in pairs for value in pair]
+    action = 'wrote %s' % ', '.join('%s %s' % pair for pair in pairs)
+
+cfg['args'] = want
+# Written on every change and never in place: the profile is the authority and not the file, and every
+# other entry in the list goes back exactly as it was read.
+tmp = path + '.' + suffix + '.tmp'
+with open(tmp, 'w', encoding='utf-8') as handle:
+    json.dump(cfg, handle, indent=1)
+    handle.write('\n')
+os.replace(tmp, path)
+print('strata overlay: %s (%s)' % (action, path), flush=True)
+PY
+}
+
+positive() {
+    # $1 = the name to blame in the message, $2 = the value. Digits and more than zero, because every
+    # one of these is an argument the engine parses as an int and refuses to start on otherwise.
+    case "$2" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$2" -gt 0 ]
+}
+
+digits() {
+    case "$1" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    return 0
+}
+
+apply_conversation_cache() {
+    if [ "$CONVERSATION_CACHE_MIB" = off ]; then
+        if [ -f "$cfg" ]; then
+            edit_args convcache drop --conversation-cache-mib --conversation-cache-slots \
+                --conversation-cache-min-free-mib --conversation-cache-min-tokens
+        fi
+        return 0
+    fi
+    if [ -z "$CONVERSATION_CACHE_MIB" ]; then
+        # No statement at all: a profile that has never heard of this key boots as it did before it.
+        return 0
+    fi
+    if ! positive CONVERSATION_CACHE_MIB "$CONVERSATION_CACHE_MIB"; then
+        echo "strata overlay: CONVERSATION_CACHE_MIB=$CONVERSATION_CACHE_MIB is not an amount of MiB" >&2
+        return 1
+    fi
+    if ! positive CONVERSATION_CACHE_MIN_FREE_MIB "$CONVERSATION_CACHE_MIN_FREE_MIB"; then
+        echo "strata overlay: CONVERSATION_CACHE_MIB=$CONVERSATION_CACHE_MIB states a budget and no" >&2
+        echo "  CONVERSATION_CACHE_MIN_FREE_MIB to park nothing beneath. It is not left to the engine's" >&2
+        echo "  default: this workspace holds a 32.93 GiB page-locked expert complement, and a parked" >&2
+        echo "  conversation that outbids it pays for it on the serving path." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and a conversation cache has to go in it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write a conversation cache into" >&2
+            return 1
+        fi
+    fi
+    set -- --conversation-cache-mib "$CONVERSATION_CACHE_MIB" \
+        --conversation-cache-min-free-mib "$CONVERSATION_CACHE_MIN_FREE_MIB"
+    # A stated budget writes all four arguments, and the two that may go unstated are written at the
+    # engine's own defaults rather than left out. Left out, a number an older profile wrote would
+    # survive the switch in silence -- and the profile is the authority and not the file.
+    if [ -n "$CONVERSATION_CACHE_SLOTS" ]; then
+        if ! positive CONVERSATION_CACHE_SLOTS "$CONVERSATION_CACHE_SLOTS"; then
+            echo "strata overlay: CONVERSATION_CACHE_SLOTS=$CONVERSATION_CACHE_SLOTS is not a number" >&2
+            return 1
+        fi
+    else
+        CONVERSATION_CACHE_SLOTS=4
+    fi
+    set -- "$@" --conversation-cache-slots "$CONVERSATION_CACHE_SLOTS"
+    if [ -n "$CONVERSATION_CACHE_MIN_TOKENS" ]; then
+        # Zero is a statement here (the engine's own default: park any conversation), so digits and not
+        # positive -- unlike the budget, where zero means the cache is off and the profile would want
+        # "off" to say so.
+        if ! digits "$CONVERSATION_CACHE_MIN_TOKENS"; then
+            echo "strata overlay: CONVERSATION_CACHE_MIN_TOKENS=$CONVERSATION_CACHE_MIN_TOKENS is not a" >&2
+            echo "  number of tokens (0 parks any conversation, which is the engine's default)" >&2
+            return 1
+        fi
+    else
+        CONVERSATION_CACHE_MIN_TOKENS=0
+    fi
+    set -- "$@" --conversation-cache-min-tokens "$CONVERSATION_CACHE_MIN_TOKENS"
+    edit_args convcache set "$@"
+}
+
+apply_ple_table() {
+    if [ "$PLE_GGUF" = off ]; then
+        if [ -f "$cfg" ]; then
+            edit_args ple drop --ple-gguf
+        fi
+        return 0
+    fi
+    if [ -z "$PLE_GGUF" ]; then
+        # Nothing stated: at three shards setup.py reads the table out of the shard Unsloth put it in,
+        # which is what every boot of this workspace has done.
+        return 0
+    fi
+    if [ ! -f "$PLE_GGUF" ]; then
+        echo "strata overlay: PLE_GGUF=$PLE_GGUF is not a file this container can read." >&2
+        echo "  Refusing rather than booting without it: the engine's own help says that a PLE table it" >&2
+        echo "  was not given leaves layer 1's PLE silently skipped, and a silent missing layer is worth" >&2
+        echo "  more than a boot that looks fine." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and a PLE table has to be named in it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to name a PLE table in" >&2
+            return 1
+        fi
+    fi
+    edit_args ple set --ple-gguf "$PLE_GGUF"
+}
+
+apply_conversation_cache
+apply_ple_table
 
 exec ./docker-entrypoint.upstream.sh "$@"

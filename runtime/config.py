@@ -33,7 +33,9 @@ from pathlib import Path
 # all is not an option: that is a catalog a contract client cannot address, which is the same hole as
 # nothing serving.
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery')
+    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-strata-solo-thinking-recovery-full-route',
+    'flash-next-strata-solo-thinking-recovery-cache')
 # Transitional spelling of the name above, for one release, and a literal tuple on purpose rather
 # than a binding to CONFIGURATIONS. The updater running on an already-deployed revision parses the
 # *target* revision's source for this constant and ast.literal_eval's its value, then refuses the
@@ -49,6 +51,8 @@ CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo
 # target_profiles() already resolves a plain binding, so the next rename needs no such scaffolding.
 DAYTIME_PROFILES = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
     'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-strata-solo-thinking-recovery-full-route',
+    'flash-next-strata-solo-thinking-recovery-cache',
     'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-pair'
@@ -351,9 +355,77 @@ def engine_tool_call_recovery(name, engine, options):
         'one of two words and never a value of its own')
 
 
+CACHE_BUDGET_OFF = 'off'
+
+
+def engine_conversation_cache(name, engine, options):
+    """Whether a conversation that comes back is read again from the start, and what it may spend.
+
+    Two arguments carry the decision and two refine it. The budget is `off` (the engine's own default,
+    which re-prefills every returning conversation) or an amount of MiB of host RAM to park
+    conversations in; the floor is the RAM the cache must never park beneath, and it is required
+    whenever the budget is a number, because this workspace keeps a 32.93 GiB page-locked expert
+    complement on the same RAM and a cache that outbids it pays in page faults on the serving path.
+    Slots and minimum tokens refine a cache that is on and are refused on one that is off, where they
+    are a statement about nothing; unstated, the entry point writes the engine's own defaults, so an
+    older profile's number cannot survive a switch in silence. Checked here rather than at boot for
+    the standing reason: an exclusive resident whose engine refuses to start is nothing serving, and
+    a drain already spent cannot be unspent.
+    """
+    if engine['environment'].get('--conversation-cache-mib') is None:
+        return
+    budget = str(options.get('--conversation-cache-mib', CACHE_BUDGET_OFF))
+    require(budget == CACHE_BUDGET_OFF or (budget.isdigit() and int(budget) > 0),
+        name + ': --conversation-cache-mib states ' + budget + '; it is ' + CACHE_BUDGET_OFF +
+        ' or an amount of MiB in whole numbers. Zero is not a small cache: the engine reads 0 as off, '
+        'and a profile that means off says ' + CACHE_BUDGET_OFF)
+    floor = str(options.get('--conversation-cache-min-free-mib', ''))
+    if budget == CACHE_BUDGET_OFF:
+        for key in ('--conversation-cache-slots', '--conversation-cache-min-tokens'):
+            require(key not in options, name + ': ' + key + ' refines a conversation cache this '
+                'configuration has switched off; state a budget before a refinement')
+        return
+    require(floor.isdigit() and int(floor) > 0, name +
+        ': --conversation-cache-mib ' + budget + ' states a budget and no --conversation-cache-min-free-mib '
+        'to park nothing beneath. The engine defaults it, and this house does not take that default '
+        'beside a 32.93 GiB page-locked expert complement')
+    for key in ('--conversation-cache-slots',):
+        stated = str(options.get(key, ''))
+        require(stated == '' or (stated.isdigit() and int(stated) > 0),
+            name + ': ' + key + ' states ' + stated + '; it is a whole number of conversations')
+    stated = str(options.get('--conversation-cache-min-tokens', ''))
+    require(stated == '' or stated.isdigit(), name +
+        ': --conversation-cache-min-tokens states ' + stated + '; it is a whole number of tokens, '
+        'and 0 is the engine\'s own answer (park any conversation)')
+
+
+def engine_ple_table(name, engine, options, artifacts):
+    """Which file the n-gram table is read from, or nothing at all.
+
+    The engine reads this table off the SSD on the CPU path at some tens of thousands of rows a second
+    and never streams it to a card, so a wider table is the one accuracy purchase on a box at
+    `pcie_frac 0.22` that does not go through the expert streaming that cost UD-Q4_K_XL 7-15% of decode
+    and this house's STRATA_HC_Q8 trial 15% of prefill. `off` leaves the key unwritten, which at three
+    shards means setup.py reads the table out of the shard Unsloth put it in, at that file's own
+    quantization. A path is checked against the mounts this profile declares, for the same reason the
+    model path is: a table named that nothing mounts is a boot that either does not happen or happens
+    with layer one's PLE silently skipped, and a silently skipped layer is the failure this house's
+    entry point exists to refuse.
+    """
+    if engine['environment'].get('--ple-gguf') is None:
+        return
+    stated = str(options.get('--ple-gguf', 'off'))
+    if stated == 'off':
+        return
+    targets = [artifact['target'] for artifact in artifacts]
+    require(stated in targets, name + ': --ple-gguf states ' + stated + ', which is not one of the '
+        'mounts this configuration declares (' + ', '.join(targets) + '). The table is a file like the '
+        'model is a file: it arrives as a declared artifact, so that a profile naming a table nothing '
+        'downloaded fails when it renders and not when the engine starts')
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
-    environment.
 
     Every engine in this house so far is llama.cpp: it is configured by a long argv, its shared
     argument vocabulary in shared.json, and a fixed set of flags the controller and the router
@@ -427,16 +499,20 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
             # revision is being served.
             require(key in ('--alias', model_argument), name + ': argument ' + key +
                 ' has no environment variable in engine ' + definition['engine'] +
-                ('; only an image that carries this house\'s entry point can be told a sampling '
-                 'preset or a tool-call recovery switch, so a profile that states --sampling or '
-                 '--tool-call-recovery does not roll back to a text-only Strata image until that '
-                 'line is dropped'
-                 if key in ('--sampling', '--tool-call-recovery') else ''))
+                ('; only an image that carries this house\'s entry point can be told this, because it '
+                 'is written into the engine\'s own run config and not passed to the engine, so a '
+                 'profile that states it does not roll back to an image without that entry point '
+                 'until this line is dropped'
+                 if key in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
+                            '--conversation-cache-min-free-mib', '--conversation-cache-slots',
+                            '--conversation-cache-min-tokens', '--ple-gguf') else ''))
             continue
         require(variable not in environment, name + ': two arguments map to ' + variable)
         environment[variable] = '' if value is True else str(value)
     engine_sampling_preset(name, engine, options)
     engine_tool_call_recovery(name, engine, options)
+    engine_conversation_cache(name, engine, options)
+    engine_ple_table(name, engine, options, definition['artifacts'])
     model_target = options[model_argument]
     require(model_target in [a['target'] for a in definition['artifacts']],
         name + ': the model argument must reference a declared artifact mount')
