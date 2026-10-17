@@ -181,5 +181,105 @@ class TheDecoderFindsAWayOrSaysSo(unittest.TestCase):
             self.assertEqual(loops.decode(b"anything"), b"FROM-CLI")
 
 
+def message(text=None, reasoning=None, name=None, arguments=None, turn=1, step=1,
+            time=1_700_000_000_000):
+    """One assistant message as the harness records what the client was handed: reasoning,
+    prose and calls are blocks in one content list, and only the prose is what the engine's
+    parser served."""
+    blocks = []
+    if reasoning is not None:
+        blocks.append({"type": "reasoning", "text": reasoning})
+    if text is not None:
+        blocks.append({"type": "text", "text": text})
+    if name is not None:
+        blocks.append({"type": "tool-call", "id": "c1", "name": name,
+                       "arguments": json.dumps(arguments or {})})
+    return {"type": "assistant/message", "time": time,
+            "data": {"turn": turn, "step": step,
+                     "message": {"role": "assistant", "content": blocks}}}
+
+
+def failure(text, time=1_700_000_000_000):
+    return {"type": "llm/retry", "time": time,
+            "data": {"turn": 1, "step": 2, "failure": {"message": text, "code": "SERVER"}}}
+
+
+DRIFT = "Let me look.\n<tool_call>search\n<parameter=query>strata sampling</parameter>"
+
+
+@requires_tool
+class ACallTheClientNeverGot(unittest.TestCase):
+    """A dropped tool call leaves no call record, because it is the call that never became
+    one. What it leaves is its markup in the prose, or the parser's own error -- and the one
+    thing that is not evidence of it is an agent quoting the format while writing about it."""
+
+    def test_markup_in_prose_with_no_call_is_a_dropped_call(self):
+        d = loops.dropped(transcript(message(text=DRIFT)))
+        self.assertEqual((d["messages"], d["with_call"], d["drops"], d["asks"]), (1, 0, 1, 1))
+        self.assertIn("<parameter=", d["examples"][0]["text"])
+
+    def test_a_quoted_format_is_an_agent_talking_about_the_parser(self):
+        """Every session in which anybody explains this parser quotes it. Counting quotes as
+        drops would report the documentation as an outage, and this house has more of the
+        first than the second."""
+        d = loops.dropped(transcript(
+            message(text="The drift looks like this:\n```\n" + DRIFT + "\n```\nand is dropped.")))
+        # Two pieces of markup in the fixture: the wrapper and the `<parameter=` opener.
+        self.assertEqual((d["markup"], d["quoted"], d["drops"], d["asks"]), (2, 2, 0, 0))
+
+    def test_an_inline_span_quotes_it_too(self):
+        d = loops.dropped(transcript(message(text="The opener is `<parameter=NAME>`, not `<function=`.")))
+        self.assertEqual(d["drops"], 0)
+        self.assertGreaterEqual(d["quoted"], 2)
+
+    def test_an_unterminated_fence_still_counts_as_a_quote(self):
+        """A model that opens a fence and forgets to close it is quoting, not calling. The
+        guessing runs toward keeping the markup out of the drop count."""
+        d = loops.dropped(transcript(message(text="Watch:\n```" + DRIFT)))
+        self.assertEqual(d["drops"], 0)
+
+    def test_the_reasoning_channel_is_not_the_output(self):
+        """An agent *thinking* about a `<parameter>` tag is the commonest source of the markup
+        in this store, and the engine's tool-call parser never sees that channel."""
+        d = loops.dropped(transcript(message(reasoning="It wrote <parameter=query> instead.",
+                                             text="Done.")))
+        self.assertEqual((d["markup"], d["drops"]), (0, 0))
+
+    def test_a_call_that_arrived_beside_the_markup_is_not_a_drop(self):
+        d = loops.dropped(transcript(message(text=DRIFT, name="search")))
+        self.assertEqual((d["drops"], d["drops_beside_call"], d["with_call"]), (0, 1, 1))
+
+    def test_two_drifted_calls_in_one_message_are_one_dropped_turn(self):
+        """The rate is a rate over turns, so it is the message that counts, not the number of
+        tags in it. Counting tags could put the figure over 100%."""
+        d = loops.dropped(transcript(message(text=DRIFT + "\n" + DRIFT)))
+        self.assertEqual((d["drops"], d["markup"]), (1, 4))
+
+    def test_the_parsers_own_error_counts_as_a_lost_call(self):
+        d = loops.dropped(transcript(
+            message(text="working"),
+            failure('local-ollama API error (500): malformed tool call: <function=bash<parameter=')))
+        self.assertEqual(d["malformed"], 1)
+        self.assertEqual(d["messages"], 1)
+
+    def test_a_router_draining_is_not_a_parse_failure(self):
+        """The commonest failure in this store is a configuration switch, and a metric that
+        read it as a lost call would be tuned to the deploy rather than to the parser."""
+        d = loops.dropped(transcript(
+            message(text="working"),
+            failure("The router is switching configuration (BACKEND_DRAINING); Harness waits "
+                    "and retries Daytime without changing models.")))
+        self.assertEqual(d["malformed"], 0)
+
+    def test_an_ordinary_answer_is_not_counted_as_a_turn_that_wanted_a_tool(self):
+        d = loops.dropped(transcript(message(text="The answer is 42."),
+                                     message(text="Now the file.", name="read")))
+        self.assertEqual((d["messages"], d["with_call"], d["asks"], d["drops"]), (2, 1, 1, 0))
+
+    def test_a_transcript_with_no_messages_reports_zeros_rather_than_raising(self):
+        d = loops.dropped(transcript(*[call("bash", {"command": "ls"})]))
+        self.assertEqual((d["messages"], d["asks"], d["drops"], d["malformed"]), (0, 0, 0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

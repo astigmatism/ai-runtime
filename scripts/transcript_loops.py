@@ -23,6 +23,19 @@ about a story somebody guessed.
 
     python3 scripts/transcript_loops.py --flip 2026-10-17T05:32:00Z
 
+`--dropped` answers the other question this box has about the engine, and it is answered
+differently because the thing being counted is an absence. A dropped tool call is an assistant
+turn that meant to call a tool and was served as prose, so there is no call record to count;
+what is left behind is the call's *markup*, sitting in the message text the client was given.
+Upstream's parser is where that markup is either honoured or left in the text (a body it cannot
+take is content under `tool_call_recovery` and a `malformed tool call` request error without it,
+`serve/frontend.py`), and the harness records whichever of those arrived without interpreting
+them, so both traces are visible here and neither needs the engine to cooperate. Prose that
+*quotes* the format -- the thing every agent writing about this parser does -- is excluded by
+looking at whether the markup arrived inside a code fence or a backtick span.
+
+    python3 scripts/transcript_loops.py --dropped --flip 2026-10-17T16:42:09Z
+
 Session files are append-only zstd streams, one frame per flush, which is why decoding is a
 small cascade rather than one call: Python 3.14's stdlib zstd, then the `zstandard` module,
 then a `zstd` binary, then Node's built-in decoder -- in this house the last is the one that
@@ -40,6 +53,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -49,6 +63,17 @@ ROOT = os.path.expanduser("~/deployments/deepseek-harness/data/dsh/sessions")
 FILE = "session.v4.jsonl.zstd"
 MAGIC = b"\x28\xb5\x2f\xfd"
 LOOP_STREAK = 4
+
+# The engine's tool-call markup, as it survives in a message the parser served as prose.
+CALL_MARKUP = (
+    ("parameter", re.compile(r"<parameter[ =]")),
+    ("function", re.compile(r"<function[ =]")),
+    ("tool_call", re.compile(r"<tool_call[ >]")),
+    ("tool_response", re.compile(r"<tool_response[ >]")),
+)
+# What the engine says when a call body reaches it, is entered as a call, and is not one:
+# `parse_tool_call` raises and, without `tool_call_recovery`, that error ends the request.
+MALFORMED = re.compile(r"malformed tool call")
 
 # One frame per flush means a whole transcript is concatenated frames, and neither Python
 # route streams across them. Scan for magic bytes instead: at 16 MiB the chance a compressed
@@ -185,6 +210,104 @@ def calls(rs: list) -> list:
     return out
 
 
+def code_spans(text: str) -> list:
+    """The ranges of a message that are code: ``` fences and `inline` spans.
+
+    An agent that writes about this parser quotes it, and a quote is not a dropped call. The
+    fence test is deliberately dumb -- pair up the delimiters, take what is between them --
+    because the alternative is a real markdown parser guessing at a model's unbalanced fence.
+    An unterminated fence runs to the end of the message, which is the direction that keeps a
+    quote out of the count.
+    """
+    spans = []
+    pos = 0
+    while True:
+        start = text.find("```", pos)
+        if start < 0:
+            break
+        end = text.find("```", start + 3)
+        if end < 0:
+            spans.append((start, len(text)))
+            break
+        spans.append((start, end + 3))
+        pos = end + 3
+    for m in re.finditer(r"`[^`\n]+`", text):
+        spans.append((m.start(), m.end()))
+    return spans
+
+
+def call_forms(text: str) -> list:
+    """Every place a message carries the engine's tool-call markup, marked quoted or not."""
+    spans = code_spans(text or "")
+    found = []
+    for name, pattern in CALL_MARKUP:
+        for m in pattern.finditer(text or ""):
+            found.append({"form": name, "at": m.start(),
+                          "quoted": any(a <= m.start() < b for a, b in spans),
+                          "text": (text or "")[max(0, m.start() - 40):m.start() + 120]})
+    return found
+
+
+def messages(rs: list) -> list:
+    """The assistant messages of one transcript, as the client saw them.
+
+    Only the `text` blocks are read for markup. `reasoning` is a different channel that the
+    engine's tool-call parser never sees, and an agent thinking out loud about a `<parameter>`
+    tag is the single most common source of the markup in this house's transcripts.
+    """
+    out = []
+    for r in rs:
+        if r.get("type") != "assistant/message":
+            continue
+        d = r.get("data") or {}
+        message = d.get("message") or {}
+        blocks = message.get("content") or []
+        prose = "".join(b.get("text", "") for b in blocks
+                        if isinstance(b, dict) and b.get("type") == "text")
+        out.append({"turn": d.get("turn"), "step": d.get("step"), "time": r.get("time"),
+                    "has_call": any(isinstance(b, dict) and b.get("type") == "tool-call"
+                                    for b in blocks),
+                    "forms": call_forms(prose)})
+    return out
+
+
+def dropped(rs: list, top: int = 8) -> dict:
+    """What a transcript would have to say if the engine had dropped one of its tool calls.
+
+    There is no call record to count, because a dropped call is precisely the call that never
+    became one, so this counts the two things a drop cannot help leaving behind. One: the
+    call's markup in the prose the client was handed, outside any code span -- which is what
+    the parser does with a wrapper it will not take (`serve/frontend.py`: the text it is).
+    Two: a step that ended with the parser's own words, `malformed tool call`, which is what
+    the same body does when it is entered as a call and still is not one, and which
+    `tool_call_recovery` turns into the first case instead of an error.
+
+    `asks` is the denominator a rate wants: turns that wanted a tool, counted as the messages
+    that got a call plus the messages that carried markup instead of one.
+    """
+    msgs = messages(rs)
+    markup = [f for m in msgs for f in m["forms"]]
+    drops = [m for m in msgs if not m["has_call"]
+             and any(not f["quoted"] for f in m["forms"])]
+    beside = [m for m in msgs if m["has_call"]
+              and any(not f["quoted"] for f in m["forms"])]
+    malformed = []
+    for r in rs:
+        if r.get("type") not in ("llm/retry", "llm/retry-started"):
+            continue
+        failure = (r.get("data") or {}).get("failure") or {}
+        text = " ".join(str(failure.get(key) or "") for key in ("message", "code", "error"))
+        if MALFORMED.search(text):
+            malformed.append({"time": r.get("time"), "text": text})
+    examples = ([{"time": m["time"], "text": m["forms"][0]["text"]} for m in drops + beside]
+                + [{"time": m["time"], "text": m["text"]} for m in malformed])[:top]
+    return {"messages": len(msgs), "with_call": sum(1 for m in msgs if m["has_call"]),
+            "markup": len(markup), "quoted": sum(1 for f in markup if f["quoted"]),
+            "asks": sum(1 for m in msgs if m["has_call"]) + len(drops),
+            "drops": len(drops), "drops_beside_call": len(beside),
+            "malformed": len(malformed), "examples": examples}
+
+
 def served_model(rs: list, default: str = ""):
     """The model a session was served by.
 
@@ -264,6 +387,65 @@ def parse_instant(text: str):
     return stamp
 
 
+def report_dropped(rows: list, bucket, args) -> int:
+    """Print the dropped-call reading. See `dropped` for what each column is."""
+    def rate(g, key, over):
+        total = sum(x[over] for x in g)
+        return f"{100 * sum(x[key] for x in g) / total:.1f}%" if total else "n/a"
+
+    print(f"{len(rows)} sessions of model '{args.model or 'any'}' under {args.root}"
+          + (f", active since {args.since}" if args.since else "")
+          + "\n  what counts as a dropped call: the engine's own tool-call markup, in an "
+            "assistant\n  message that got no call, outside a code fence or a backtick span — "
+            "a call the\n  client was handed as prose. Plus any step that ended in the "
+            "parser's error.")
+    groups = {}
+    for r in rows:
+        groups.setdefault(bucket(r), []).append(r)
+    for name in sorted(groups):
+        g = groups[name]
+        total = {key: sum(x[key] for x in g) for key in
+                 ("messages", "with_call", "asks", "drops", "drops_beside_call", "quoted",
+                  "malformed")}
+        print(f"\n{'last active ' + name + ' ' + args.flip if args.flip else 'all sessions'}: "
+              f"{len(g)} sessions, {total['messages']} assistant messages")
+        print(f"  turns that wanted a tool: {total['asks']} — {total['with_call']} arrived as a "
+              f"call, {total['drops']} arrived as prose carrying the call's markup")
+        print(f"  dropped-call rate: {rate(g, 'drops', 'asks')} of what wanted a tool "
+              f"(upstream, over 1,462 turns of this model under Claude Code: 7.1% of turns lost "
+              f"a call without the switch, 1.7% with it)")
+        print(f"  markup an agent quoted in a fence or backticks, excluded: {total['quoted']}"
+              f"; beside a call that did arrive: {total['drops_beside_call']}")
+        print(f"  steps that ended in \"malformed tool call\": {total['malformed']} "
+              f"{rate(g, 'malformed', 'asks')}")
+    notable = [r for r in rows if r["drops"] or r["malformed"]]
+    if notable:
+        print(f"\n{len(notable)} sessions to read, not to count:")
+        for r in sorted(notable, key=lambda r: -(r["drops"] + r["malformed"]))[:args.top]:
+            example = (r["examples"] or [{}])[0].get("text", "").replace("\n", " | ")
+            stamp = f"{r['last']:%Y-%m-%d %H:%M}Z" if r["last"] else "undated"
+            print(f"  {r['drops']} in prose, {r['malformed']} errors — {r['session']}, {stamp}\n"
+                  f"      {example[:130]}")
+    else:
+        print("\nNothing to read: no assistant message carries the markup outside a code span, "
+              "and no step ended in the parser's error.")
+    quoted = sum(r["quoted"] for r in rows)
+    print(f"\nThat zero is worth what the instrument is worth, so here is its calibration: the "
+          f"store does contain the markup — {quoted} of it, quoted by agents writing about this "
+          f"very format — and all of it landed in the quoted column instead of the drop column. "
+          f"A store that shows the format and none of it acting like a call is a store that does "
+          f"not have the problem, which is a different finding from an instrument that cannot see "
+          f"it.")
+    if args.flip:
+        print("\nBoth sides of the split are not automatically the same measurement: a switch at "
+              "the split changes what the prose is allowed to contain. Before this box's "
+              "tool_call_recovery deploy, markup in prose was a call the parser threw away; after "
+              "it, most of those become a tool_call before the client sees a byte, so whatever "
+              "still arrives in prose on the later side is a form recovery does not know — a lead "
+              "to read, not a regression.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Loop streaks in real agent transcripts.")
     ap.add_argument("--root", default=ROOT, help="The DSH session store")
@@ -278,12 +460,15 @@ def main() -> int:
                     help="Identical consecutive calls that count as a loop")
     ap.add_argument("--top", type=int, default=8, help="Worst sessions to name")
     ap.add_argument("--workspace", default="", help="Substring filter on the session's directory")
+    ap.add_argument("--dropped", action="store_true",
+                    help="Report tool calls that never arrived instead of runs of repeats")
     args = ap.parse_args()
 
     flip = parse_instant(args.flip)
     since = parse_instant(args.since)
 
     rows = []
+    drop_rows = []
     for path in sessions(args.root):
         if args.workspace and args.workspace not in path:
             continue
@@ -293,6 +478,13 @@ def main() -> int:
         model = served_model(rs, args.default_model)
         if args.model and model != args.model:
             continue
+        if args.dropped:
+            d = dropped(rs, args.top)
+            stamp = when(max([r.get("time") or 0 for r in rs]) or 0)
+            if d["messages"] and not (since and (stamp is None or stamp < since)):
+                d.update(session=os.path.relpath(path, args.root).split(os.sep)[0],
+                         model=model, last=stamp)
+                drop_rows.append(d)
         seq = calls(rs)
         if not seq:
             continue
@@ -308,6 +500,9 @@ def main() -> int:
         if not flip or r["last"] is None:
             return "all"
         return "after" if r["last"] >= flip else "before"
+
+    if args.dropped:
+        return report_dropped(drop_rows, bucket, args)
 
     print(f"{len(rows)} sessions of model '{args.model or 'any'}' under {args.root}"
           + (f", active since {since:%Y-%m-%d %H:%M}Z" if since else "")
