@@ -32,7 +32,8 @@ from pathlib import Path
 # every configuration by ServiceIdentityTests in tests/test_config.py. Publishing no service alias at
 # all is not an option: that is a catalog a contract client cannot address, which is the same hole as
 # nothing serving.
-CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo')
+CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
+    'flash-next-strata-solo-thinking')
 # Transitional spelling of the name above, for one release, and a literal tuple on purpose rather
 # than a binding to CONFIGURATIONS. The updater running on an already-deployed revision parses the
 # *target* revision's source for this constant and ast.literal_eval's its value, then refuses the
@@ -47,6 +48,7 @@ CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo
 # tests/test_config.py pins. Once a revision that reads CONFIGURATIONS is deployed, this line goes;
 # target_profiles() already resolves a plain binding, so the next rename needs no such scaffolding.
 DAYTIME_PROFILES = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
+    'flash-next-strata-solo-thinking',
     'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-pair'

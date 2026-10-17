@@ -314,9 +314,13 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'qwen27b-q8-pair')
         self.assertEqual([x['profile'] for x in configs['selectable']], list(CONFIGURATIONS))
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
-            ['flash-next-strata-solo'])
+            ['flash-next-strata-solo', 'flash-next-strata-solo-thinking'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (160K)'])
+            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next (160K)'])
+        # Two selectable configurations, one backend: the model name is the same because it is the
+        # same model, so what tells the operator which is which is the variant label.
+        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-2:]],
+            ['greedy', 'card sampling'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)

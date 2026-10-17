@@ -52,6 +52,10 @@ class ConfigurationTests(unittest.TestCase):
         # (benchmark history) are unchanged, so switching from an old name to its new one recreates nothing.
         # compose_sha256 is the whole backend set at the rename; Nighttime has since gained MTP3 (2026-10-07),
         # so the Daytime service is what stays pinned for the paired configurations.
+        #
+        # Every selectable configuration is pinned here, renamed or not -- an entry whose previous_id is
+        # null says so in its note -- because the digest is the cheapest thing that notices a profile edit
+        # moved a launch flag, a mount or a variable along with it.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
         self.assertEqual(set(recorded), set(CONFIGURATIONS))
         for name, expected in recorded.items():
@@ -293,7 +297,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
         self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
         expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
-            'flash-next-strata-solo': 'strata-vision-296b59d2f73c', EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
+            'flash-next-strata-solo': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-solo-thinking': 'strata-vision-296b59d2f73c',
+            EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
             with self.subTest(profile=name):
@@ -363,7 +369,8 @@ class ConfigurationTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
-        self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo'))
+        self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
+            'flash-next-strata-solo-thinking'))
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
@@ -615,12 +622,13 @@ class EnvironmentEngineTests(unittest.TestCase):
     def test_the_sampling_preset_the_profile_states_is_the_variable_the_image_reads(self):
         # The engine's own default is greedy and its setup never writes the sampling block, so the
         # only thing that decides what a routed request that sends no sampling gets is this variable
-        # and the entry point that writes it into the run config. A profile that states nothing
-        # renders nothing, which is why the rollback is a deleted line and not a value.
+        # and the entry point that writes it into the run config. The default configuration states
+        # off, which takes a block back out; a profile that states nothing renders nothing, which
+        # leaves whatever the last-selected configuration wrote sitting in the workspace.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
-            self.assertEqual(service['environment']['SAMPLING'], 'thinking')
+            self.assertEqual(service['environment']['SAMPLING'], 'off')
             self.assertNotIn('VISION_DEVICE', service['environment'])
             path = config / ('profiles/' + SOLO + '.json')
             definition = read(path)
@@ -775,19 +783,13 @@ class EnvironmentEngineTests(unittest.TestCase):
         # renderer may lend the shared vision GPU to and one it has to leave the card out of.
         self.assertEqual(engine['environment']['--vision-device'], 'VISION_DEVICE')
 
-    # flash-next-strata-solo answers to these names through a hand edit inside its own workspace's
-    # engine config (strata-unsloth-ud-iq4_xs.json), not through source. Neither of that file's
-    # two backups records when the names went in, which is part of why they are easy to lose. It is
-    # exempt only because declaring them in the profile recreates the container that is serving
-    # right now. The next time that profile restarts for any reason, put the variable in its
-    # container.environment and drop it from this map.
-    #
-    # The value is the hand edit as it stands in the workspace, read off its live config. An
-    # exemption that records no content is a hole wearing a check: this is
-    # the only environment-interface profile left, so the loop below would compare nothing at all,
-    # and an alias rename would leave the serving container refusing the very name the controller
-    # probes for it -- the failure this test exists to catch, arriving by a different route.
-    WORKSPACE_CARRIED_HOSTS = {'flash-next-strata-solo': ('qwen38-daytime', 'strata-trial', 'qwen38-strata')}
+    # Closed 2026-10-17. flash-next-strata-solo used to answer to its host names through a hand edit
+    # inside its own workspace's engine config (strata-unsloth-ud-iq4_xs.json) rather than through
+    # source, and was exempt here only because declaring them would recreate the container that was
+    # serving. The sampling change recreates that container anyway, so the names are declared now --
+    # in both the configuration and its sampling variant, which is the same backend -- and the
+    # exemption is gone. Nothing in the workspace has to survive for a backend to answer the names
+    # the controller probes it by.
 
     def test_an_environment_engine_names_the_hosts_its_server_will_answer(self):
         """A Strata server refuses a request whose Host name it was never told to answer.
@@ -809,26 +811,17 @@ class EnvironmentEngineTests(unittest.TestCase):
         controller and clients can reach it by. Equality, not containment, so an alias rename that
         leaves a stale name behind fails too.
 
-        A profile whose names are carried by its workspace instead of its source is held to the same
-        equality, against the edit recorded in WORKSPACE_CARRIED_HOSTS: the deviation is allowed to
-        exist, not to go quietly stale.
+        A profile whose names were carried by its workspace instead of by source is held to the same
+        equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(set(self.WORKSPACE_CARRIED_HOSTS).difference(environment), set(),
-            'WORKSPACE_CARRIED_HOSTS exempts a profile that is not an environment-interface Daytime '
-            'profile; retire the exemption with the profile')
+        self.assertEqual(len(environment), 2, 'the sampling variant is expected to be an '
+            'environment-interface configuration beside its greedy original')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
             reached = {definition['container_name'], *container['networks']['router']['aliases']}
             with self.subTest(profile=name):
-                if name in self.WORKSPACE_CARRIED_HOSTS:
-                    self.assertEqual(set(self.WORKSPACE_CARRIED_HOSTS[name]), reached,
-                        '%s answers to %s in its workspace and is reached by %s: the hand edit no '
-                        'longer covers this profile, so declare STRATA_ALLOWED_HOSTS in the profile '
-                        '(that recreates the container) rather than editing the workspace again'
-                        % (name, sorted(self.WORKSPACE_CARRIED_HOSTS[name]), sorted(reached)))
-                    continue
                 declared = {h.strip().lower() for h in container['environment']['STRATA_ALLOWED_HOSTS'].split(',')}
                 self.assertEqual(declared, reached)
 
@@ -847,6 +840,18 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     broadened marker stay, because the next quant trial is exactly what they were written for.
     """
 
+    # One workspace may be shared by a declared variant pair. The invariant is about a pack: two
+    # profiles whose packs differ must not watch the same directory, because whichever finishes first
+    # declares the other's half-built workspace ready. flash-next-strata-solo and its thinking variant
+    # (2026-10-17) mount the same shards on the same engine and differ in one environment variable, so
+    # they build the same pack -- and giving the variant its own directory would buy a second copy of a
+    # tens-of-gigabytes pack, and an hour of nothing serving on the first switch, for a workspace that
+    # comes out identical. The pairing is not taken on trust: the test below refuses the pair the moment
+    # the two configurations differ in anything but the sampling preset, and a different quant or window
+    # in either one fails that check and restores this invariant by hand.
+    SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo',
+        'flash-next-strata-solo-thinking')}
+
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
         engines = read(ROOT / 'config/shared.json')['engines']
         seen = {}
@@ -855,11 +860,60 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
             if not engines[profile['engine']].get('provisioning'):
                 continue
             workspace = profile['workspace']['path']
-            self.assertNotIn(workspace, seen,
-                '%s and %s share workspace %s: a ready marker read off the engine would let either '
-                'one answer for the other' % (name, seen.get(workspace), workspace))
-            seen[workspace] = name
-        self.assertEqual(sorted(seen.values()), ['flash-next-strata-solo'])
+            self.assertIn(name, self.SHARED_WORKSPACES.get(workspace, (name,)),
+                '%s provisions into %s, which is only ever shared by %s: a ready marker read off the '
+                'engine would let either one answer for the other'
+                % (name, workspace, ', '.join(self.SHARED_WORKSPACES[workspace])))
+            seen.setdefault(workspace, []).append(name)
+        for workspace, names in seen.items():
+            declared = self.SHARED_WORKSPACES.get(workspace, (names[0],))
+            self.assertEqual(sorted(names), sorted(declared),
+                '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
+                'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
+        self.assertEqual(sorted(seen), ['strata-trial/data'])
+
+
+class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
+    """A configuration that differs from another only in how it samples must differ in nothing else.
+
+    `flash-next-strata-solo-thinking` is offered so the operator can move the house's coding resident
+    onto the model card's sampling and move it back, at the portal, without an edit and a deploy. That
+    is only honest while the two configurations launch the same backend: same image, same shards, same
+    mounts, same GPUs, same window, same service IDs, same workspace -- one variable apart. The moment
+    they diverge, the shared provisioning workspace above stops being safe and this test stops the pair.
+
+    The comparison is on the rendered bundle rather than on the two files, because the files also carry
+    prose that is *supposed* to differ: what each configuration warns about is exactly the difference.
+    """
+
+    PAIR = ('flash-next-strata-solo', 'flash-next-strata-solo-thinking')
+
+    def rendered(self, name):
+        return render(ROOT / 'config', BASELINE['host'], name)
+
+    def test_the_launch_differs_in_the_sampling_variable_and_nowhere_else(self):
+        a, b = (self.rendered(name) for name in self.PAIR)
+        for bundle in (a, b):
+            bundle['compose']['services']['coding']['environment'].pop('SAMPLING')
+            bundle['manifest']['services'][0]['recommended_environment'].pop('SAMPLING')
+            bundle.pop('config_sha256')
+            # The identity, and the prose that names the difference, are the only other things
+            # allowed to differ; both are set aside so a launch change cannot hide behind them.
+            bundle['profile'] = bundle['catalog']['configuration']['id'] = 'variant'
+            bundle['catalog'].pop('deployment_warnings')
+            for model in bundle['catalog']['models']:
+                model.pop('deployment_warnings')
+        self.assertEqual(a, b, 'the two configurations must render identically once the sampling '
+            'preset is taken back out; only the preset, the profile id and the warning that names the '
+            'difference may differ')
+
+    def test_the_variant_renders_the_variable_the_image_reads_and_the_original_renders_off(self):
+        """`off` and not an omitted line: the workspace outlives the profile, and switching back has
+        to take the block out of a config another configuration wrote."""
+        for name, preset in zip(self.PAIR, ('off', 'thinking')):
+            with self.subTest(profile=name):
+                service = self.rendered(name)['compose']['services']['coding']['environment']
+                self.assertEqual(service['SAMPLING'], preset)
 
 
 class ServiceIdentityTests(unittest.TestCase):

@@ -2,6 +2,7 @@
   "id": "flash-next-strata-solo",
   "role": "coding",
   "display_name": "Qwen3.8 Flash-Next",
+  "variant_label": "greedy",
   "engine": "strata-vision-296b59d2f73c",
   "container_name": "qwen38-daytime",
   "host_port": 18080,
@@ -36,7 +37,7 @@
     "--model": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
     "--kv": "k8v4",
     "--kv-streaming": "auto",
-    "--sampling": "thinking",
+    "--sampling": "off",
     "--vision": "no",
     "--gpus": "0,1,2,3",
     "--layer-split": "auto",
@@ -85,7 +86,8 @@
       "/tmp:rw,nosuid,size=2g"
     ],
     "environment": {
-      "CUDA_VISIBLE_DEVICES": "0,1,2,3"
+      "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata"
     },
     "networks": {
       "router": {
@@ -133,7 +135,7 @@
       "A resident, not a trial: this configuration publishes the daytime service ID and the local-active compatibility alias, so every client that was told to send daytime reaches it, and it answers nighttime as well. One loaded model offers every service ID the router contract documents, so no client is left with nothing to send. Selecting it, and switching away from it, remain the operator's acts.",
       "nighttime is answered by this same backend rather than by a second loaded model. A request that used the Everyday resident for the abliterated model's unfiltered behaviour is served here and redirected nowhere; the pictures it used to be the only resident that could read are read here as well, since the encoder joined this container on 2026-10-16. The filtered/unfiltered distinction the two 27B residents drew is carried by capability_profile.nsfw, which is false for this quant, and not by a second resident.",
       "Strata is not llama.cpp: it configures itself from the environment, keeps its own pack, logs and MTP layer in ai/strata-trial/data, and needs a writable root. Unrestricted output is stated because the deployment sets no output ceiling; it has not been attested on this quant, which is a plain Qwen release rather than an unrestricted fine-tune. nsfw is therefore false.",
-      "--sampling thinking: a request that sends no sampling of its own gets the Qwen3.8-Flash-Next card's thinking-mode set (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0) instead of the engine's own greedy default, which is what every routed client used to get because the router forwards an omitted temperature as omitted and this house's coding agent sends none. It is the set the 27B residents already run, and it buys conformance and the end of deterministic repetition rather than accuracy: draft acceptance 81.2% to 72.7% and decode 0.94x measured upstream, about 76% to 72% on this quant. Bench Studio pins temperature 0 in every built-in profile and scripts/strata_replay.py sends temperature 0, so no recorded measurement moves. It takes effect only on an image whose entry point can write the block: a -vision tag built before this change ignores SAMPLING and decodes greedily, so the image rebuild and the new image_id it records in shared.json are part of this change, not a follow-up.",
+      "--sampling off: a request that sends no sampling of its own gets the engine's own greedy default, which is what every routed client has always got here, because the router forwards an omitted temperature as omitted and this house's coding agent sends none. It is not what the Qwen3.8-Flash-Next card states: flash-next-strata-solo-thinking is this resident, one line apart, decoded at the card's thinking-mode set. off is stated rather than omitted because the workspace outlives the profile -- a sampling block written by that configuration has to be taken back out when this one is selected, and a profile that states nothing leaves the file alone.",
       "Single-resident profile: this model holds all four text cards, so the Everyday resident is stopped and removed while it is active. Its service ID keeps answering from this backend rather than failing, so no client is left without a model; the second resident returns when a paired configuration is selected.",
       "Four text cards (RTX 3090, RTX 4080 SUPER, RTX 4080, 3080 Ti) with auto layer placement, and the RTX 3080 as a fifth card the image encoder has to itself. The encoder is a separate process placed by its own index, so the language model keeps --gpus 0,1,2,3 and never sees the fifth card. The profile states --vision no and the host's vision_gpu_id turns it on, which is the direction the 27B profiles already take for their projectors; on a host with no vision GPU this renders as the text-only configuration it was until 2026-10-16, and the catalog publishes that rather than the promise.",
       "The encoder reads ISTA-DASLab's mmproj-Qwen3.8-Flash-Next-BF16.gguf, mounted beside the shards, because the engine looks in GGUF_DIR before it reaches for Hugging Face and a fresh workspace should still start with no egress. The engine goes on reserving 2048 MiB a card for an encoder that is no longer on those cards; taking that back to 700 returns roughly 1.3 GiB a card to the expert cache and is measured on its own, not bundled with this.",
