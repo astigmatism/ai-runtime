@@ -801,11 +801,20 @@ class EnvironmentEngineTests(unittest.TestCase):
         # point, whose sha256 (8b8a5ef3862ce0ac42fd0e4338b933bd303a68ae9005178ff36b605dbe5745a3) is
         # verified equal to the file in runtime/overlay/ inside the built image, and whose upstream
         # half (e85f40f57d036d1247804321a1164be707873712851e093998df97a2398b76b2) is the file it execs.
+        # The first rebuild of that day lost the identity labels and this line caught it: the id was
+        # pinned to an image whose inspect output carried no org.opencontainers.image.revision, the
+        # candidate built, and the deploy was refused as `pinned inference engine identity changed`
+        # with the box still serving the revision before it. The recipe in runtime/overlay/Dockerfile
+        # takes the labels as required build arguments and refuses a build that omits them, and
+        # test_the_overlay_layer_declares_the_identity_the_runtime_reads_back keeps it that way.
+        # The pin below is the id that recipe builds today, entry point included: the id covers the
+        # text of the Dockerfile as well as its layers, so editing the recipe above -- even a comment
+        # -- means rebuilding and re-pinning this line, never remembering an old build.
         # The image this line pointed at before the rebuild is kept on the box as
         # local/strata:296b59d2f73c-vision-pre-cache, so this line is the rollback: one re-pin, one
         # deploy, and the box is running the entry point that knows nothing about a conversation cache.
         self.assertEqual(engine['image_id'],
-                         'sha256:071cd6a312db1e29fb75725e0bf6dd06a57247bcad3fbd13a2ebc9e14ef82fe8')
+                         'sha256:761cafff21bc3d11adb593153665580f3e515a10d7f30f87b54536725c1cc8d2')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
@@ -813,6 +822,28 @@ class EnvironmentEngineTests(unittest.TestCase):
         # Being told which card its encoder runs on is the whole difference between an engine the
         # renderer may lend the shared vision GPU to and one it has to leave the card out of.
         self.assertEqual(engine['environment']['--vision-device'], 'VISION_DEVICE')
+
+    def test_the_overlay_layer_declares_the_identity_the_runtime_reads_back(self):
+        # Strata's own Dockerfile labels only the NVIDIA base, so the image this house ships is the
+        # only place the identity labels exist, and a rebuild of the house layer that forgets them
+        # produces an image that runs perfectly and deploys not at all: the switch guard, the update
+        # cutover, the migration check and the recovery path each read org.opencontainers.image.
+        # revision out of `docker image inspect` and refuse it against the manifest. So the recipe is
+        # pinned here, against the engine it has to produce, and not only in prose.
+        overlay = (ROOT / 'runtime' / 'overlay' / 'Dockerfile').read_text()
+        stage = overlay.split('FROM ${UPSTREAM}', 1)[1]
+        for label in ('org.opencontainers.image.revision=${REVISION}',
+                      'org.opencontainers.image.source=${REPOSITORY}',
+                      'io.service-portal.trial=${TRIAL}'):
+            self.assertIn('LABEL ' + label, overlay)
+        # An ARG above FROM reaches only the FROM line, and BuildKit expands one the stage never
+        # declared to the empty string -- labels that build, ship and read back blank.
+        for name in ('REVISION', 'REPOSITORY', 'TRIAL'):
+            self.assertIn('ARG ' + name, stage)
+        self.assertIn('test -n "$REVISION"', stage)
+        engine = ENGINES[read(ROOT / 'config/profiles' / (SOLO + '.json'))['engine']]
+        self.assertIn('--build-arg REVISION=' + engine['revision'], overlay)
+        self.assertIn('--build-arg REPOSITORY=' + engine['repository'], overlay)
 
     # Closed 2026-10-17. flash-next-strata-solo used to answer to its host names through a hand edit
     # inside its own workspace's engine config (strata-unsloth-ud-iq4_xs.json) rather than through
