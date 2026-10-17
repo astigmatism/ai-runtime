@@ -28,8 +28,15 @@ arm exists for is decode, which is where the draft acceptance the sampling costs
 greedy arm stays the default, and stays what every recorded baseline was measured with; a sampled
 run is only ever comparable with another sampled run.
 
-Two things this found about the box before it was used for anything. The first pass over a
-prompt decodes about 25-45% slower than every pass after it, with time to first token
+It reports one thing decode cannot say, and does not gate it: how much of an answer repeats
+itself. The cells ask for a line-per-item enumeration, so a reply that has slipped into a loop says
+so in the table -- a run of 4 identical lines is the same threshold the field reports use over real
+quarantined production loops (Niko1221/Strata#1560: those loops reproduced 11/16 greedy and 0/16 at
+the card's sampling). Gating on it would be wrong on both arms: a greedy answer can repeat a line the
+prompt contained, and a sampled one repeats by construction.
+
+Two things this found about the box before it was used for anything. The first pass over a prompt
+decodes about 25-45% slower than every pass after it, with time to first token
 unchanged -- so it is not the prompt cache, it is the expert caches filling, which is
 exactly the memory hierarchy the levers act on. Round 1 is therefore reported apart and
 never pooled with the rest. And the absolute decode this reports, about 153 tok/s warm on a
@@ -218,6 +225,12 @@ SAMPLING_ARMS = {
                  "presence_penalty": 1.5},
 }
 
+# The threshold at which a run of identical consecutive lines counts as a loop rather than as
+# an answer with a repeated item in it. Not this box's invention and not a tuned number: it is
+# the one the field report behind #1560 used over 16 real quarantined production loops, so a
+# streak here means the same thing it means there.
+LOOP_STREAK = 4
+
 
 def chat(base: str, key: str, messages: list, max_tokens: int, think: bool,
          sampling: dict, timeout: float) -> dict:
@@ -328,6 +341,34 @@ def loaded_context(base: str, key: str):
         return None
 
 
+def repetition(text: str) -> dict:
+    """How much of a continuation repeats itself, which is the failure this suite can see but
+    deliberately does not gate.
+
+    The cells ask for a line-per-item enumeration, so a model that has fallen into a
+    repetition loop produces it in plain sight: the same line, several times running. Two
+    numbers, because they catch different things. `repeat_streak` is the longest run of
+    identical consecutive non-empty lines -- the metric the field reports use, where a streak
+    of 4 identical tool calls counted as a loop (Niko1221/Strata#1560, 16 real production
+    loops, greedy 11/16 reproduced against 0/16 at the card's sampling). `dup_line_pct` is
+    what fraction of the answer had already appeared earlier, which catches a loop that
+    alternates two lines and never has a long run of one.
+
+    Reported and never gated, on either arm. A correct enumeration can legitimately repeat a
+    line the prompt asked for twice, and refusing a run over that would train everyone to
+    pass -- on the sampled arm especially, where the whole point is that the text moves.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    best = streak = 0
+    previous = None
+    for line in lines:
+        streak = streak + 1 if line == previous else 1
+        previous = line
+        best = max(best, streak)
+    return {"repeat_streak": best,
+            "dup_line_pct": round(100 * (len(lines) - len(set(lines))) / len(lines)) if lines else 0}
+
+
 def digest(r: dict) -> dict:
     """The engine's own numbers for one request, read the way the bench reads them."""
     u, t = r.get("usage") or {}, r.get("timings") or {}
@@ -341,7 +382,8 @@ def digest(r: dict) -> dict:
             "generated_tokens": (u or {}).get("completion_tokens") or r.get("pieces"),
             "decode_tps": dec, "prompt_tps": t.get("prompt_per_second"),
             "drafts_offered": t.get("draft_n"), "drafts_accepted": t.get("draft_n_accepted"),
-            "answer_sha256": hashlib.sha256(r.get("text", "").encode()).hexdigest()[:16]}
+            "answer_sha256": hashlib.sha256(r.get("text", "").encode()).hexdigest()[:16],
+            **repetition(r.get("text", ""))}
 
 
 # -------------------------------------------------------------------------------- statistics
@@ -413,6 +455,8 @@ def summarise(rows: list) -> dict:
         ttft = [r["ttft_s"] for r in cell if r["ttft_s"]]
         offered = sum(r["drafts_offered"] or 0 for r in cell)
         accepted = sum(r["drafts_accepted"] or 0 for r in cell)
+        streaks = [r.get("repeat_streak") or 0 for r in cell]
+        dups = [r.get("dup_line_pct") or 0 for r in cell]
         lo, hi = boot_ci(dec)
         out[label] = {"n": len(cell),
                       "decode_median": round(statistics.median(dec), 1) if dec else None,
@@ -421,6 +465,9 @@ def summarise(rows: list) -> dict:
                       "prompt_median": round(statistics.median(pre), 1) if pre else None,
                       "ttft_median": round(statistics.median(ttft), 3) if ttft else None,
                       "accept_pct": round(100 * accepted / offered, 1) if offered else None,
+                      "repeat_streak": max(streaks),
+                      "looped": sum(1 for s in streaks if s >= LOOP_STREAK),
+                      "dup_line_median": round(statistics.median(dups), 1),
                       "answers": sorted({r["answer_sha256"] for r in cell})}
     return out
 
@@ -428,13 +475,14 @@ def summarise(rows: list) -> dict:
 def table(summary: dict, title: str) -> None:
     print(f"\n{title}")
     print(f"{'cell':12s} {'n':>2s} {'decode':>7s} {'95% CI':>16s} {'spread':>7s} "
-          f"{'prefill':>8s} {'first':>7s} {'accept':>7s}  answers")
+          f"{'prefill':>8s} {'first':>7s} {'accept':>7s} {'repeat':>8s}  answers")
     for label, s in summary.items():
         lo, hi = s["decode_ci95"]
         ci = f"[{lo}, {hi}]" if s["n"] > 1 and lo else "-"
         print(f"{label:12s} {s['n']:2d} {str(s['decode_median']):>7s} {ci:>16s} "
               f"{str(s['decode_spread']):>7s} {str(s['prompt_median']):>8s} "
               f"{str(s['ttft_median']):>7s} {str(s['accept_pct']) + '%':>7s}  "
+              f"{str(s.get('repeat_streak', '-')):>3s}x{str(s.get('dup_line_median', '-')):>4s}%  "
               f"{len(s['answers'])} distinct")
 
 
@@ -541,6 +589,13 @@ def main() -> int:
     summary = summarise(warm)
     table(summary, f"warm (rounds {args.warmup + 1}-{args.rounds}) -- this is the measurement")
     table(summarise(cold), f"cold (rounds 1-{args.warmup}) -- reference only")
+
+    looping = [(k, s) for k, s in summary.items() if s["repeat_streak"] >= LOOP_STREAK]
+    detail = ", ".join(f"{k} in {s['looped']}/{s['n']} samples up to {s['repeat_streak']}x"
+                       for k, s in looping)
+    print(f"repetition: held at {LOOP_STREAK} identical consecutive lines or more, reported and "
+          f"not gated on any arm; {len(looping)} of {len(summary)} cells reached it"
+          + (f" ({detail})" if looping else ""))
 
     if args.compare:
         path = os.path.join(args.compare.rstrip("/"), "results.json")

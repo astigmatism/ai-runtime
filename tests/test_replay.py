@@ -275,5 +275,52 @@ class ItWaitsForTheBoxToBeAlone(unittest.TestCase):
 
 
 
+@requires_harness
+class ARepetitionIsReportedAndNotGated(unittest.TestCase):
+    """The one number on a sampled arm that is about behaviour rather than speed. Greedy
+    repeats because greedy always takes the same token; sampling repeats because the model
+    lost the thread. Both are worth seeing and neither may fail a run, which is why the
+    harness has a reporter here and no verdict."""
+
+    def test_a_run_of_identical_lines_is_the_metric_the_field_reports(self):
+        """4 is not this box's number: it is the threshold #1560 used over 16 real
+        quarantined production loops, so a streak here means what it means there."""
+        answer = "a.py: x\nb.py: y\nb.py: y\nb.py: y\nb.py: y\n"
+        self.assertEqual(replay.repetition(answer)["repeat_streak"], 4)
+        self.assertGreaterEqual(replay.LOOP_STREAK, 4)
+
+    def test_a_loop_over_two_lines_is_not_missed(self):
+        """Consecutive-identical alone reports a streak of 1 for `x y x y x y`, which is the
+        shape a stalled enumeration actually takes. The duplicate fraction is the other half
+        of the pair for exactly this case."""
+        d = replay.repetition("x\ny\nx\ny\nx\ny\n")
+        self.assertEqual(d["repeat_streak"], 1)
+        self.assertGreater(d["dup_line_pct"], 40)
+
+    def test_a_clean_answer_and_an_empty_one_are_both_reportable(self):
+        self.assertEqual(replay.repetition("a\nb\nc\n"), {"repeat_streak": 1, "dup_line_pct": 0})
+        self.assertEqual(replay.repetition(""), {"repeat_streak": 0, "dup_line_pct": 0})
+
+    def test_the_number_reaches_the_summary_of_rows_that_predate_it(self):
+        """Results files from before this column exists are still on disk and are still
+        compared against; a run must summarise them rather than stop on a KeyError."""
+        row = {"label": "code-4k", "ok": True, "phase": "warm", "decode_tps": 160.0,
+               "prompt_tps": 900.0, "ttft_s": 1.0, "drafts_offered": 10, "drafts_accepted": 9,
+               "answer_sha256": "a" * 16}
+        s = replay.summarise([row, dict(row, repeat_streak=5, dup_line_pct=40)])
+        self.assertEqual(s["code-4k"]["repeat_streak"], 5)
+        self.assertEqual(s["code-4k"]["looped"], 1)
+        replay.table(s, "renders")
+
+    def test_the_verdict_does_not_refuse_a_run_for_repeating(self):
+        rows = [{"label": "code-4k", "ok": True, "phase": "warm", "busy_before": False,
+                 "prompt_tokens": 4000, "target_tokens": 4000, "generated_tokens": 256,
+                 "decode_tps": 160.0, "prompt_tps": 900.0, "ttft_s": 1.0,
+                 "drafts_offered": 10, "drafts_accepted": 9, "answer_sha256": "a" * 16,
+                 "repeat_streak": 9, "dup_line_pct": 80, "looped": 1}]
+        code, reasons = replay.verdict(rows, replay.summarise(rows))
+        self.assertEqual((code, reasons), (0, []))
+
+
 if __name__ == "__main__":
     unittest.main()
