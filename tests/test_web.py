@@ -47,6 +47,17 @@ class StatusTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + '/api/status') as response:
             self.assertEqual(json.load(response)['configurations'], self.state['status']['configurations'])
 
+    def test_the_configuration_list_says_which_of_two_configurations_of_one_backend_it_is(self):
+        # `flash-next-strata-solo` and `flash-next-strata-solo-thinking` carry the same display name
+        # because it is the same model, so the variant label the registry publishes is the only thing
+        # an operator can select knowingly by. There is no JS harness here, so this reads the page's
+        # own title builder: the cheapest thing that fails if the label is dropped from it.
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        title = source.split('function configTitle(config) {')[1].split('\n}')[0]
+        self.assertIn('config.variant_label', title,
+            'the configuration list titles an exclusive backend by display name alone, and two '
+            'configurations of one backend share that name: the radio would be a coin toss')
+
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
         # The legacy home commands for retired configurations name the current ones instead of guessing.
         for retired in ('daytime', 'daytime-27b'):

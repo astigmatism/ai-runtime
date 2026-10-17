@@ -23,7 +23,10 @@ const gpuList = names => names?.length ? names.join(' + ') : 'GPUs unavailable';
 // Only added where a display name does not already say how many requests run at once.
 const slotsText = (slots, name = '') => slots > 1 && !/request/i.test(name) ? ` · ${slots} requests at once` : '';
 function configTitle(config) {
-  if (config.exclusive) return `${config.display_name} · one model, all four text GPUs`;
+  // Two configurations of one backend have the same display name because it is the same model, so the
+  // variant label is the only thing that tells an operator which one the radio is selecting.
+  const own = config.variant_label ? ` (${config.variant_label})` : '';
+  if (config.exclusive) return `${config.display_name}${own} · one model, all four text GPUs`;
   const variant = everyday(config.everyday);
   const label = variant?.variant_label;
   return `${config.display_name} + Everyday${label ? ` (${label})` : ''}`;
