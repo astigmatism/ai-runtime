@@ -32,7 +32,9 @@
       "readiness_wait_seconds": 3600,
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-*.json"],
+        "ready_files": [
+          "config/strata-*.json"
+        ],
         "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed. The marker used to name the quant -- config/strata-*-ud-iq4_xs.json -- and cannot any more: provisioning is read off the engine, so a marker that names a quant breaks the first time one engine serves two of them, as it did on 2026-10-15, and one marker per quant is no fix either, because workspace_ready() requires every declared pattern to match and would leave the first profile waiting for a file the second will never write. The path is workspace-relative and each Strata profile has its own workspace, which is what makes the broadened glob say what the literal one said. That invariant is asserted, not assumed: ProvisioningWorkspaceTests in tests/test_config.py."
       },
       "environment": {
@@ -88,7 +90,9 @@
       "readiness_wait_seconds": 3600,
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-*.json"],
+        "ready_files": [
+          "config/strata-*.json"
+        ],
         "why": "The engine builds its expert pack and installs its MTP draft into the workspace before it answers a health check, so the readiness window has to be measured on this host rather than guessed. The marker used to name the quant -- config/strata-*-ud-iq4_xs.json -- and cannot any more: provisioning is read off the engine, so a marker that names a quant breaks the first time one engine serves two of them, as it did on 2026-10-15, and one marker per quant is no fix either, because workspace_ready() requires every declared pattern to match and would leave the first profile waiting for a file the second will never write. The path is workspace-relative and each Strata profile has its own workspace, which is what makes the broadened glob say what the literal one said. That invariant is asserted, not assumed: ProvisioningWorkspaceTests in tests/test_config.py."
       },
       "environment": {
@@ -166,7 +170,14 @@
         "--low-ram": "LOW_RAM",
         "--host": "HOST",
         "--port": "PORT",
-        "--sampling": "SAMPLING"
+        "--sampling": "SAMPLING",
+        "--tool-call-recovery": "TOOL_CALL_RECOVERY"
+      },
+      "tool_call_recovery": {
+        "why": "The model sometimes writes a call to a tool the request declared in a form beside the template's -- as <parameter=NAME> instead of <function=NAME>, as JSON inside <tool_call>, as a bare <function=NAME> at the start of a line outside code, or as a second call inside the same <tool_call> -- and without this key the engine reads those as prose, which for this house's agent is a turn that looks like an answer and does nothing. serve/server.py reads the run config's top-level \"tool_call_recovery\" and defaults it to false, setup.py never writes it, and upstream measures 92.9% of agent turns' tool calls read as intended off against 98.3% on (1,462 turns of Qwen3.8 under Claude Code, from its own drift corpus).",
+        "values": "on writes the key as JSON true; off takes the key back out, which is what setup.py wrote and what the engine reads as its own default. A profile that states nothing leaves the file alone, which is why both words are stated by every configuration of this engine rather than only by the one that wants them: the key a configuration writes sits in the workspace until a configuration says otherwise. Nothing else in the file moves, and a request that declares no tools is unaffected either way, because the parser looks for these forms only among tools the request itself declared.",
+        "risk": "It is a parser and not a decider. The turn still has to look like an act rather than a quote, which is the same fence-and-line logic that already guards the template's own form, and what fails it stays text. So the failure it can add is a call where the model meant to show one -- an answer quoting a tool call at the start of a line outside a code fence -- and the failure it removes is a call the model meant and the engine dropped, which upstream measured at 5.4% of agent turns against no instances of the first.",
+        "image": "Mapped only on this engine, because only this image carries this house's entry point: the text-only tags run upstream's entry point unchanged and cannot write the key, so a profile that states --tool-call-recovery on one of those engines is refused when it renders instead of being rendered into a variable nothing reads. Unlike --sampling, the engine has understood this key since the release this image is built from, so a future image of the same revision needs only the entry point's line and not an engine change. The image in service on this host was built on 2026-10-17 before this line existed, so until the tag is rebuilt, its image_id repinned here and a receipt written, the third configuration renders TOOL_CALL_RECOVERY into a container whose entry point has never heard of it: the boot is healthy, the variable sits unread, and nothing about the answers changes. That is why this is a configuration waiting for an image and not a switch already in force."
       },
       "sampling": {
         "why": "A request that sends no sampling of its own gets the engine's own default, and that is greedy: serve/server.py states it plainly (\"An absent temperature keeps the engine's default, which is greedy\"), and setup.py never writes the run config's optional sampling block. The router forwards an omitted temperature as omitted and this house's coding agent sends none, so before this key the Strata resident answered every routed request greedily while the llama.cpp residents answered the same request at --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0. That llama.cpp set is the Qwen3.8-Flash-Next card's thinking-mode set, so this is one policy for the house rather than a new one.",

@@ -1,0 +1,156 @@
+{
+  "id": "flash-next-strata-solo-thinking-recovery",
+  "role": "coding",
+  "display_name": "Qwen3.8 Flash-Next",
+  "variant_label": "card sampling + call recovery",
+  "engine": "strata-vision-296b59d2f73c",
+  "container_name": "qwen38-daytime",
+  "host_port": 18080,
+  "gpu_group": "all",
+  "exclusive": true,
+  "context_tokens": 163840,
+  "retention": {
+    "image": "Nothing is registered for this variant alone: it is the same tag, the same shards, the same workspace and the same encoder weights as flash-next-strata-solo, which is where their retention is stated. Deleting this profile releases none of them; only that profile going does.",
+    "model": "Shared with flash-next-strata-solo, and released with it rather than with this variant.",
+    "workspace": "Shared with flash-next-strata-solo, and released with it rather than with this variant.",
+    "reports": "Shared with flash-next-strata-solo, and released with it rather than with this variant."
+  },
+  "argument_order": [
+    "--alias",
+    "--family",
+    "--quant",
+    "--model",
+    "--kv",
+    "--kv-streaming",
+    "--sampling",
+    "--tool-call-recovery",
+    "--vision",
+    "--gpus",
+    "--layer-split",
+    "--low-ram",
+    "--host",
+    "--port"
+  ],
+  "arguments": {
+    "--alias": "qwen3.8-flash-next-ud-iq4_xs",
+    "--family": "unsloth",
+    "--quant": "UD-IQ4_XS",
+    "--model": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--kv": "k8v4",
+    "--kv-streaming": "auto",
+    "--sampling": "thinking",
+    "--tool-call-recovery": "on",
+    "--vision": "no",
+    "--gpus": "0,1,2,3",
+    "--layer-split": "auto",
+    "--low-ram": "off",
+    "--host": "0.0.0.0",
+    "--port": "8080"
+  },
+  "workspace": {
+    "path": "strata-trial/data",
+    "target": "/data"
+  },
+  "artifacts": [
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "bytes": 10946624,
+      "sha256": "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"
+    },
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+      "bytes": 49835229856,
+      "sha256": "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"
+    },
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+      "bytes": 43836407744,
+      "sha256": "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "target": "/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "bytes": 907543008,
+      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"
+    }
+  ],
+  "container": {
+    "read_only": false,
+    "stop_grace_period": "180s",
+    "ulimits": {
+      "core": 0,
+      "memlock": -1
+    },
+    "tmpfs": [
+      "/tmp:rw,nosuid,size=2g"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0,1,2,3",
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata"
+    },
+    "networks": {
+      "router": {
+        "aliases": [
+          "strata-trial",
+          "qwen38-strata"
+        ]
+      }
+    },
+    "labels": {
+      "local-ai.profile": "primary",
+      "local-ai.role": "coding",
+      "local-ai.retention": "reference-aware: tag, model revision and workspace are released with the profile"
+    }
+  },
+  "catalog": {
+    "backend_url": "http://qwen38-daytime:8080",
+    "backend_kind": "strata",
+    "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+    "quantization": "Unsloth Dynamic UD-IQ4_XS (~4-bit, 94 GB)",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "mmproj_offload": "gpu",
+    "mmproj_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "mtp": {
+      "enabled": true,
+      "type": "strata-mtp-rt",
+      "detail": "the engine's own MTP draft layer, installed with its state on first start; automatic drafting is left on"
+    },
+    "capability_profile": {
+      "name": "qwen3.8-flash-next-ud-iq4-xs-strata-160k",
+      "text": true,
+      "streaming": true,
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "speculative": true,
+      "prompt_cache_volatile": true,
+      "prompt_cache_persistence": false,
+      "nsfw": false
+    },
+    "deployment_warnings": [
+      "A resident, not a trial: this configuration publishes the daytime service ID and the local-active compatibility alias, so every client that was told to send daytime reaches it, and it answers nighttime as well. One loaded model offers every service ID the router contract documents, so no client is left with nothing to send. Selecting it, and switching away from it, remain the operator's acts.",
+      "nighttime is answered by this same backend rather than by a second loaded model. A request that used the Everyday resident for the abliterated model's unfiltered behaviour is served here and redirected nowhere; the pictures it used to be the only resident that could read are read here as well, since the encoder joined this container on 2026-10-16. The filtered/unfiltered distinction the two 27B residents drew is carried by capability_profile.nsfw, which is false for this quant, and not by a second resident.",
+      "Strata is not llama.cpp: it configures itself from the environment, keeps its own pack, logs and MTP layer in ai/strata-trial/data, and needs a writable root. Unrestricted output is stated because the deployment sets no output ceiling; it has not been attested on this quant, which is a plain Qwen release rather than an unrestricted fine-tune. nsfw is therefore false.",
+      "--sampling thinking: a request that sends no sampling of its own gets the Qwen3.8-Flash-Next card's thinking-mode set (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0) instead of the engine's own greedy default, which is what flash-next-strata-solo serves. It is the set the 27B residents already run, and it buys conformance with the card and the end of deterministic repetition rather than accuracy: draft acceptance 81.2% to 72.7% and decode 0.94x measured upstream, about 76% to 72% on this quant, and no measured accuracy gain (26/30 against 25/30 exact answers, 15/15 against 15/15 valid tool calls). Bench Studio pins temperature 0 in every built-in profile and scripts/strata_replay.py sends temperature 0, so no recorded measurement moves; scripts/strata_replay.py --sampling thinking is the arm that prices this box. It takes effect only on an image whose entry point can write the block: a -vision tag built before 2026-10-17 ignores SAMPLING and decodes greedily.",
+      "Single-resident profile: this model holds all four text cards, so the Everyday resident is stopped and removed while it is active. Its service ID keeps answering from this backend rather than failing, so no client is left without a model; the second resident returns when a paired configuration is selected.",
+      "Four text cards (RTX 3090, RTX 4080 SUPER, RTX 4080, 3080 Ti) with auto layer placement, and the RTX 3080 as a fifth card the image encoder has to itself. The encoder is a separate process placed by its own index, so the language model keeps --gpus 0,1,2,3 and never sees the fifth card. The profile states --vision no and the host's vision_gpu_id turns it on, which is the direction the 27B profiles already take for their projectors; on a host with no vision GPU this renders as the text-only configuration it was until 2026-10-16, and the catalog publishes that rather than the promise.",
+      "The encoder reads ISTA-DASLab's mmproj-Qwen3.8-Flash-Next-BF16.gguf, mounted beside the shards, because the engine looks in GGUF_DIR before it reaches for Hugging Face and a fresh workspace should still start with no egress. The engine goes on reserving 2048 MiB a card for an encoder that is no longer on those cards; taking that back to 700 returns roughly 1.3 GiB a card to the expert cache and is measured on its own, not bundled with this.",
+      "Prompt chunks stay at the engine's own 8192. STRATA_PREFILL_AUTO_MAX=16384 was tried on 2026-10-14 and made long prefill worse: -5.5% at 16K and -5.9% at 32K against +0.3% at 4K, on a suite that repeats within 0.2%. `auto` only took 9216 tokens, because the ceiling was never the limit, and the bigger chunk borrows more expert-cache slots to hold its buffers (6,933 against 6,281), which is the wrong trade where PCIe already reports pcie_frac 0.22. Anything that lends fewer experts to the prompt path has to be measured against the experts it evicts, not against the chunk it enables.",
+      "STRATA_HC_Q8=1 was measured on 2026-10-14 and reverted: mean decode +1.1%, under the 3% bar this instrument resolves and negative on two of five cells, against prefill -8.2% to -15.5% and first token 9-18% slower. Q8_0 hyper-connection bytes are wider than the quantized ones, so on a box at pcie_frac 0.22 the prompt path pays for them on every token it reads. It also changed the answers -- the code cell stopped at 156 tokens where the baseline ran to 256 -- so the accuracy claim is unproven rather than merely small, and an unproven accuracy gain does not buy a 15% prefill loss.",
+      "160K is the total prompt, history, reasoning, and output capacity.",
+      "A fresh container reads all 94 GB of its shards before it answers, because the engine keeps its verified-checksum markers in its own tree rather than beside the read-only model files; the readiness window allows for it.",
+      "--tool-call-recovery on: a call of a declared tool written in a form beside the template's <function=NAME> -- as <parameter=NAME>, as JSON inside <tool_call>, as a bare <function=NAME> at the start of a line outside code, or as a second call in the same wrapper -- is read as the call instead of as prose. Upstream measures 98.3% of agent turns' tool calls read as intended with it against 92.9% without, on 1,462 turns of this model under a coding agent, and that is upstream's corpus: this house has not measured its own rate of dropped calls, which is why this is a third configuration and not a change to the one in service. One variable apart from flash-next-strata-solo-thinking, so moving to it and back are both a portal act on a configuration. What it costs is nothing on the decode path -- it is a parser over the tools a request itself declared, run while the reply streams -- and what it can add is a call where the model meant to show one: an answer quoting a tool call at the start of a line outside a code fence. The act-versus-quote test is the fence-and-line logic the template's own form already runs, and upstream found no instance of that in its corpus. A request that declares no tools is unaffected either way. One thing it does not do yet: the image in service was built before this entry point knew the variable, so selecting it today boots healthy with the variable unread. It goes live with the next image of this tag and the image_id repinned beside it."
+    ],
+    "aliases": [
+      "local-active",
+      "daytime",
+      "nighttime"
+    ]
+  }
+}

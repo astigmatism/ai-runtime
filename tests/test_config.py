@@ -299,6 +299,7 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
             'flash-next-strata-solo': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -370,7 +371,7 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-            'flash-next-strata-solo-thinking'))
+            'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery'))
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
@@ -690,9 +691,18 @@ class EnvironmentEngineTests(unittest.TestCase):
             definition = read(path)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
-            with self.assertRaisesRegex(RuntimeError, r'--sampling has no environment variable'):
-                render(config, vision_host(), SOLO)
-            for key in ('--sampling', '--vision-device'):
+            # Each of the two statements this entry point writes refuses on its own, and only after
+            # the one before it has been taken out: the refusal is raised at the first argument the
+            # image cannot be told, so a profile that states both names only the first.
+            for flag in ('--sampling', '--tool-call-recovery'):
+                with self.subTest(argument=flag):
+                    with self.assertRaisesRegex(RuntimeError, flag + ' has no environment variable'):
+                        render(config, vision_host(), SOLO)
+                    definition['arguments'].pop(flag, None)
+                    if flag in definition['argument_order']:
+                        definition['argument_order'].remove(flag)
+                    path.write_text(json.dumps(definition))
+            for key in ('--sampling', '--tool-call-recovery', '--vision-device'):
                 definition['arguments'].pop(key, None)
                 if key in definition['argument_order']:
                     definition['argument_order'].remove(key)
@@ -815,8 +825,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 2, 'the sampling variant is expected to be an '
-            'environment-interface configuration beside its greedy original')
+        self.assertEqual(len(environment), 3, 'the sampling variant and the call-recovery variant '
+            'are expected to be environment-interface configurations beside their greedy original')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -846,11 +856,12 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     # (2026-10-17) mount the same shards on the same engine and differ in one environment variable, so
     # they build the same pack -- and giving the variant its own directory would buy a second copy of a
     # tens-of-gigabytes pack, and an hour of nothing serving on the first switch, for a workspace that
-    # comes out identical. The pairing is not taken on trust: the test below refuses the pair the moment
-    # the two configurations differ in anything but the sampling preset, and a different quant or window
+    # comes out identical. The sharing is not taken on trust: the test below refuses the chain the
+    # moment two neighbouring configurations differ in anything but the one variable between them --
+    # the sampling preset, then the recovery switch -- and a different quant or window
     # in either one fails that check and restores this invariant by hand.
     SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo',
-        'flash-next-strata-solo-thinking')}
+        'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery')}
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
         engines = read(ROOT / 'config/shared.json')['engines']
@@ -874,46 +885,77 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
 
 
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
-    """A configuration that differs from another only in how it samples must differ in nothing else.
+    """A configuration that differs from another in one switch must differ in nothing else.
 
     `flash-next-strata-solo-thinking` is offered so the operator can move the house's coding resident
-    onto the model card's sampling and move it back, at the portal, without an edit and a deploy. That
-    is only honest while the two configurations launch the same backend: same image, same shards, same
-    mounts, same GPUs, same window, same service IDs, same workspace -- one variable apart. The moment
-    they diverge, the shared provisioning workspace above stops being safe and this test stops the pair.
+    onto the model card's sampling and move it back, at the portal, without an edit and a deploy, and
+    `flash-next-strata-solo-thinking-recovery` is that one step on with the engine's tool-call recovery
+    written true. That is only honest while every configuration in the chain launches the same backend:
+    same image, same shards, same mounts, same GPUs, same window, same service IDs, same workspace --
+    one variable apart at each step. The moment they diverge, the shared provisioning workspace above
+    stops being safe and this test stops the chain.
 
     The comparison is on the rendered bundle rather than on the two files, because the files also carry
     prose that is *supposed* to differ: what each configuration warns about is exactly the difference.
     """
 
-    PAIR = ('flash-next-strata-solo', 'flash-next-strata-solo-thinking')
+    # Each step names the configuration it is one variable from, and the variable that may differ.
+    # The chain is the point: an operator moving along it changes one thing at a time, and every step
+    # is checked against the configuration before it rather than against the first one.
+    STEPS = (('flash-next-strata-solo-thinking', 'flash-next-strata-solo', 'SAMPLING'),
+        ('flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking',
+            'TOOL_CALL_RECOVERY'))
 
-    def rendered(self, name):
-        return render(ROOT / 'config', BASELINE['host'], name)
+    def rendered(self, name, variable):
+        bundle = render(ROOT / 'config', BASELINE['host'], name)
+        bundle['compose']['services']['coding']['environment'].pop(variable, None)
+        bundle['manifest']['services'][0]['recommended_environment'].pop(variable, None)
+        bundle.pop('config_sha256')
+        # The identity, and the prose that names the difference, are the only other things allowed to
+        # differ; both are set aside so a launch change cannot hide behind them.
+        bundle['profile'] = bundle['catalog']['configuration']['id'] = 'variant'
+        bundle['catalog'].pop('deployment_warnings')
+        for model in bundle['catalog']['models']:
+            model.pop('deployment_warnings')
+        return bundle
 
-    def test_the_launch_differs_in_the_sampling_variable_and_nowhere_else(self):
-        a, b = (self.rendered(name) for name in self.PAIR)
-        for bundle in (a, b):
-            bundle['compose']['services']['coding']['environment'].pop('SAMPLING')
-            bundle['manifest']['services'][0]['recommended_environment'].pop('SAMPLING')
-            bundle.pop('config_sha256')
-            # The identity, and the prose that names the difference, are the only other things
-            # allowed to differ; both are set aside so a launch change cannot hide behind them.
-            bundle['profile'] = bundle['catalog']['configuration']['id'] = 'variant'
-            bundle['catalog'].pop('deployment_warnings')
-            for model in bundle['catalog']['models']:
-                model.pop('deployment_warnings')
-        self.assertEqual(a, b, 'the two configurations must render identically once the sampling '
-            'preset is taken back out; only the preset, the profile id and the warning that names the '
-            'difference may differ')
+    def test_each_step_differs_in_one_variable_and_nowhere_else(self):
+        for name, previous, variable in self.STEPS:
+            with self.subTest(step=name):
+                self.assertEqual(self.rendered(name, variable), self.rendered(previous, variable),
+                    name + ' must render identically to ' + previous + ' once ' + variable +
+                    ' is taken back out; only that variable, the profile id and the warning that '
+                    'names the difference may differ')
 
-    def test_the_variant_renders_the_variable_the_image_reads_and_the_original_renders_off(self):
+    def test_every_configuration_states_both_switches_rather_than_leaving_one_out(self):
         """`off` and not an omitted line: the workspace outlives the profile, and switching back has
-        to take the block out of a config another configuration wrote."""
-        for name, preset in zip(self.PAIR, ('off', 'thinking')):
+        to take out of the run config a block another configuration wrote. Every configuration of
+        this engine therefore states both switches, including the two that want the defaults."""
+        stated = {'flash-next-strata-solo': ('off', 'off'),
+            'flash-next-strata-solo-thinking': ('thinking', 'off'),
+            'flash-next-strata-solo-thinking-recovery': ('thinking', 'on')}
+        self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
+        for name, expectations in stated.items():
             with self.subTest(profile=name):
-                service = self.rendered(name)['compose']['services']['coding']['environment']
-                self.assertEqual(service['SAMPLING'], preset)
+                environment = self.rendered(name, '-')\
+                    ['compose']['services']['coding']['environment']
+                self.assertEqual((environment['SAMPLING'], environment['TOOL_CALL_RECOVERY']),
+                    expectations)
+
+    def test_a_value_outside_the_two_words_refuses_before_anything_renders(self):
+        # The entry point writes a JSON boolean and the engine starts on nothing else, so the words
+        # are closed in source: a profile that invents a third one is refused here, with no drain.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles/flash-next-strata-solo-thinking-recovery.json'
+            definition = read(path)
+            for stated in ('maybe', 'true', '1'):
+                with self.subTest(value=stated):
+                    definition['arguments']['--tool-call-recovery'] = stated
+                    path.write_text(json.dumps(definition))
+                    with self.assertRaisesRegex(RuntimeError,
+                            '--tool-call-recovery states ' + stated):
+                        render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
 
 
 class ServiceIdentityTests(unittest.TestCase):

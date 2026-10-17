@@ -28,6 +28,16 @@
 #    batch windows); "off" takes the block back out, which is the engine's own default, and a profile
 #    stating nothing leaves the file alone. A preset this table does not know fails the boot before it
 #    writes anything, and the controller refuses such a profile when it renders, before any drain.
+# 4. Whether a declared tool's call written in a form beside the template's still counts as a call.
+#    The profile states it as TOOL_CALL_RECOVERY, "on" or "off". serve/server.py reads the run config's
+#    top-level "tool_call_recovery" and defaults it to false, and setup.py never writes it, so the
+#    engine's answer to this house's agent is the off answer: upstream measures 92.9% of agent turns'
+#    tool calls read as intended without it and 98.3% with it (1,462 turns, its own drift corpus). What
+#    it changes is only what a request that *declared* tools gets back, and only in four documented
+#    forms; anything else in those forms stays the text it was. It is a switch and not a free-form
+#    value for the same reason sampling is one: serve/server.py raises SystemExit unless the key is a
+#    JSON true or false, and for an exclusive resident a config it refuses is nothing serving. "off"
+#    is a statement, so it takes the key back out; a profile stating nothing leaves the file alone.
 #
 # So: when the container is told the encoder's card, make sure the config it is about to start
 # carries a vision section, and write the card into it. When it is told a sampling preset, make sure
@@ -57,6 +67,7 @@ GGUF_DIR="${GGUF_DIR:-}"
 RESIDENT_BUDGET_GIB="${RESIDENT_BUDGET_GIB:-}"
 KV_STREAMING="${KV_STREAMING:-}"
 SAMPLING="${SAMPLING:-}"
+TOOL_CALL_RECOVERY="${TOOL_CALL_RECOVERY:-}"
 
 # The same tag the upstream entry point derives, so what follows writes the file it is about to read.
 case "$FAMILY" in
@@ -212,6 +223,77 @@ else:
     os.replace(tmp, path)
     print('strata overlay: sampling preset %s (%s) for requests that send none (%s)'
           % (preset, ', '.join('%s=%s' % item for item in sorted(want.items())), path), flush=True)
+PY
+fi
+
+# The same rule as the sampling block above, and for the same reason: the run config lives in the
+# workspace, which outlives every configuration, so going back has to be a profile change rather than
+# a hand edit inside a directory a later image cannot take back out of. `off` therefore removes the
+# key instead of writing false, which leaves the file exactly as setup.py wrote it.
+if [ "$TOOL_CALL_RECOVERY" = off ]; then
+    if [ -f "$cfg" ]; then
+        python3 - "$cfg" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+if 'tool_call_recovery' not in cfg:
+    print('strata overlay: no tool_call_recovery key to remove; the engine keeps its own default',
+          flush=True)
+else:
+    value = cfg.pop('tool_call_recovery')
+    tmp = path + '.recovery.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        json.dump(cfg, handle, indent=1)
+        handle.write('\n')
+    os.replace(tmp, path)
+    print('strata overlay: removed tool_call_recovery=%s the profile does not state; only the '
+          'template\'s own tool-call form is a call again' % json.dumps(value), flush=True)
+PY
+    fi
+elif [ -n "$TOOL_CALL_RECOVERY" ]; then
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and tool_call_recovery has to go in it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write tool_call_recovery into" >&2
+            exit 1
+        fi
+    fi
+
+    python3 - "$cfg" "$TOOL_CALL_RECOVERY" <<'PY'
+import json, os, sys
+
+# Two words and one fact behind them: serve/server.py accepts a JSON boolean for this key and raises
+# SystemExit on anything else, so the value this writes is never a string, never a number, and never
+# a word the engine has not agreed to read.
+VALUES = {'on': True, 'off': False}
+
+path, stated = sys.argv[1], sys.argv[2]
+if stated not in VALUES:
+    print('strata overlay: TOOL_CALL_RECOVERY=%s is not a value this entry point knows (%s)'
+          % (stated, ' or '.join(sorted(VALUES))), file=sys.stderr, flush=True)
+    sys.exit(1)
+want = VALUES[stated]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+have = cfg.get('tool_call_recovery')
+# Identity and not equality: a hand-written 1 in the workspace equals True in this language and would
+# be left in place, and the engine starts on a JSON boolean or raises SystemExit.
+if have is want:
+    print('strata overlay: tool_call_recovery already %s' % stated, flush=True)
+else:
+    if have is not None:
+        print('strata overlay: replacing a tool_call_recovery the profile does not state: %s'
+              % json.dumps(have), flush=True)
+    cfg['tool_call_recovery'] = want
+    tmp = path + '.recovery.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        json.dump(cfg, handle, indent=1)
+        handle.write('\n')
+    os.replace(tmp, path)
+    print('strata overlay: tool_call_recovery %s (%s): a declared tool\'s call written beside the '
+          'template\'s form is read as the call (%s)' % (stated, json.dumps(want), path), flush=True)
 PY
 fi
 

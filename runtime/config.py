@@ -33,7 +33,7 @@ from pathlib import Path
 # all is not an option: that is a catalog a contract client cannot address, which is the same hole as
 # nothing serving.
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-    'flash-next-strata-solo-thinking')
+    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery')
 # Transitional spelling of the name above, for one release, and a literal tuple on purpose rather
 # than a binding to CONFIGURATIONS. The updater running on an already-deployed revision parses the
 # *target* revision's source for this constant and ast.literal_eval's its value, then refuses the
@@ -48,7 +48,7 @@ CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo
 # tests/test_config.py pins. Once a revision that reads CONFIGURATIONS is deployed, this line goes;
 # target_profiles() already resolves a plain binding, so the next rename needs no such scaffolding.
 DAYTIME_PROFILES = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-    'flash-next-strata-solo-thinking',
+    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
     'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-strata-160k')
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-pair'
@@ -327,6 +327,30 @@ def engine_sampling_preset(name, engine, options):
         'to a profile, because the engine will not start on a sampling value it does not understand')
 
 
+TOOL_CALL_RECOVERY_VALUES = ('off', 'on')
+
+
+def engine_tool_call_recovery(name, engine, options):
+    """Whether a declared tool's call written beside the template's form is still a call.
+
+    Same shape as the sampling preset above and for the same two reasons. The engine's own default is
+    off - serve/server.py reads the run config's top-level key and defaults it to false, and setup.py
+    never writes it - so the only way this house's agent gets the other answer is a switch the profile
+    states and this house's entry point writes on every start. And the value is one of two words
+    rather than anything a profile can think of, because serve/server.py raises SystemExit unless that
+    key is a JSON boolean: for an exclusive resident, a value the engine will not read is nothing
+    serving. An engine whose image runs upstream's entry point maps this argument to no variable at
+    all, and a profile that states it there is refused when it renders.
+    """
+    if engine['environment'].get('--tool-call-recovery') is None:
+        return
+    stated = str(options.get('--tool-call-recovery', 'off'))
+    require(stated in TOOL_CALL_RECOVERY_VALUES, name + ': --tool-call-recovery states ' + stated
+        + '; the values are ' + ', '.join(TOOL_CALL_RECOVERY_VALUES) + '. The engine reads a JSON true '
+        'or false for this key and refuses to start on anything else, which is why a profile states '
+        'one of two words and never a value of its own')
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
     environment.
@@ -404,12 +428,15 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
             require(key in ('--alias', model_argument), name + ': argument ' + key +
                 ' has no environment variable in engine ' + definition['engine'] +
                 ('; only an image that carries this house\'s entry point can be told a sampling '
-                 'preset, so a profile that states --sampling does not roll back to a text-only '
-                 'Strata image until that line is dropped' if key == '--sampling' else ''))
+                 'preset or a tool-call recovery switch, so a profile that states --sampling or '
+                 '--tool-call-recovery does not roll back to a text-only Strata image until that '
+                 'line is dropped'
+                 if key in ('--sampling', '--tool-call-recovery') else ''))
             continue
         require(variable not in environment, name + ': two arguments map to ' + variable)
         environment[variable] = '' if value is True else str(value)
     engine_sampling_preset(name, engine, options)
+    engine_tool_call_recovery(name, engine, options)
     model_target = options[model_argument]
     require(model_target in [a['target'] for a in definition['artifacts']],
         name + ': the model argument must reference a declared artifact mount')

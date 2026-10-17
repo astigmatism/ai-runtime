@@ -791,6 +791,77 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.start()
         self.assertEqual(json.loads(self.config.read_text())['sampling']['temperature'], 1.0)
 
+    def test_tool_call_recovery_on_writes_the_boolean_the_engine_reads(self):
+        # serve/server.py reads the run config's top-level key and raises SystemExit unless it is a
+        # JSON boolean, so what this writes is `true` and not "true": a string the engine will not read
+        # is nothing serving, on the one resident that is exclusive.
+        self.given({'model': 'UD-IQ4_XS', 'context': 163840, 'allowed_hosts': ['qwen38-daytime']})
+        run = self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': 'on'})
+        cfg = json.loads(self.config.read_text())
+        self.assertIs(cfg['tool_call_recovery'], True)
+        self.assertEqual(cfg['allowed_hosts'], ['qwen38-daytime'])
+        self.assertEqual(cfg['context'], 163840)
+        self.assertIn("tool_call_recovery on (true)", run.stdout)
+        self.assertEqual(self.setup_calls(), [])
+
+    def test_off_takes_the_key_back_out_rather_than_writing_false(self):
+        # Same reason `off` removes the sampling block: the run config lives in the workspace, which
+        # outlives every configuration, so switching back has to be the profile's act and not a hand
+        # edit inside a directory. Removing it also leaves the file exactly as setup.py wrote it, which
+        # is what the engine's own default looks like.
+        self.given({'model': 'UD-IQ4_XS', 'tool_call_recovery': True})
+        run = self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': 'off'})
+        self.assertNotIn('tool_call_recovery', json.loads(self.config.read_text()))
+        self.assertIn('removed tool_call_recovery', run.stdout)
+        self.assertIn('no tool_call_recovery key to remove',
+            self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': 'off'}).stdout)
+
+    def test_a_word_the_engine_cannot_read_fails_the_boot_before_the_file(self):
+        # Not "true", not 1, not "yes": the two words this entry point knows are the only ones that
+        # reach the file, and an unknown one fails here rather than as a SystemExit after the drain.
+        self.given({'model': 'UD-IQ4_XS', 'tool_call_recovery': False})
+        before = self.config.read_text()
+        for stated in ('maybe', 'true', '1'):
+            with self.subTest(value=stated):
+                run = self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': stated},
+                    expect_fail=True)
+                self.assertNotIn('upstream --serve', run.stdout)
+                self.assertIn('not a value this entry point knows', run.stderr)
+                self.assertEqual(self.config.read_text(), before)
+
+    def test_a_boot_that_states_nothing_about_recovery_leaves_the_key_alone(self):
+        # A profile that has never heard of the key is not a statement about it: an image booted with
+        # no TOOL_CALL_RECOVERY neither writes nor removes, so an existing workspace keeps whatever
+        # the configuration that wrote it stated until a configuration says otherwise.
+        self.given({'model': 'UD-IQ4_XS', 'tool_call_recovery': True})
+        before = self.config.read_text()
+        self.start(device=None, extra={'VISION': 'no'})
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_a_number_in_the_workspace_becomes_the_boolean_the_engine_starts_on(self):
+        # A hand edit that wrote 1 instead of true is a boot-faulter waiting to happen -- the engine
+        # raises SystemExit unless this key is a JSON boolean -- and `1 == True` in Python is exactly
+        # the trap that would leave it there, so the comparison this entry point uses is identity.
+        self.given({'model': 'UD-IQ4_XS', 'tool_call_recovery': 1})
+        run = self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': 'on'})
+        cfg = json.loads(self.config.read_text())
+        self.assertIs(cfg['tool_call_recovery'], True)
+        self.assertIn('replacing a tool_call_recovery the profile does not state: 1', run.stdout)
+
+    def test_the_preset_and_the_recovery_switch_arrive_on_the_same_boot(self):
+        # flash-next-strata-solo-thinking-recovery states both, and neither is allowed to disturb the
+        # other: two writes to one file, from two profile statements, in one boot.
+        self.given({'model': 'UD-IQ4_XS'})
+        self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking',
+            'TOOL_CALL_RECOVERY': 'on'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['sampling']['temperature'], 1.0)
+        self.assertIs(cfg['tool_call_recovery'], True)
+        # Restating only the sampling leaves the switch: the profile states it either way, and a
+        # configuration that wanted it gone says off.
+        self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'})
+        self.assertIs(json.loads(self.config.read_text())['tool_call_recovery'], True)
+
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()
         self.assertIn('mv /opt/strata/docker-entrypoint.sh /opt/strata/docker-entrypoint.upstream.sh',

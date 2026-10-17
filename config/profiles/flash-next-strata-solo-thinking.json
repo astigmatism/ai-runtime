@@ -23,6 +23,7 @@
     "--kv",
     "--kv-streaming",
     "--sampling",
+    "--tool-call-recovery",
     "--vision",
     "--gpus",
     "--layer-split",
@@ -38,6 +39,7 @@
     "--kv": "k8v4",
     "--kv-streaming": "auto",
     "--sampling": "thinking",
+    "--tool-call-recovery": "off",
     "--vision": "no",
     "--gpus": "0,1,2,3",
     "--layer-split": "auto",
@@ -142,7 +144,8 @@
       "Prompt chunks stay at the engine's own 8192. STRATA_PREFILL_AUTO_MAX=16384 was tried on 2026-10-14 and made long prefill worse: -5.5% at 16K and -5.9% at 32K against +0.3% at 4K, on a suite that repeats within 0.2%. `auto` only took 9216 tokens, because the ceiling was never the limit, and the bigger chunk borrows more expert-cache slots to hold its buffers (6,933 against 6,281), which is the wrong trade where PCIe already reports pcie_frac 0.22. Anything that lends fewer experts to the prompt path has to be measured against the experts it evicts, not against the chunk it enables.",
       "STRATA_HC_Q8=1 was measured on 2026-10-14 and reverted: mean decode +1.1%, under the 3% bar this instrument resolves and negative on two of five cells, against prefill -8.2% to -15.5% and first token 9-18% slower. Q8_0 hyper-connection bytes are wider than the quantized ones, so on a box at pcie_frac 0.22 the prompt path pays for them on every token it reads. It also changed the answers -- the code cell stopped at 156 tokens where the baseline ran to 256 -- so the accuracy claim is unproven rather than merely small, and an unproven accuracy gain does not buy a 15% prefill loss.",
       "160K is the total prompt, history, reasoning, and output capacity.",
-      "A fresh container reads all 94 GB of its shards before it answers, because the engine keeps its verified-checksum markers in its own tree rather than beside the read-only model files; the readiness window allows for it."
+      "A fresh container reads all 94 GB of its shards before it answers, because the engine keeps its verified-checksum markers in its own tree rather than beside the read-only model files; the readiness window allows for it.",
+      "--tool-call-recovery off, the engine's own default and the same answer flash-next-strata-solo gives: a declared tool's call written beside the template's form arrives as prose. flash-next-strata-solo-thinking-recovery is this configuration one variable on, with that key written true; what it buys and what it risks is stated there, because this configuration is the one that stays as it was when it was selected."
     ],
     "aliases": [
       "local-active",

@@ -11,14 +11,20 @@
  },
  "flash-next-strata-solo": {
   "previous_id": "flash-next-strata-160k",
-  "compose_sha256": "a8a50e6256bd396735bdccfb19b5215c7b8e7c2737a581a19e94f910e5130822",
-  "coding_service_sha256": "9c443c2360ff354deed29d346c99cd240787da2e8c84d2632d2538fe8ceab9d4",
+  "compose_sha256": "db32774e32586d9334eb4117d85af9bfae447c1973ad66d5c800f9f2e0985700",
+  "coding_service_sha256": "2ed0824b7b62b10f2f4598df220277aca4def413203cf9c80077c9610638fe9b",
   "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move. Re-pinned on 2026-10-16 for a change that is not the rename: the encoder image, the fifth GPU the shared vision card brings, and the two variables that place the encoder on it. Both digests move together and only that; the text placement inside the four cards is byte-for-byte what it was, which is what the pair of them now pins. Re-pinned on 2026-10-17 for two variables this container is now told through and nothing else moved: --sampling, whose default now states off, and STRATA_ALLOWED_HOSTS, which took the host names the server answers out of a hand edit inside the workspace and into source."
  },
  "flash-next-strata-solo-thinking": {
   "previous_id": null,
-  "compose_sha256": "4097da050387b41f231d1c8d4fc3b12473df20622fb67da4209ac1d9071e27a4",
-  "coding_service_sha256": "d06e423d404f956ab6cf1a83e5dcb758bfcc63d217005716f353a19505306c17",
+  "compose_sha256": "60e8a5cfe3ab030719403fac98b60a306407dcc5b482f93d2f274fa626843610",
+  "coding_service_sha256": "9d8636b1b8463a5762a8a58d0564c54832f83e71d2ac0786892f57049f9382bc",
   "note": "Never renamed, and pinned anyway: this fixture holds the launch digest of every selectable configuration, and this one is the greedy configuration one variable away. The two digests differ from flash-next-strata-solo by exactly the SAMPLING value -- AVariantIsOneLineApartFromItsOriginal is what proves that and what refuses the pair the moment they diverge in anything else."
+ },
+ "flash-next-strata-solo-thinking-recovery": {
+  "previous_id": null,
+  "coding_service_sha256": "b4aa2a868d5fc6deecd423336b8a106c653edf5640dbbc1525510337b25e4eb6",
+  "compose_sha256": "b6480799aa2969a167bfeed0bc7e36ea67a8cdd2e2c2a6d1f97046eeda963bc8",
+  "note": "New on 2026-10-17, one variable from flash-next-strata-solo-thinking: TOOL_CALL_RECOVERY=on. Pinned from the day it exists, so a later edit to either configuration moves a digest here rather than going unnoticed."
  }
 }
