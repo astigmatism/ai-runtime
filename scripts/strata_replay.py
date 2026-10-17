@@ -19,6 +19,15 @@ answer is hashed, so two arms that hash the same answer made the same tokens: a 
 advertised as bit-identical can be shown to be, and a lever that quietly changes what the
 model says cannot pass as free.
 
+`--sampling thinking` (or `instruct`) is the arm that prices the run config's sampling block, and
+it is the one place this harness deliberately gives up its own guarantee: the same corpus sent at
+the model card's set instead of at temperature 0. A sampled continuation differs every run by
+construction, so on that arm the answer hash is reported and not gated -- the verdict says how
+many distinct answers a cell produced instead of refusing the run over them -- and the number the
+arm exists for is decode, which is where the draft acceptance the sampling costs shows up. The
+greedy arm stays the default, and stays what every recorded baseline was measured with; a sampled
+run is only ever comparable with another sampled run.
+
 Two things this found about the box before it was used for anything. The first pass over a
 prompt decodes about 25-45% slower than every pass after it, with time to first token
 unchanged -- so it is not the prompt cache, it is the expert caches filling, which is
@@ -197,12 +206,25 @@ def corpus(keep=ALL_CELLS) -> list:
 
 
 # -------------------------------------------------------------------------------- requests
+# The arms this harness can send. "greedy" is what every recorded baseline was measured with and
+# what the engine does with no sampling block; the other two are the sets the model card states,
+# spelled out here rather than read off the box so an arm measures the set and not whatever the
+# run config happens to have been told (the same table lives in
+# runtime/overlay/strata-vision-entrypoint.sh, which is what writes it in production).
+SAMPLING_ARMS = {
+    "greedy": {"temperature": 0},
+    "thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
+    "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0,
+                 "presence_penalty": 1.5},
+}
+
+
 def chat(base: str, key: str, messages: list, max_tokens: int, think: bool,
-         timeout: float) -> dict:
-    """One streamed request at temperature 0. The request shape matches
-    tools/strata_bench.py, so these numbers stay comparable with recorded baselines."""
-    body = {"model": "strata", "stream": True, "max_tokens": max_tokens, "temperature": 0,
-            "messages": messages}
+         sampling: dict, timeout: float) -> dict:
+    """One streamed request at the arm's sampling. The request shape matches
+    tools/strata_bench.py, so the greedy arm stays comparable with recorded baselines."""
+    body = {"model": "strata", "stream": True, "max_tokens": max_tokens, "messages": messages}
+    body.update(sampling)
     if not think:
         body["reasoning_effort"] = "none"
         body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -335,12 +357,15 @@ def boot_ci(values, resamples: int = 2000, seed: int = 20261015):
     return round(medians[int(0.025 * resamples)], 1), round(medians[int(0.975 * resamples)], 1)
 
 
-def verdict(rows: list, summary: dict, min_tokens: float = None):
+def verdict(rows: list, summary: dict, min_tokens: float = None, gate_answers: bool = True):
     """Whether this run may be used, and what stops it if it may not.
 
     Ordered by how much damage each does to a claim. A run with the engine busy is not a
     slow run, it is a different run, and it is the failure most likely to go unnoticed
     because every number in it looks plausible.
+
+    `gate_answers` is False on a sampled arm, where a cell that produces two answers is the
+    arm working as designed and not a broken harness; the caller reports the spread instead.
     """
     failed = [r for r in rows if not r["ok"]]
     if failed:
@@ -352,7 +377,7 @@ def verdict(rows: list, summary: dict, min_tokens: float = None):
                    f"baseline: nothing here compares against anything until it is run with "
                    f"the host quiet."]
     unstable = sorted(k for k, s in summary.items() if len(s["answers"]) > 1)
-    if unstable:
+    if unstable and gate_answers:
         return 1, [f"greedy answer not stable in: {', '.join(unstable)} -- the replay does not "
                    f"hold decoding fixed in those cells, so no claim may rest on them"]
     drifted = sorted({r["label"] for r in rows if r.get("prompt_tokens")
@@ -429,6 +454,12 @@ def main() -> int:
                          "25%% apart on decode")
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--think", action="store_true", help="Leave thinking on (the suite does not)")
+    ap.add_argument("--sampling", default="greedy", choices=sorted(SAMPLING_ARMS),
+                    help="What the requests send for sampling. greedy, the default, is what every "
+                         "recorded baseline was measured with and what the engine does with no "
+                         "sampling block; thinking and instruct are the model card's sets, and on "
+                         "those arms the answer hash is reported and not gated, because a sampled "
+                         "continuation differs every run by construction")
     ap.add_argument("--settle", type=float, default=2.0, help="Seconds to rest between requests")
     ap.add_argument("--require-quiet", type=float, default=20.0,
                     help="Start only after the engine has been idle this many seconds running")
@@ -472,6 +503,8 @@ def main() -> int:
         print("idle; starting", flush=True)
 
     print("corpus: " + ", ".join(p["label"] + "=" + p["sha256"] for p in prompts))
+    print("sampling arm: " + args.sampling + " ("
+          + ", ".join(f"{k}={v}" for k, v in sorted(SAMPLING_ARMS[args.sampling].items())) + ")")
     rows = []
     discarded = []          # kept for the record, never summarised
     for rnd in range(args.rounds):
@@ -479,7 +512,7 @@ def main() -> int:
             for attempt in range(args.retries + 1):
                 busy = busy_slots(args.url, args.key)
                 r = chat(args.url, args.key, p["messages"], args.max_tokens, args.think,
-                         timeout=3600)
+                         SAMPLING_ARMS[args.sampling], timeout=3600)
                 d = digest(r)
                 d.update(label=p["label"], kind=p["kind"], round=rnd, corpus_sha256=p["sha256"],
                          target_tokens=p["target_tokens"], busy_before=busy, attempt=attempt,
@@ -530,7 +563,8 @@ def main() -> int:
             same = q.get("answers") == s["answers"]
             print(f"  {label:12s} decode {before} -> {s['decode_median']} ({delta:+.1f}%), "
                   f"{'outside' if outside else 'inside'} the recorded interval; "
-                  f"greedy answer {'unchanged' if same else 'CHANGED'}")
+                  f"{args.sampling} answer {'unchanged' if same else 'CHANGED'}"
+                  + ("" if same or args.sampling == "greedy" else " (expected on a sampled arm)"))
         prior_corpus = {r["label"]: r.get("corpus_sha256") for r in prior.get("rows", [])}
         for p in prompts:
             was = prior_corpus.get(p["label"])
@@ -545,12 +579,19 @@ def main() -> int:
                    "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                    "params": {"rounds": args.rounds, "warmup": args.warmup,
                               "max_tokens": args.max_tokens, "think": args.think,
-                              "temperature": 0, "cells": list(keep)},
+                              "sampling": args.sampling,
+                              **SAMPLING_ARMS[args.sampling], "cells": list(keep)},
                    "summary": summary, "cold": summarise(cold), "rows": rows,
                    "discarded": discarded}, f, indent=1)
     print(f"\nwrote {os.path.join(args.out, 'results.json')}")
 
-    code, reasons = verdict(rows, summary, min_tokens=0.6 * args.max_tokens)
+    code, reasons = verdict(rows, summary, min_tokens=0.6 * args.max_tokens,
+                            gate_answers=args.sampling == "greedy")
+    if args.sampling != "greedy":
+        spread = {k: len(s["answers"]) for k, s in summary.items() if len(s["answers"]) > 1}
+        print(f"sampled arm: the answer is not held fixed, so it is reported and not gated: "
+              f"{len(spread)} of {len(summary)} cells produced more than one answer"
+              + (f" ({', '.join(f'{k} x{v}' for k, v in sorted(spread.items()))})" if spread else ""))
     for reason in reasons:
         print(reason, file=sys.stderr)
     return code

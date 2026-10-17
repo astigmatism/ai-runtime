@@ -13,6 +13,7 @@ So these tests guard the instrument, not the service: the corpus is deterministi
 near the sizes its cell names claim, the confidence interval is itself reproducible, and a
 corpus that changed between two runs is caught rather than silently compared.
 """
+import ast
 import statistics
 import sys
 import unittest
@@ -223,6 +224,30 @@ class TheRunRefusesToPassWhenItWasNotAlone(unittest.TestCase):
         code, reasons = replay.verdict([self._row(generated_tokens=256)], self._summary(),
                                        min_tokens=150)
         self.assertEqual((code, reasons), (0, []))
+
+    def test_a_sampled_arm_reports_two_answers_instead_of_refusing_the_run(self):
+        """A sampled continuation differs every run by construction, so on that arm the spread of
+        answer hashes is the finding and not a fault. The greedy arm keeps the gate, because two
+        answers there mean the replay stopped holding decoding fixed."""
+        code, reasons = replay.verdict([self._row()], self._summary(("a", "b")),
+                                       gate_answers=False)
+        self.assertEqual((code, reasons), (0, []))
+
+
+@requires_harness
+class TheSampledArmsAreWhatTheImageWrites(unittest.TestCase):
+    def test_the_two_tables_say_the_same_numbers(self):
+        """The sampled arm exists to price what production would do, so the numbers it sends and
+        the numbers this house's entry point writes into the run config have to be one set and not
+        two that drifted apart -- a silent difference between them would be a measurement of
+        something the box never runs."""
+        overlay = (Path(__file__).resolve().parent.parent
+                   / "runtime/overlay/strata-vision-entrypoint.sh").read_text()
+        written = ast.literal_eval(
+            "{" + overlay.split("PRESETS = {", 1)[1].split("\n}", 1)[0] + "}")
+        self.assertEqual(written,
+                         {k: v for k, v in replay.SAMPLING_ARMS.items() if k != "greedy"})
+        self.assertEqual(replay.SAMPLING_ARMS["greedy"], {"temperature": 0})
 
 
 

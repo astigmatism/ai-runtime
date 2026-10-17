@@ -539,7 +539,10 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
     encoder never started and nothing in any log (2026-10-16). So this entry point runs that pass
     itself where the section is missing, and it is tested -- against the real script, in a directory
     laid out like ``/opt/strata``, with a stub standing in for the upstream entry point it has to
-    reach and one for the engine's python the pass calls.
+    reach and one for the engine's python the pass calls. The same entry point also writes the run
+    config's optional ``sampling`` block from ``SAMPLING``, because the engine's own default is greedy
+    and its setup has no flag for that block either; both statements are tested here against the same
+    stubs.
     """
     OVERLAY = 'runtime/overlay/strata-vision-entrypoint.sh'
     CONFIG = 'config/strata-unsloth-ud-iq4_xs.json'
@@ -604,9 +607,12 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
     def start(self, device='4', family='unsloth', model='UD-IQ4_XS', extra=None, expect_fail=False):
         env = {**os.environ, 'STRATA_DATA': str(self.workspace), 'FAMILY': family, 'MODEL': model,
                'VISION': 'yes', 'SETUP_CALL_LOG': str(self.calls)}
+        # Two statements the host shell may happen to carry and this entry point must not read
+        # silently from the environment: only what a test states below is in force.
+        env.pop('VISION_DEVICE', None)
+        env.pop('SAMPLING', None)
         if extra:
             env.update(extra)
-        env.pop('VISION_DEVICE', None)
         if device is not None:
             env['VISION_DEVICE'] = device
         run = subprocess.run(['sh', './docker-entrypoint.sh', '--serve'], cwd=self.opt, env=env,
@@ -703,6 +709,87 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.start(device=None)
         self.assertEqual(self.config.read_text(), before)
         self.assertEqual(self.setup_calls(), [])
+
+    def test_the_sampling_preset_is_written_into_the_config_the_engine_reads(self):
+        # With no sampling block the engine decodes greedy, and every routed client that sends none of
+        # its own is served at that one setting the card does not recommend. The preset is the card's
+        # thinking-mode set, and every other key of the file the engine reads goes back as it was.
+        self.given({'model': 'UD-IQ4_XS', 'context': 163840, 'allowed_hosts': ['qwen38-daytime']})
+        run = self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['sampling'],
+            {'temperature': 1.0, 'top_p': 0.95, 'top_k': 20, 'min_p': 0.0})
+        self.assertEqual(cfg['allowed_hosts'], ['qwen38-daytime'])
+        self.assertEqual(cfg['context'], 163840)
+        self.assertIn('sampling preset thinking', run.stdout)
+        self.assertEqual(self.setup_calls(), [])
+
+    def test_the_preset_is_written_once_and_then_left_alone(self):
+        self.given({'model': 'UD-IQ4_XS'})
+        self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'})
+        placed = self.config.read_text()
+        self.assertIn('already the thinking preset',
+            self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'}).stdout)
+        self.assertEqual(self.config.read_text(), placed)
+
+    def test_a_block_the_profile_does_not_state_is_replaced(self):
+        # A hand edit inside the workspace is not a setting this house renders: the profile is the
+        # authority, so a block it does not state is replaced and the boot says what it replaced.
+        self.given({'model': 'UD-IQ4_XS', 'sampling': {'temperature': 0.6}})
+        run = self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'instruct'})
+        self.assertEqual(json.loads(self.config.read_text())['sampling'],
+            {'temperature': 0.7, 'top_p': 0.8, 'top_k': 20, 'min_p': 0.0, 'presence_penalty': 1.5})
+        self.assertIn('replacing a sampling block', run.stdout)
+
+    def test_off_takes_the_block_back_out(self):
+        # Going back to greedy has to be a profile change and not a hand edit, because the workspace
+        # outlives the image: a block left in it is still read by a text-only image that has no entry
+        # point to take it out.
+        self.given({'model': 'UD-IQ4_XS', 'sampling': {'temperature': 1.0, 'top_p': 0.95}})
+        run = self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'off'})
+        self.assertNotIn('sampling', json.loads(self.config.read_text()))
+        self.assertIn('removed the sampling block', run.stdout)
+        self.assertIn('no sampling block to remove',
+            self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'off'}).stdout)
+
+    def test_a_preset_this_entry_point_does_not_know_fails_the_boot(self):
+        # The engine refuses to start on a sampling value it does not understand, and this resident is
+        # exclusive, so a name outside the table fails here rather than after the drain -- and it
+        # fails without touching the file, so the boot that follows is the one that was already there.
+        self.given({'model': 'UD-IQ4_XS', 'sampling': {'temperature': 0.6}})
+        before = self.config.read_text()
+        run = self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'temperature=1.0'},
+            expect_fail=True)
+        self.assertNotIn('upstream --serve', run.stdout)
+        self.assertIn('not a preset', run.stderr)
+        self.assertEqual(self.config.read_text(), before)
+
+    def test_a_fresh_workspace_gets_the_setup_pass_and_then_the_block(self):
+        # No config yet: the upstream entry point would run its setup pass and write a config out of
+        # nothing, so a block written first would be lost. The pass runs here instead, once, with the
+        # arguments this container was given, and the block goes into the file it produced.
+        run = self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['sampling'],
+            {'temperature': 1.0, 'top_p': 0.95, 'top_k': 20, 'min_p': 0.0})
+        self.assertNotIn('vision', cfg)
+        calls = self.setup_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][calls[0].index('--vision') + 1], 'no')
+        self.assertIn('does not exist', run.stdout)
+
+    def test_the_card_and_the_preset_arrive_on_the_same_boot(self):
+        # The two statements this entry point writes are independent of each other: a container told
+        # both gets both, and a container told only the card still gets its sampling.
+        self.given({'model': 'UD-IQ4_XS', 'vision': {'cuda_device': 0}})
+        self.start(extra={'SAMPLING': 'thinking'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['vision']['cuda_device'], 4)
+        self.assertEqual(cfg['sampling']['temperature'], 1.0)
+        # And a boot that restates only the card does not quietly lose the preset: the block it was
+        # never told to remove stays, because the profile states it either way.
+        self.start()
+        self.assertEqual(json.loads(self.config.read_text())['sampling']['temperature'], 1.0)
 
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()

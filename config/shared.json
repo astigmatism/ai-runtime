@@ -165,7 +165,14 @@
         "--layer-split": "LAYER_SPLIT",
         "--low-ram": "LOW_RAM",
         "--host": "HOST",
-        "--port": "PORT"
+        "--port": "PORT",
+        "--sampling": "SAMPLING"
+      },
+      "sampling": {
+        "why": "A request that sends no sampling of its own gets the engine's own default, and that is greedy: serve/server.py states it plainly (\"An absent temperature keeps the engine's default, which is greedy\"), and setup.py never writes the run config's optional sampling block. The router forwards an omitted temperature as omitted and this house's coding agent sends none, so before this key the Strata resident answered every routed request greedily while the llama.cpp residents answered the same request at --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0. That llama.cpp set is the Qwen3.8-Flash-Next card's thinking-mode set, so this is one policy for the house rather than a new one.",
+        "presets": "thinking is the card's thinking-mode set (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, no penalties); instruct is its non-thinking set (0.7 / 0.80 / 20 / 0.0 plus presence_penalty 1.5, which the engine does not apply inside batch windows); off takes the block back out, which is the engine's default, and a profile stating nothing leaves the file alone -- so going back to greedy is a profile change and not a hand edit inside a workspace a text-only image cannot take it out of. A profile names a preset and never numbers: the numbers live in runtime/overlay/strata-vision-entrypoint.sh, because a value the engine does not like in that block is a SystemExit at start, and for an exclusive resident that is nothing serving. A request that brings its own sampling still wins, so Bench Studio (every built-in profile pins temperature 0) and scripts/strata_replay.py (it sends temperature 0) measure exactly what they measured before.",
+        "cost": "Measured upstream on this model with --spec 4 --mtp: draft acceptance 81.2% to 72.7% and decode 0.94x (CI 0.83-1.23) on short prompts, and about 76% to 72% with 62 to 59 tok/s on UD-IQ4_XS, this resident's quant. No measured accuracy gain: 26/30 against 25/30 exact answers and 15/15 against 15/15 valid tool calls. What it buys is conformance with the card and the removal of the deterministic repetition loop greedy reproduces, which upstream's own 2-bit report says sampling fixes. The replay's sampled arm is what records the real number on this box.",
+        "image": "Mapped only on this engine, because only this image carries this house's entry point: the text-only tags run upstream's entry point unchanged, and an entry point that cannot write the block must not be declarable. A profile that names --sampling on one of those engines is refused when it renders, not ignored."
       },
       "model_directory": "GGUF_DIR",
       "context_environment": "CONTEXT",

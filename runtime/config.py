@@ -301,6 +301,30 @@ def engine_vision_gpu(name, host, engine, options, environment, text_devices):
     return [*text_devices, vision], index
 
 
+SAMPLING_PRESETS = ('off', 'thinking', 'instruct')
+
+
+def engine_sampling_preset(name, engine, options):
+    """What a request that sends no sampling of its own gets, checked against what the image can say.
+
+    The engine's own default is greedy - serve/server.py says so in its own words - and its setup
+    never writes the run config's optional sampling block, so the only way a routed client that
+    omits sampling gets anything else is a preset the profile states and this house's entry point
+    writes into that config on every start. A preset is a name and not a set of numbers, because the
+    engine refuses to start on a sampling value it does not understand, and for an exclusive resident
+    a config it refuses is nothing serving; the numbers behind the names live in the entry point,
+    next to the code that writes them. An engine whose image runs upstream's entry point has no map
+    entry for this argument at all, and such a profile is refused here rather than rendered into a
+    variable nothing reads.
+    """
+    if engine['environment'].get('--sampling') is None:
+        return
+    preset = str(options.get('--sampling', 'off'))
+    require(preset in SAMPLING_PRESETS, name + ': --sampling states ' + preset + '; the presets are '
+        + ', '.join(SAMPLING_PRESETS) + '. The numbers behind a preset belong to the image and not '
+        'to a profile, because the engine will not start on a sampling value it does not understand')
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
     environment.
@@ -376,10 +400,14 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
             # derived from it, so a mount and an engine setting cannot disagree about which
             # revision is being served.
             require(key in ('--alias', model_argument), name + ': argument ' + key +
-                ' has no environment variable in engine ' + definition['engine'])
+                ' has no environment variable in engine ' + definition['engine'] +
+                ('; only an image that carries this house\'s entry point can be told a sampling '
+                 'preset, so a profile that states --sampling does not roll back to a text-only '
+                 'Strata image until that line is dropped' if key == '--sampling' else ''))
             continue
         require(variable not in environment, name + ': two arguments map to ' + variable)
         environment[variable] = '' if value is True else str(value)
+    engine_sampling_preset(name, engine, options)
     model_target = options[model_argument]
     require(model_target in [a['target'] for a in definition['artifacts']],
         name + ': the model argument must reference a declared artifact mount')

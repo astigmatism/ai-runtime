@@ -11,8 +11,8 @@
  },
  "flash-next-strata-solo": {
   "previous_id": "flash-next-strata-160k",
-  "compose_sha256": "e88852b6452ceb0ef30f943db626aaf3c150c750c87e1822ed290b355d77e3c5",
-  "coding_service_sha256": "4e7f762c8c7fa0e3f42f05d0a03a89a3a381e19db5b9c127c852c8d5a1beccb9",
-  "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move. Re-pinned on 2026-10-16 for a change that is not the rename: the encoder image, the fifth GPU the shared vision card brings, and the two variables that place the encoder on it. Both digests move together and only that; the text placement inside the four cards is byte-for-byte what it was, which is what the pair of them now pins."
+  "compose_sha256": "085313101bccd5c739ccdb683f6756dbdc1161f6b14d5e424da5ee532530de91",
+  "coding_service_sha256": "17f53fcb034e487e388bf08690abc7a4d563b822375de370f4457428b56a9e0d",
+  "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move. Re-pinned on 2026-10-16 for a change that is not the rename: the encoder image, the fifth GPU the shared vision card brings, and the two variables that place the encoder on it. Both digests move together and only that; the text placement inside the four cards is byte-for-byte what it was, which is what the pair of them now pins. Re-pinned on 2026-10-17 for --sampling: one more variable this container is told through, and nothing else moved."
  }
 }

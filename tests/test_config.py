@@ -612,6 +612,51 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(entry['mmproj_offload'], 'none')
         self.assertNotIn('vision_gpu_uuid', entry)
 
+    def test_the_sampling_preset_the_profile_states_is_the_variable_the_image_reads(self):
+        # The engine's own default is greedy and its setup never writes the sampling block, so the
+        # only thing that decides what a routed request that sends no sampling gets is this variable
+        # and the entry point that writes it into the run config. A profile that states nothing
+        # renders nothing, which is why the rollback is a deleted line and not a value.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            self.assertEqual(service['environment']['SAMPLING'], 'thinking')
+            self.assertNotIn('VISION_DEVICE', service['environment'])
+            path = config / ('profiles/' + SOLO + '.json')
+            definition = read(path)
+            definition['arguments'].pop('--sampling')
+            definition['argument_order'].remove('--sampling')
+            path.write_text(json.dumps(definition))
+            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            self.assertNotIn('SAMPLING', service['environment'])
+
+    def test_a_sampling_preset_the_entry_point_cannot_write_is_refused_before_any_drain(self):
+        # A preset is a name from a table that lives in the image, because the engine refuses to
+        # start on a sampling value it does not understand and this resident is exclusive: a config
+        # it refuses is nothing serving. So a value outside the table is a render error, not a boot
+        # that dies after the drain, and numbers are refused for the same reason.
+        for preset in ('temperature=1.0', '1.0', 'Thinking', 'greedy', '', True):
+            with self.subTest(sampling=preset):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+                    path = config / ('profiles/' + SOLO + '.json')
+                    definition = read(path)
+                    definition['arguments']['--sampling'] = preset
+                    path.write_text(json.dumps(definition))
+                    with self.assertRaisesRegex(RuntimeError, '--sampling states'):
+                        render(config, BASELINE['host'], SOLO)
+        # And stating nothing at all is the engine's own default, which is what every profile that
+        # has never heard of this key gets.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / ('profiles/' + SOLO + '.json')
+            definition = read(path)
+            definition['arguments'].pop('--sampling')
+            definition['argument_order'].remove('--sampling')
+            path.write_text(json.dumps(definition))
+            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            self.assertNotIn('SAMPLING', service['environment'])
+
     def test_the_encoder_is_placed_on_the_card_the_text_model_leaves_free(self):
         # The encoder takes its card from a number, and that number is the shared card only while the
         # shared card is the last of the ones this container reserves. Any other value puts the encoder
@@ -628,17 +673,28 @@ class EnvironmentEngineTests(unittest.TestCase):
         # Rolling this profile back to the text-only image of the same revision is a profile change, and
         # it has to render the way it did before the encoder: four cards, no VISION_DEVICE, text in the
         # catalog. An image with no way to place an encoder is never handed a fifth GPU to wander onto.
+        # The two statements this house's entry point writes -- the encoder's card and the sampling
+        # preset -- are the image's, so the rollback drops both lines with it rather than rendering a
+        # variable nothing in that image reads.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             path = config / ('profiles/' + SOLO + '.json')
             definition = read(path)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError, r'--sampling has no environment variable'):
+                render(config, vision_host(), SOLO)
+            for key in ('--sampling', '--vision-device'):
+                definition['arguments'].pop(key, None)
+                if key in definition['argument_order']:
+                    definition['argument_order'].remove(key)
+            path.write_text(json.dumps(definition))
             bundle = render(config, vision_host(), SOLO)
             service = bundle['compose']['services']['coding']
             self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
             self.assertEqual(service['environment']['VISION'], 'no')
             self.assertNotIn('VISION_DEVICE', service['environment'])
+            self.assertNotIn('SAMPLING', service['environment'])
             self.assertEqual(
                 len(service['deploy']['resources']['reservations']['devices'][0]['device_ids']), 4)
             self.assertEqual(bundle['catalog']['models'][0]['input_modalities'], ['text'])
