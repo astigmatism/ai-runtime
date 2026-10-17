@@ -770,11 +770,11 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(engine['release'], 'v0.1.44.1')
         # Built on this host from the pinned revision with the image encoder compiled in
         # (BUILD_VISION=1), not downloaded: the upstream releases ship Windows zips only. Receipt and
-        # image digest in ops/reports/20261016-strata-vision/README.md. The text-only image of the
+        # image digest in ops/reports/20261017-strata-sampling/README.md. The text-only image of the
         # same revision is a different image with a different digest, because the encoder is compiled
         # in at build time and is not a runtime switch.
         self.assertEqual(engine['image_id'],
-                         'sha256:294c987a8282b63a58a2e631c5f3c5653baa4eeeda3e6a91a7f4e62902504608')
+                         'sha256:36157cd753c7c7daf5ae6a8b911ce4af69b7abbced7fee6d321e93aa22e729d1')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')

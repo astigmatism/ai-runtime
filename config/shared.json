@@ -128,7 +128,7 @@
       }
     },
     "strata-vision-296b59d2f73c": {
-      "image_id": "sha256:294c987a8282b63a58a2e631c5f3c5653baa4eeeda3e6a91a7f4e62902504608",
+      "image_id": "sha256:36157cd753c7c7daf5ae6a8b911ce4af69b7abbced7fee6d321e93aa22e729d1",
       "tag": "local/strata:296b59d2f73c-vision",
       "revision": "296b59d2f73c8f04a805df29c2fa97655adace78",
       "release": "v0.1.44.1",
