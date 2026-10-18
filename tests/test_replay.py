@@ -62,12 +62,67 @@ class TheCorpusIsFixed(unittest.TestCase):
         self.assertLess(replay.CPT["tool"], replay.CPT["prose"] * 0.6)
 
     def test_the_largest_cell_fits_the_window_this_box_boots_with(self):
-        """163,840 is what the trial profile contracts for. A cell that overflows is not
-        slow, it is refused with HTTP 400, and a run that silently loses its largest cell
-        looks like a result."""
+        """163,840 is what the narrowest session this house has contracted for. A cell that
+        overflows is not slow, it is refused with HTTP 400, and a run that silently loses its
+        largest cell looks like a result. Sized off the narrowest and not the widest window
+        because the fixed cells are the control a session-size ladder reads: they have to run,
+        unchanged, at every rung."""
         window = 163_840
         for label, _, _, tokens in replay.CELLS:
             self.assertLess(tokens + 256, window, f"{label} does not fit the loaded window")
+
+
+@requires_harness
+class TheEdgeCellIsSizedByTheEngine(unittest.TestCase):
+    """`--edge` is the cell that follows the window, and the label is the whole contract.
+
+    The fixed cells stop at 128,000 tokens and the window this resident can be given reaches
+    262,144, so a ladder that measured only the fixed cells would be pricing a region it never
+    entered. The cell that enters it takes its width from `/health` instead of from this file,
+    which buys the reach at the cost of one property: two rungs have two different workloads. The
+    label carries the width, so the cost is visible in the results instead of hidden in a cell
+    name that quietly means something else at a different window.
+    """
+
+    def test_the_label_states_the_width_it_measured(self):
+        for window in (163_840, 196_608, 229_376, 262_144):
+            cell, why = replay.edge_cell(window, 0.95, 256)
+            self.assertIsNone(why)
+            label, _, _, tokens = cell
+            self.assertEqual(label, "edge-%dk" % (tokens // 1024))
+            self.assertEqual(tokens % 1024, 0, "the label rounds, so the width has to be round")
+
+    def test_the_answer_still_fits_the_window_being_measured(self):
+        # Over-context is an HTTP 400 and no sample at all, and at the edge there is nothing left
+        # over to absorb it: the width is chosen so the prompt and its 256-token answer fit inside
+        # the window the engine loaded with, not merely near it.
+        for window in (163_840, 196_608, 229_376, 262_144):
+            (label, _, _, tokens), _ = replay.edge_cell(window, 0.95, 256)
+            self.assertLess(tokens + 256, window, label)
+
+    def test_a_width_is_a_workload_and_two_widths_are_two(self):
+        # The pure-function property the whole suite rests on, held at whatever width the engine
+        # reported, and asserted apart as well: an edge at 160K and an edge at 256K must not be
+        # able to pose as the same cell, because `--compare` refuses a changed corpus by name.
+        cell, _ = replay.edge_cell(196_608, 0.95, 256)
+        keep = replay.ALL_CELLS + (cell[0],)
+        first = {p["label"]: p["sha256"] for p in replay.corpus(keep, (cell,))}
+        again = {p["label"]: p["sha256"] for p in replay.corpus(keep, (cell,))}
+        self.assertEqual(first, again)
+        other, _ = replay.edge_cell(262_144, 0.95, 256)
+        self.assertNotEqual(first[cell[0]],
+                            {p["label"]: p["sha256"]
+                             for p in replay.corpus((other[0],), (other,))}[other[0]])
+        self.assertEqual([p["label"] for p in replay.corpus(replay.ALL_CELLS)],
+                         list(replay.ALL_CELLS), "an edge cell is never part of the fixed set")
+
+    def test_an_edge_that_cannot_be_sized_says_so_rather_than_running_short(self):
+        # A silently tiny edge would report the speed of a 4K prompt under a label that says edge.
+        for window, fraction in ((163_840, 0), (163_840, 1.5), (None, 0.95), (None, 0),
+                                 (4_096, 0.95)):
+            cell, why = replay.edge_cell(window, fraction, 256)
+            self.assertIsNone(cell, f"{window} at {fraction}")
+            self.assertTrue(why)
 
     def test_a_subset_of_cells_keeps_the_prompts_it_shares_with_the_whole_set(self):
         """Comparing an arm run with two cells against a baseline run with five is only

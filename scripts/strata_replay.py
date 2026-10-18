@@ -28,6 +28,17 @@ arm exists for is decode, which is where the draft acceptance the sampling costs
 greedy arm stays the default, and stays what every recorded baseline was measured with; a sampled
 run is only ever comparable with another sampled run.
 
+`--edge FRACTION` measures the same half at the width the box is actually running. The fixed cells
+stop at 128,000 tokens, which is 100,000 short of the widest window this resident can be given, and
+a cell whose size is a constant of this file cannot follow a window that is being stepped up: at
+256K the suite would report "no difference" about a region it never entered. So this one cell is
+sized from `max_context` on `/health`, keeps `--max-tokens` of it for the answer, and is named for
+what it came to (`edge-155k`, `edge-249k`). The name carries the comparison rule: two runs whose
+edge cells came out the same width are the same workload and compare directly, and two edges of
+different widths are two workloads, each comparable only with itself. A ladder therefore reads the
+fixed cells for "did widening the window cost anything it did not have to" and the edge cell for
+"what does this edge cost".
+
 It reports one thing decode cannot say, and does not gate it: how much of an answer repeats
 itself. The cells ask for a line-per-item enumeration, so a reply that has slipped into a loop says
 so in the table -- a run of 4 identical lines is the same threshold the field reports use over real
@@ -48,6 +59,13 @@ Stdlib only, because it runs inside the engine container:
 
     docker exec -i qwen38-daytime python3 - --url http://127.0.0.1:8080 \\
         --out /data/replay-results/arm-a-$(date +%F) < scripts/strata_replay.py
+
+    docker exec -i qwen38-daytime python3 - --url http://127.0.0.1:8080 \\
+        --cells code-4k,tool-4k --edge 0.95 --rounds 3 --warmup 1 \\
+        --out /data/replay-results/window-$(date +%F) < scripts/strata_replay.py
+
+The second one is what a session-size step is measured with: two short cells as the control that
+has to come back unchanged, and one edge cell at the width the engine is running today.
 
 Run it at idle. The box serves live traffic, and the session driving this harness is itself
 served by the engine under measurement.
@@ -197,12 +215,42 @@ CELLS = (("code-4k", "code", 11, 4_000),
          ("tool-128k", "tool", 71, 128_000))
 ALL_CELLS = tuple(cell[0] for cell in CELLS)
 _TARGET = {cell[0]: cell[3] for cell in CELLS}
+# The shape and seed of the cell `--edge` adds. Tool-shaped because that is what a session this
+# long on this box actually is -- JSON, paths and long identifiers -- and one fixed seed because
+# the only thing that cell is allowed to vary between runs is its width.
+EDGE_KIND, EDGE_SEED = "tool", 83
 
 
-def corpus(keep=ALL_CELLS) -> list:
-    """The prompts, each a pure function of the constants in this file."""
+def edge_cell(window, fraction, max_tokens):
+    """The one cell sized off the running engine instead of off this file, or (None, why not).
+
+    `--edge` of the window the engine reports, less what the answer needs, rounded down to whole
+    kiB: the label is then the width, which is what keeps two edges of two different widths from
+    being compared as if they were one workload, and a rerun against an unchanged engine produces
+    the same prompt bytes.
+    """
+    if not 0 < fraction <= 1:
+        return None, "--edge is a fraction of the loaded window, greater than 0 and at most 1"
+    if not window:
+        return None, ("--edge sizes itself from max_context on /health and the engine did not "
+                      "answer")
+    tokens = int((window * fraction - max_tokens) // 1024) * 1024
+    if tokens < 4096:
+        return None, (f"--edge {fraction:g} of a {window}-token window, less {max_tokens} tokens "
+                      "for the answer, is too little to measure")
+    return ("edge-%dk" % (tokens // 1024), EDGE_KIND, EDGE_SEED, tokens), None
+
+
+def corpus(keep=ALL_CELLS, extra=()) -> list:
+    """The prompts, each a pure function of the constants in this file.
+
+    `extra` carries a cell whose size is not a constant of this file -- see `--edge` -- and it is
+    built the same way, so it is as reproducible as the fixed cells once its size is written down.
+    The label is where the size is written down, which is also what stops a comparison between two
+    edges of two different widths pretending to be the same workload.
+    """
     prompts = []
-    for label, kind, seed, tokens in CELLS:
+    for label, kind, seed, tokens in tuple(CELLS) + tuple(extra):
         if label not in keep:
             continue
         body = _fill(kind, seed, int(tokens * CPT[kind]))
@@ -494,6 +542,14 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="Output directory; put it on a durable mount")
     ap.add_argument("--cells", default=",".join(ALL_CELLS),
                     help="Comma-separated cells; drop tool-128k to keep a run short")
+    ap.add_argument("--edge", type=float, default=0.0, metavar="FRACTION",
+                    help="Add one cell at this fraction of the window the engine reports on "
+                         "/health, --max-tokens of it left for the answer, and name it for the "
+                         "size it came to (edge-155k). bench.sh stops at 32K and the fixed cells "
+                         "stop at 128K, so without this the widest session on the box is priced "
+                         "by an instrument that cannot reach it -- and a window that is being "
+                         "resized run by run needs a cell whose size is read off the engine "
+                         "rather than written in this file")
     ap.add_argument("--rounds", type=int, default=6)
     ap.add_argument("--warmup", type=int, default=1,
                     help="Rounds whose prompt cache is cold, reported apart and never pooled "
@@ -523,14 +579,26 @@ def main() -> int:
         print("--rounds must exceed --warmup, or nothing is measured warm", file=sys.stderr)
         return 2
     keep = tuple(c.strip() for c in args.cells.split(",") if c.strip())
-    unknown = [c for c in keep if c not in ALL_CELLS]
+    unknown = [c for c in keep if c not in ALL_CELLS and not c.startswith("edge-")]
     if unknown:
         print(f"unknown cells: {', '.join(unknown)}; known: {', '.join(ALL_CELLS)}",
               file=sys.stderr)
         return 2
-    prompts = corpus(keep)
 
+    # Read first, because `--edge` is sized from it: the window the engine boots with is the thing
+    # a session-size step is changing, and an instrument that sized its longest prompt from this
+    # file would quietly stop being one once the profile moved.
     window = loaded_context(args.url, args.key)
+    extra = ()
+    if args.edge:
+        cell, why = edge_cell(window, args.edge, args.max_tokens)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
+        extra = (cell,)
+        keep += (cell[0],)
+    prompts = corpus(keep, extra)
+
     if window:
         over = [p for p in prompts if p["target_tokens"] + args.max_tokens > window]
         if over:
@@ -551,6 +619,10 @@ def main() -> int:
         print("idle; starting", flush=True)
 
     print("corpus: " + ", ".join(p["label"] + "=" + p["sha256"] for p in prompts))
+    if window:
+        print("window: " + str(window) + " tokens loaded"
+              + (", edge cell at %d (%g%% of it)" % (extra[0][3], 100 * args.edge) if extra
+                 else ""))
     print("sampling arm: " + args.sampling + " ("
           + ", ".join(f"{k}={v}" for k, v in sorted(SAMPLING_ARMS[args.sampling].items())) + ")")
     rows = []
@@ -635,6 +707,7 @@ def main() -> int:
                    "params": {"rounds": args.rounds, "warmup": args.warmup,
                               "max_tokens": args.max_tokens, "think": args.think,
                               "sampling": args.sampling,
+                              "window": window, "edge": args.edge or None,
                               **SAMPLING_ARMS[args.sampling], "cells": list(keep)},
                    "summary": summary, "cold": summarise(cold), "rows": rows,
                    "discarded": discarded}, f, indent=1)
