@@ -823,6 +823,23 @@ class EnvironmentEngineTests(unittest.TestCase):
         # renderer may lend the shared vision GPU to and one it has to leave the card out of.
         self.assertEqual(engine['environment']['--vision-device'], 'VISION_DEVICE')
 
+    def test_a_new_lever_ships_with_its_measurement_and_its_instrument(self):
+        # A configuration that states a hypothesis is a question the portal shows as an answer, and
+        # the two levers this one added were exactly the kind that get selected on the prose. So each
+        # carries the run that decided it, in the warning the portal renders, and the scripts that
+        # produced it are in the repo: the route-skip verdict is unreadable without the comparator
+        # that prints confidence intervals, and the conversation cache is invisible to the benchmark
+        # altogether, because a benchmark never lets its own conversations go cold.
+        for profile in ('flash-next-strata-solo-thinking-recovery-full-route',
+                        'flash-next-strata-solo-thinking-recovery-cache'):
+            warnings = read(ROOT / 'config/profiles' / (profile + '.json'))['catalog']['deployment_warnings']
+            measured = [w for w in warnings if w.startswith('Measured on 2026-')]
+            self.assertEqual(len(measured), 1, profile + ' states no measured verdict')
+            self.assertRegex(measured[0], r'\d')
+        for script, evidence in (('strata_bench_compare.py', 'invisible'), ('strata_park_probe.py', 'restored')):
+            path = ROOT / 'scripts' / script
+            compile(path.read_text(), str(path), 'exec')
+            self.assertIn(evidence, path.read_text())
     def test_the_overlay_layer_declares_the_identity_the_runtime_reads_back(self):
         # Strata's own Dockerfile labels only the NVIDIA base, so the image this house ships is the
         # only place the identity labels exist, and a rebuild of the house layer that forgets them
