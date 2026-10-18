@@ -317,7 +317,7 @@ class ControllerTests(unittest.TestCase):
             ['flash-next-strata-solo-thinking-recovery',
              'flash-next-strata-solo-thinking-recovery-cache'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (224K)', 'Qwen3.8 Flash-Next (224K)'])
+            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and it shows up twice, because both configurations of this resident move on every
@@ -325,7 +325,7 @@ class ControllerTests(unittest.TestCase):
         # disagreed about the window would make a switch between them a resize. The pair keeps 160K,
         # which is why all four numbers are named.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 229376, 229376])
+            [163840, 163840, 262144, 262144])
         # Two selectable configurations of one backend as of 2026-10-18: the model name is the same
         # because it is the same model, so what tells the operator which is which is the variant label.
         # It also says what the second one turns on, because that is the only choice left to make here.
