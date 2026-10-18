@@ -836,10 +836,15 @@ class EnvironmentEngineTests(unittest.TestCase):
             measured = [w for w in warnings if w.startswith('Measured on 2026-')]
             self.assertEqual(len(measured), 1, profile + ' states no measured verdict')
             self.assertRegex(measured[0], r'\d')
-        for script, evidence in (('strata_bench_compare.py', 'invisible'), ('strata_park_probe.py', 'restored')):
-            path = ROOT / 'scripts' / script
-            compile(path.read_text(), str(path), 'exec')
-            self.assertIn(evidence, path.read_text())
+        # The instruments themselves live in scripts/, which the runtime image does not copy -- the
+        # candidate image this test also runs inside ships runtime, config and tests -- so their
+        # presence is asserted where they are read, from a checkout, while the verdict above is
+        # asserted everywhere because the catalog the portal renders is in the image.
+        if (ROOT / 'scripts').is_dir():
+            for script, evidence in (('strata_bench_compare.py', 'invisible'), ('strata_park_probe.py', 'restored')):
+                path = ROOT / 'scripts' / script
+                compile(path.read_text(), str(path), 'exec')
+                self.assertIn(evidence, path.read_text())
     def test_the_overlay_layer_declares_the_identity_the_runtime_reads_back(self):
         # Strata's own Dockerfile labels only the NVIDIA base, so the image this house ships is the
         # only place the identity labels exist, and a rebuild of the house layer that forgets them
