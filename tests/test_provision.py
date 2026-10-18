@@ -32,7 +32,7 @@ from runtime.system import atomic_json
 
 # The state file of a run is written under the resolved configuration id, so the exemplar is named
 # by that id and not by the alias a client may still send for it.
-PROFILE = 'flash-next-strata-solo'
+PROFILE = 'flash-next-strata-solo-thinking-recovery'
 
 
 class ProvisioningSystem(fixture.FakeSystem):

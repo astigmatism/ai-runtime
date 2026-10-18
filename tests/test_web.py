@@ -64,11 +64,15 @@ class StatusTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-strata-solo'): dispatch([retired])
         # A retired id refuses and says what to select; a renamed id is applied under the id this
         # revision has, so an old habit reaches the backend that exists rather than a description of
-        # one that does not.
-        with self.assertRaisesRegex(RuntimeError, 'retired.*select flash-next-strata-solo'):
-            dispatch(['flash-next-solo-160k'])
-        self.assertEqual(dispatch(['flash-next-strata-160k']), ['apply', '--profile', 'flash-next-strata-solo'])
-        self.assertEqual(dispatch(['flash-next-strata-solo']), ['apply', '--profile', 'flash-next-strata-solo'])
+        # one that does not. flash-next-strata-160k was the second kind while the configuration it was
+        # renamed into was selectable; on 2026-10-18 that configuration was retired with the sampling
+        # lever it existed to offer, and a name whose backends are described nowhere is a retirement
+        # again whatever it used to be. The qwen pair below is still a rename and still resolves.
+        for name in ('flash-next-solo-160k', 'flash-next-strata-160k'):
+            with self.subTest(name=name), self.assertRaisesRegex(RuntimeError,
+                    'retired.*select flash-next-strata-solo-thinking-recovery'):
+                dispatch([name])
+        self.assertEqual(dispatch(['flash-next-strata-solo-thinking-recovery']), ['apply', '--profile', 'flash-next-strata-solo-thinking-recovery'])
         self.assertEqual(dispatch(['qwen27b-q6k-pair']), ['apply', '--profile', 'qwen27b-q6k-pair'])
         self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-pair']),
             ['apply', '--profile', 'qwen27b-q6k-pair'])

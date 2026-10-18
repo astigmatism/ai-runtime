@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import (CONFIGURATIONS, CONTAINER_CONTRACT, DAYTIME_PROFILES, DEFAULT_PROFILE, EVERYDAY_PROFILE,
+from runtime.config import (CONFIGURATIONS, CONTAINER_CONTRACT, DEFAULT_PROFILE, EVERYDAY_PROFILE,
     EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES, available_profiles, digest, engine_interface,
     merge_settings, read, render, resolve_profile, service_engine, text_gpus, unknown_profile)
 
@@ -20,7 +20,8 @@ ENGINES = read(ROOT / 'config/shared.json')['engines']
 # The one configuration that is not llama.cpp, and the only solo one. Its engine is configured by the
 # environment, so the catalog fields that describe a flag the engine was handed (KV types, --fit, the
 # host-RAM prompt cache budget) are not published for it.
-SOLO = 'flash-next-strata-solo'
+SOLO = 'flash-next-strata-solo-thinking-recovery'
+RECOVERY = SOLO
 # The alias every configuration's coding entry carries for the legacy Ollama surface. It is the
 # compatibility ID, not the one a contract client sends, so it is never the only alias an entry has.
 COMPATIBILITY_ALIAS = 'local-active'
@@ -297,10 +298,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
         self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
         expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
-            'flash-next-strata-solo': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-solo-thinking': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-solo-thinking-recovery-full-route': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
@@ -372,10 +370,8 @@ class ConfigurationTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
-        self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-            'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
-            'flash-next-strata-solo-thinking-recovery-full-route',
-            'flash-next-strata-solo-thinking-recovery-cache'))
+        self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
+            'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache'))
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
@@ -634,13 +630,13 @@ class EnvironmentEngineTests(unittest.TestCase):
     def test_the_sampling_preset_the_profile_states_is_the_variable_the_image_reads(self):
         # The engine's own default is greedy and its setup never writes the sampling block, so the
         # only thing that decides what a routed request that sends no sampling gets is this variable
-        # and the entry point that writes it into the run config. The default configuration states
-        # off, which takes a block back out; a profile that states nothing renders nothing, which
+        # and the entry point that writes it into the run config. Every configuration still selectable
+        # states the preset the card asks for; a profile that states nothing renders nothing, which
         # leaves whatever the last-selected configuration wrote sitting in the workspace.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
-            self.assertEqual(service['environment']['SAMPLING'], 'off')
+            self.assertEqual(service['environment']['SAMPLING'], 'thinking')
             self.assertNotIn('VISION_DEVICE', service['environment'])
             path = config / ('profiles/' + SOLO + '.json')
             definition = read(path)
@@ -830,8 +826,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         # produced it are in the repo: the route-skip verdict is unreadable without the comparator
         # that prints confidence intervals, and the conversation cache is invisible to the benchmark
         # altogether, because a benchmark never lets its own conversations go cold.
-        for profile in ('flash-next-strata-solo-thinking-recovery-full-route',
-                        'flash-next-strata-solo-thinking-recovery-cache'):
+        for profile in ('flash-next-strata-solo-thinking-recovery-cache',):
             warnings = read(ROOT / 'config/profiles' / (profile + '.json'))['catalog']['deployment_warnings']
             measured = [w for w in warnings if w.startswith('Measured on 2026-')]
             self.assertEqual(len(measured), 1, profile + ' states no measured verdict')
@@ -899,9 +894,10 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 5, 'the sampling, call-recovery, route-tail-skip and '
-            'conversation-cache variants are expected to be environment-interface configurations '
-            'beside their greedy original')
+        self.assertEqual(len(environment), 2, 'the call-recovery and conversation-cache '
+            'configurations are the environment-interface ones; the greedy preset and the '
+            'route-tail skip left with their configurations on 2026-10-18, and their measurements '
+            'are in docs/deployment.md')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -927,17 +923,15 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
 
     # One workspace may be shared by a declared variant pair. The invariant is about a pack: two
     # profiles whose packs differ must not watch the same directory, because whichever finishes first
-    # declares the other's half-built workspace ready. flash-next-strata-solo and its thinking variant
-    # (2026-10-17) mount the same shards on the same engine and differ in one environment variable, so
+    # declares the other's half-built workspace ready. The two Strata configurations (shared since
+    # 2026-10-17) mount the same shards on the same engine and differ only in cache variables, so
     # they build the same pack -- and giving the variant its own directory would buy a second copy of a
     # tens-of-gigabytes pack, and an hour of nothing serving on the first switch, for a workspace that
     # comes out identical. The sharing is not taken on trust: the test below refuses the chain the
     # moment two neighbouring configurations differ in anything but the one variable between them --
     # the sampling preset, then the recovery switch -- and a different quant or window
     # in either one fails that check and restores this invariant by hand.
-    SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo',
-        'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
-        'flash-next-strata-solo-thinking-recovery-full-route',
+    SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo-thinking-recovery',
         'flash-next-strata-solo-thinking-recovery-cache')}
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
@@ -964,31 +958,32 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
     """A configuration that differs from another in one switch must differ in nothing else.
 
-    `flash-next-strata-solo-thinking` is offered so the operator can move the house's coding resident
-    onto the model card's sampling and move it back, at the portal, without an edit and a deploy, and
-    `flash-next-strata-solo-thinking-recovery` is that one step on with the engine's tool-call recovery
-    written true. That is only honest while every configuration in the chain launches the same backend:
+    `flash-next-strata-solo-thinking-recovery-cache` is offered so the operator can take the parked
+    conversations -- and put them back -- at the portal, without an edit and a deploy, starting from
+    `flash-next-strata-solo-thinking-recovery`. That is only honest while both launch the same backend:
     same image, same shards, same mounts, same GPUs, same window, same service IDs, same workspace --
-    one variable apart at each step. The moment they diverge, the shared provisioning workspace above
-    stops being safe and this test stops the chain.
+    one variable apart. The moment they diverge, the shared provisioning workspace above
+    stops being safe and this test stops the pair.
+
+    The chain was four steps deep until 2026-10-18, and this check is a second reason retiring three of
+    those steps released nothing they mounted: it is what proves a variant differs from its neighbour
+    in the named variable and nowhere else, so a name going takes a switch with it and leaves the
+    image, the shards and the workspace exactly where the sibling can still see them.
 
     The comparison is on the rendered bundle rather than on the two files, because the files also carry
     prose that is *supposed* to differ: what each configuration warns about is exactly the difference.
     """
 
-    # Each step names the configuration it is one variable from, and the variable that may differ.
-    # The chain is the point: an operator moving along it changes one thing at a time, and every step
-    # is checked against the configuration before it rather than against the first one. A step may be
-    # carried by more than one variable where one of them is meaningless without another -- a parked
-    # conversation's slot count and minimum size say nothing about a cache that is off -- and then all
-    # of them come out together, because the question is unchanged: does anything else move?
-    STEPS = (('flash-next-strata-solo-thinking', 'flash-next-strata-solo', ('SAMPLING',)),
-        ('flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking',
-            ('TOOL_CALL_RECOVERY',)),
-        ('flash-next-strata-solo-thinking-recovery-full-route',
-            'flash-next-strata-solo-thinking-recovery', ('STRATA_ROUTE_TAIL_SKIP',)),
-        ('flash-next-strata-solo-thinking-recovery-cache', 'flash-next-strata-solo-thinking-recovery',
-            ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')))
+    # Each step names the configuration it is one variable from, and the variable that may differ. An
+    # operator moving along the chain changes one thing at a time, and every step is checked against
+    # the configuration before it rather than against the first one -- so the day a lever is measured
+    # and earns its own configuration, it is checked against what is in service and not against a
+    # description of it. A step may be carried by more than one variable where one of them is
+    # meaningless without another -- a parked conversation's slot count and minimum size say nothing
+    # about a cache that is off -- and then all of them come out together, because the question is
+    # unchanged: does anything else move?
+    STEPS = (('flash-next-strata-solo-thinking-recovery-cache', 'flash-next-strata-solo-thinking-recovery',
+        ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')),)
 
     def rendered(self, name, variables):
         bundle = render(ROOT / 'config', BASELINE['host'], name)
@@ -1015,11 +1010,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
     def test_every_configuration_states_both_switches_rather_than_leaving_one_out(self):
         """`off` and not an omitted line: the workspace outlives the profile, and switching back has
         to take out of the run config a block another configuration wrote. Every configuration of
-        this engine therefore states both switches, including the two that want the defaults."""
-        stated = {'flash-next-strata-solo': ('off', 'off'),
-            'flash-next-strata-solo-thinking': ('thinking', 'off'),
-            'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
-            'flash-next-strata-solo-thinking-recovery-full-route': ('thinking', 'on'),
+        this engine therefore states both switches, whichever way it wants them."""
+        stated = {'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
             'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on')}
         self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
         for name, expectations in stated.items():
@@ -1035,10 +1027,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         inherits whatever the last one that started left behind. The budget and the table are stated
         by every configuration of this engine, and the two refinements appear only where a budget
         makes them mean something."""
-        stated = {'flash-next-strata-solo': ('off', 'off'),
-            'flash-next-strata-solo-thinking': ('off', 'off'),
-            'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
-            'flash-next-strata-solo-thinking-recovery-full-route': ('off', 'off'),
+        stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off')}
         self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
         for name, (budget, table) in stated.items():
@@ -1114,7 +1103,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                 render(config, BASELINE['host'], name)
             # And a refinement is refused on a configuration that has switched the whole thing off,
             # which is where an inherited number would otherwise go unnoticed.
-            off = config / 'profiles/flash-next-strata-solo.json'
+            off = config / ('profiles/' + RECOVERY + '.json')
             definition = read(off)
             definition['arguments']['--conversation-cache-slots'] = '4'
             definition['argument_order'].insert(
@@ -1123,7 +1112,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             off.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError,
                     r'refines a conversation cache this configuration has switched off'):
-                render(config, BASELINE['host'], 'flash-next-strata-solo')
+                render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
 
 
 class ServiceIdentityTests(unittest.TestCase):
@@ -1262,52 +1251,25 @@ class ConfigurationNamingTests(unittest.TestCase):
         self.assertNotIn(DEFAULT_PROFILE, PROFILE_ALIASES)
         self.assertIn('never-existed', unknown_profile('never-existed'))
 
-    def test_every_name_the_transitional_constant_accepts_resolves(self):
-        # DAYTIME_PROFILES is read by an updater that is already running, before this revision's code
-        # exists, and it refuses the release when the configuration it is running is not in it. So the
-        # tuple may be a superset during a rename release -- it may not contain a name that then
-        # refuses to mean anything, which would let the release in and strand the running host.
-        self.assertTrue(set(CONFIGURATIONS) <= set(DAYTIME_PROFILES),
-            'the transitional constant must still offer every current configuration')
-        for name in DAYTIME_PROFILES:
-            with self.subTest(profile=name):
-                target = resolve_profile(name)
-                self.assertIn(target, CONFIGURATIONS,
-                    name + ' is accepted by the transitional constant and resolves to nothing')
+    def test_every_retired_and_renamed_name_says_what_to_use_instead(self):
+        # A retired configuration has no backends left to launch, so it refuses -- and the refusal is
+        # the whole service it still performs, because the operator holding it needs the name of the
+        # thing to select instead. A renamed one resolves quietly, for the opposite reason: the same
+        # backends are still there. Both tables therefore have to point at something selectable, and
+        # a name cannot be in both, which is how the 2026-10-18 consolidation of the Strata chain from
+        # five configurations to two is kept honest: three retired ids and their old pre-rename id all
+        # say `flash-next-strata-solo-thinking-recovery`, and none of them resolves by accident.
+        for table in (RETIRED_PROFILES, PROFILE_ALIASES):
+            for retired, replacement in table.items():
+                with self.subTest(name=retired):
+                    self.assertIn(replacement, CONFIGURATIONS,
+                        retired + ' points at ' + replacement + ', which is not selectable')
+                    self.assertEqual(resolve_profile(retired) if table is PROFILE_ALIASES else retired,
+                        retired if table is RETIRED_PROFILES else replacement)
+        self.assertFalse(set(RETIRED_PROFILES) & set(PROFILE_ALIASES),
+            'a name cannot both refuse and resolve')
         self.assertEqual(DEFAULT_PROFILE, CONFIGURATIONS[0] if DEFAULT_PROFILE in PROFILE_ALIASES
             else DEFAULT_PROFILE)
-
-    def test_the_updater_reads_whichever_constant_a_revision_uses(self):
-        # The updater doing this work is the revision already deployed, parsing the source of the one
-        # it is about to become. A rename of the constant itself is only deployable if the old code
-        # can still find the new one, and a rename of a configuration is only deployable if the old
-        # code accepts the name it is running.
-        from runtime.update import Updater
-
-        class Source(Updater):
-            def __init__(self, source):
-                self.source = source
-
-            def git(self, *args, **kwargs):
-                return self.source
-
-        cases = {
-            'both constants': ("CONFIGURATIONS = ('a', 'b')\nDAYTIME_PROFILES = ('a', 'b')\n"
-                "PROFILE_ALIASES = {}\n", ('a', 'b'), ('a', 'b')),
-            # The revision that renames the constant is the one that has to be deployable.
-            'transitional binding': ("CONFIGURATIONS = ('a2', 'b2')\nDAYTIME_PROFILES = CONFIGURATIONS\n"
-                "PROFILE_ALIASES = {'a': 'a2', 'b': 'b2'}\n", ('a2', 'b2'), ('a2', 'b2', 'a', 'b')),
-            'a revision before either': ("DAYTIME_PROFILES = ('a', 'b')\n", ('a', 'b'), ('a', 'b')),
-            # A retired id has no backends left to launch, so it still refuses.
-            'retired without an alias': ("CONFIGURATIONS = ('a',)\nDAYTIME_PROFILES = ('a',)\n"
-                "PROFILE_ALIASES = {}\n", ('a',), ('a',)),
-        }
-        for label, (source, selectable, accepted) in cases.items():
-            with self.subTest(revision=label):
-                self.assertEqual(Source(source).target_profiles('target'), (selectable, accepted))
-        for source in ("DAYTIME_PROFILES = 5\n", "OTHER = ('a',)\n", "CONFIGURATIONS = ()\n"):
-            with self.subTest(source=source), self.assertRaises(RuntimeError):
-                Source(source).target_profiles('target')
 
     def test_every_engine_is_used_and_nothing_is_configured_by_an_absent_one(self):
         # A profile naming an engine that is not registered fails at render, and an engine nothing

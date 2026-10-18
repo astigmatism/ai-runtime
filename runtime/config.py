@@ -32,28 +32,20 @@ from pathlib import Path
 # every configuration by ServiceIdentityTests in tests/test_config.py. Publishing no service alias at
 # all is not an option: that is a catalog a contract client cannot address, which is the same hole as
 # nothing serving.
-CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-strata-solo-thinking-recovery-full-route',
-    'flash-next-strata-solo-thinking-recovery-cache')
-# Transitional spelling of the name above, for one release, and a literal tuple on purpose rather
-# than a binding to CONFIGURATIONS. The updater running on an already-deployed revision parses the
-# *target* revision's source for this constant and ast.literal_eval's its value, then refuses the
-# release if the configuration it is running is not in it. Two consequences, both deliberate:
+CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
+    'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache')
+# Reduced from five Strata configurations to two on 2026-10-18, after both new levers had been
+# measured on this box: the greedy step and the card-sampling step are settled policy rather than a
+# live question, and the route-tail skip came back a wash on the only axis this machine can read.
+# A variant is not free -- each one is a rendered launch, a chain step this suite refuses to let
+# drift, and a row an operator reads as a decision to make -- so a lever nobody is testing is
+# documentation, and documentation lives in docs/deployment.md with its numbers.
 #
-#   * `= CONFIGURATIONS` would crash literal_eval and refuse the release, so the ids are repeated;
-#   * during a rename release the tuple is the union of the old and new ids, because the deployed
-#     updater does not know PROFILE_ALIASES and would otherwise refuse a release whose only crime is
-#     renaming the configuration that happens to be running -- leaving the operator with no lever.
-#
-# It is a superset, not a lie: every id in it resolves to a selectable configuration, which
-# tests/test_config.py pins. Once a revision that reads CONFIGURATIONS is deployed, this line goes;
-# target_profiles() already resolves a plain binding, so the next rename needs no such scaffolding.
-DAYTIME_PROFILES = ('qwen27b-q8-pair', 'qwen27b-q6k-pair', 'flash-next-strata-solo',
-    'flash-next-strata-solo-thinking', 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-strata-solo-thinking-recovery-full-route',
-    'flash-next-strata-solo-thinking-recovery-cache',
-    'qwen27b-q8-with-nighttime', 'qwen27b-q6k-with-nighttime', 'flash-next-strata-160k')
+# Transitional spelling of the name above, for one release: a literal tuple rather than a binding,
+# because the updater running on an already-deployed revision parses the *target* revision's source
+# for it with ast.literal_eval. It went the way its own comment promised once a revision reading
+# CONFIGURATIONS was deployed (179fce5, 2026-10-17), and target_profiles() takes CONFIGURATIONS
+# directly, adding the aliases itself -- so a rename no longer needs scaffolding repeated by hand.
 # Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
 DEFAULT_PROFILE = 'qwen27b-q8-pair'
 # Configurations that used to be selectable, and what replaced them. A retired name is never
@@ -61,8 +53,16 @@ DEFAULT_PROFILE = 'qwen27b-q8-pair'
 # backends are described nowhere any more and launching one from memory is the drift this house
 # refuses. A *renamed* one does resolve, for the opposite reason: the same backends are still there.
 RETIRED_PROFILES = {
-    'flash-next-solo-128k': 'flash-next-strata-solo',
-    'flash-next-solo-160k': 'flash-next-strata-solo',
+    'flash-next-solo-128k': 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-solo-160k': 'flash-next-strata-solo-thinking-recovery',
+    # Retired 2026-10-18, the day their levers were measured. The sampling step and the route step
+    # are the two named here that were ever selectable; what replaces each is the configuration that
+    # no longer carries the switch, which is the only answer a refusal can usefully give.
+    # Its own earlier name, which resolved as a rename while the configuration it named existed.
+    'flash-next-strata-160k': 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-strata-solo': 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-strata-solo-thinking': 'flash-next-strata-solo-thinking-recovery',
+    'flash-next-strata-solo-thinking-recovery-full-route': 'flash-next-strata-solo-thinking-recovery',
 }
 # Renamed configurations: old id -> new id. Resolved by render() before a file is read, accepted by
 # update.target_profiles() so a rename cannot refuse its own release, and honoured by the home
@@ -72,7 +72,6 @@ RETIRED_PROFILES = {
 PROFILE_ALIASES = {
     'qwen27b-q8-with-nighttime': 'qwen27b-q8-pair',
     'qwen27b-q6k-with-nighttime': 'qwen27b-q6k-pair',
-    'flash-next-strata-160k': 'flash-next-strata-solo',
 }
 # The second resident: the model a paired configuration loads on the other GPU pair.
 EVERYDAY_PROFILE = 'everyday'

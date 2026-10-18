@@ -9,29 +9,11 @@
   "compose_sha256": "7a18d01fd301d1640eacb9de69b0c0a5700ee18aac2209f4287b8145cced467e",
   "coding_service_sha256": "c67324d3992ca69dac3e3c488e912b5e19dd04b64dea9c9c1a5689f43897012c"
  },
- "flash-next-strata-solo": {
-  "previous_id": "flash-next-strata-160k",
-  "compose_sha256": "fdf3faeb3c3b2a643188bcf46fd79b61938b59d18da63d928751ef365a8ba10b",
-  "coding_service_sha256": "7a0e06249fa6074220af764779cbd9466ccaa3c6b11c9f72d714e62a3719ca69",
-  "note": "Renamed and promoted on 2026-10-15: it is a resident now, so local-ai.profile says what every other coding resident says (primary) instead of trial. That label is the one byte of this service the rename changed; the launch arguments, mounts, GPUs and model alias did not move. Re-pinned on 2026-10-16 for a change that is not the rename: the encoder image, the fifth GPU the shared vision card brings, and the two variables that place the encoder on it. Both digests move together and only that; the text placement inside the four cards is byte-for-byte what it was, which is what the pair of them now pins. Re-pinned on 2026-10-17 for two variables this container is now told through and nothing else moved: --sampling, whose default now states off, and STRATA_ALLOWED_HOSTS, which took the host names the server answers out of a hand edit inside the workspace and into source. Re-pinned on 2026-10-17 again for three variables this container is now told through and nothing else moved: --conversation-cache-mib and --conversation-cache-min-free-mib, both stating off here, and --ple-gguf stating off. Stating off is what tells the entry point to take the flags out of the run config it wrote on an earlier boot; the three lines are here so every configuration of this engine says what the workspace it shares is left holding."
- },
- "flash-next-strata-solo-thinking": {
-  "previous_id": null,
-  "compose_sha256": "eb7c597ba760f1e7dfa40200aa99ad2eec30b02b80fe3fcfa11d6b2e7197aaa9",
-  "coding_service_sha256": "419b430db3c80ef89d30784054fe1c9a3537ac6620d3f062d8f52dc3e23c8f28",
-  "note": "Never renamed, and pinned anyway: this fixture holds the launch digest of every selectable configuration, and this one is the greedy configuration one variable away. The two digests differ from flash-next-strata-solo by exactly the SAMPLING value -- AVariantIsOneLineApartFromItsOriginal is what proves that and what refuses the pair the moment they diverge in anything else. Re-pinned on 2026-10-17 again for three variables this container is now told through and nothing else moved: --conversation-cache-mib and --conversation-cache-min-free-mib, both stating off here, and --ple-gguf stating off. Stating off is what tells the entry point to take the flags out of the run config it wrote on an earlier boot; the three lines are here so every configuration of this engine says what the workspace it shares is left holding."
- },
  "flash-next-strata-solo-thinking-recovery": {
   "previous_id": null,
   "coding_service_sha256": "57d4741c29005384157430f93663405ceef88adf4868a4c2ea38d8548e533996",
   "compose_sha256": "5c163671c699c40c3cbc87ba543d74a051aa863402250c45341e00ace68f0843",
-  "note": "New on 2026-10-17, one variable from flash-next-strata-solo-thinking: TOOL_CALL_RECOVERY=on. Pinned from the day it exists, so a later edit to either configuration moves a digest here rather than going unnoticed. Re-pinned on 2026-10-17 again for three variables this container is now told through and nothing else moved: --conversation-cache-mib and --conversation-cache-min-free-mib, both stating off here, and --ple-gguf stating off. Stating off is what tells the entry point to take the flags out of the run config it wrote on an earlier boot; the three lines are here so every configuration of this engine says what the workspace it shares is left holding."
- },
- "flash-next-strata-solo-thinking-recovery-full-route": {
-  "previous_id": null,
-  "coding_service_sha256": "8404df8820a3e1f3c1c09258282f0e97ae0d8f729dd7c55689a9712d1af82ed4",
-  "compose_sha256": "4a40a0516f4efbc82fc51f54c87f719a63bbffda05ac4c44c620a9750877034a",
-  "note": "New on 2026-10-17, one variable from flash-next-strata-solo-thinking-recovery: STRATA_ROUTE_TAIL_SKIP=0 in the container environment, which is the engine's own variable read with getenv and not a key this house's entry point writes -- the only one of the new configurations that runs on the image already deployed, and the only one whose case is that this box is already so well cached that dropping a missed expert route may cost this engine the draft acceptance the source says it costs when the cache is full. Pinned from the day it exists."
+  "note": "New on 2026-10-17, one variable from the card-sampling configuration of the day; since the 2026-10-18 consolidation it is the oldest link the Strata chain has left, and the configuration the retired greedy, card-sampling and route-tail-skip ids name in their refusal: TOOL_CALL_RECOVERY=on. Pinned from the day it exists, so a later edit to either configuration moves a digest here rather than going unnoticed. Re-pinned on 2026-10-17 again for three variables this container is now told through and nothing else moved: --conversation-cache-mib and --conversation-cache-min-free-mib, both stating off here, and --ple-gguf stating off. Stating off is what tells the entry point to take the flags out of the run config it wrote on an earlier boot; the three lines are here so every configuration of this engine says what the workspace it shares is left holding."
  },
  "flash-next-strata-solo-thinking-recovery-cache": {
   "previous_id": null,

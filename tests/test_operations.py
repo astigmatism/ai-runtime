@@ -283,7 +283,7 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
     configuration that owns all four text GPUs."""
     controller_setup = controller_fixture.ExclusiveProfileTests.setUp
     HOST = controller_fixture.ExclusiveProfileTests.HOST
-    SOLO = 'flash-next-strata-solo'  # the one configuration that owns all four text GPUs
+    SOLO = 'flash-next-strata-solo-thinking-recovery'  # the one configuration that owns all four text GPUs
 
     def test_browser_switch_to_solo_and_back(self):
         result = self.run_switch(self.request(self.SOLO))

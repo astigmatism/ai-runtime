@@ -314,18 +314,15 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'qwen27b-q8-pair')
         self.assertEqual([x['profile'] for x in configs['selectable']], list(CONFIGURATIONS))
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
-            ['flash-next-strata-solo', 'flash-next-strata-solo-thinking',
-             'flash-next-strata-solo-thinking-recovery',
-             'flash-next-strata-solo-thinking-recovery-full-route',
+            ['flash-next-strata-solo-thinking-recovery',
              'flash-next-strata-solo-thinking-recovery-cache'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next (160K)',
-            'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next (160K)'])
-        # Five selectable configurations, one backend: the model name is the same because it is the
-        # same model, so what tells the operator which is which is the variant label.
-        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-5:]],
-            ['greedy', 'card sampling', 'card sampling + call recovery',
-             'card sampling + call recovery + full route',
+            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (160K)', 'Qwen3.8 Flash-Next (160K)'])
+        # Two selectable configurations of one backend as of 2026-10-18: the model name is the same
+        # because it is the same model, so what tells the operator which is which is the variant label.
+        # It also says what the second one turns on, because that is the only choice left to make here.
+        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-2:]],
+            ['card sampling + call recovery',
              'card sampling + call recovery + parked conversations'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
@@ -397,7 +394,7 @@ class ExclusiveProfileTests(unittest.TestCase):
     HOST = vision_host()
     setUp = ControllerTests.setUp
     NIGHT = 'qwen38-nighttime'
-    SOLO = 'flash-next-strata-solo'
+    SOLO = 'flash-next-strata-solo-thinking-recovery'
 
     def setUp(self):
         ControllerTests.setUp(self)
@@ -563,7 +560,7 @@ class ExclusiveProfileTests(unittest.TestCase):
         # No configuration runs two slots now; the capability is exercised on a copy of the configuration.
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         config = Path(tmp.name) / 'config'; shutil.copytree(ROOT / 'config', config)
-        path = config / 'profiles/flash-next-strata-solo.json'; definition = read(path)
+        path = config / ('profiles/' + self.SOLO + '.json'); definition = read(path)
         definition['parallel_slots'] = 2; path.write_text(json.dumps(definition))
         self.c.config_dir = config
         self.c.transition(self.SOLO)
@@ -638,7 +635,7 @@ class EnvironmentEngineObservationTests(unittest.TestCase):
     cannot satisfy a comparison must produce a drift reason the operator can read.
     """
 
-    PROFILE = 'flash-next-strata-solo'
+    PROFILE = 'flash-next-strata-solo-thinking-recovery'
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)

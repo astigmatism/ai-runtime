@@ -140,7 +140,7 @@ class RestorationTests(unittest.TestCase):
         self.system.draining = True
         self.system.reason = 'local-ai-runtime:' + transaction['id']
 
-    def failed_switch_transaction(self, target_profile='flash-next-strata-solo'):
+    def failed_switch_transaction(self, target_profile='flash-next-strata-solo-thinking-recovery'):
         """The transaction a refused switch leaves behind: pending, its drain still owned, the
         target recorded - the same shape the 2026-10-12 host carried across its reboot."""
         target = render(ROOT / 'config', fixture.HOST, target_profile)
@@ -444,7 +444,7 @@ class RestorationTests(unittest.TestCase):
         self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
         self.c._kinds_cache = None
         self.c.publish(self.bundle)
-        target = render(ROOT / 'config', self.c.host, 'flash-next-strata-solo')
+        target = render(ROOT / 'config', self.c.host, 'flash-next-strata-solo-thinking-recovery')
         for service in target['manifest']['services']:
             self.system.services[service['container_name']] = service
         catalog_path = Path(self.c.host['router_state_dir']) / 'active-model.json'
@@ -575,13 +575,13 @@ class RestorationTests(unittest.TestCase):
         cannot serve is refused before the drain is taken, the machine keeps serving what it
         serves, and nothing is left behind that a reboot could then resurrect."""
         with self.assertRaisesRegex(RuntimeError, 'does not support backend kind strata'):
-            self.c.transition('flash-next-strata-solo')
+            self.c.transition('flash-next-strata-solo-thinking-recovery')
         self.assertFalse(self.system.draining, 'the drain was taken to reach the refusal')
         self.assertNotIn(('drain', True), self.system.events)
         self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertTrue(self.c.serving())
         # The card says it before the click, because the verdict is the gate.
-        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo')
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo-thinking-recovery')
         self.assertTrue(any('does not support backend kind strata' in r for r in self.c.verdict(bundle)))
 
     def test_the_router_gate_passes_a_kind_the_router_reports(self):
@@ -590,7 +590,7 @@ class RestorationTests(unittest.TestCase):
         self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
         # The status poll in setUp cached the old router's answer; the clock moves past it.
         self.c._kinds_cache = None
-        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo')
+        bundle = render(ROOT / 'config', fixture.HOST, 'flash-next-strata-solo-thinking-recovery')
         self.c.require_router_supports(bundle)  # must not raise
         self.assertFalse(any('does not support backend kind' in r for r in self.c.verdict(bundle)))
 
