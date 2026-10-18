@@ -132,7 +132,7 @@
       }
     },
     "strata-vision-296b59d2f73c": {
-      "image_id": "sha256:e98bff6b9a83ff03667e3492c249082fa5ee7ebf6a4b12963e8f2a8ba61fc377",
+      "image_id": "sha256:406ed64fb9bbc82e45a28f807790852ae0328c8bd0ddf4c5c607bcc546dce924",
       "tag": "local/strata:296b59d2f73c-vision",
       "revision": "296b59d2f73c8f04a805df29c2fa97655adace78",
       "release": "v0.1.44.1",
@@ -176,7 +176,15 @@
         "--conversation-cache-min-free-mib": "CONVERSATION_CACHE_MIN_FREE_MIB",
         "--conversation-cache-slots": "CONVERSATION_CACHE_SLOTS",
         "--conversation-cache-min-tokens": "CONVERSATION_CACHE_MIN_TOKENS",
-        "--ple-gguf": "PLE_GGUF"
+        "--ple-gguf": "PLE_GGUF",
+        "--rope-scaling": "ROPE_SCALING",
+        "--rope-scale": "ROPE_SCALE",
+        "--yarn-orig-ctx": "YARN_ORIG_CTX"
+      },
+      "rope_scaling": {
+        "why": "Which position ring a session is read through. The Qwen3.8 pack is trained to 262,144 and carries no scaling keys of its own, so a window wider than that is YaRN interpolation and nothing else: --rope-scaling yarn with a --rope-scale and the --yarn-orig-ctx it stretches, written into the run config's args list on every start because the engine fixes its ring at startup and cached keys are post-RoPE. The factor-2.0 524,288 rung is measured on this box (docs/deployment.md, 'Beyond the ladder' and the factor table): boot 100 s like the trained window, a 493K-token tail question answered identically in five rounds where the trained edge answers its own edge half the time, decode 119.5 against the 90 floor. 3.0 was where answers stopped repeating and 4.0 where prefill fell to 2.2K tok/s, which is why this word ships at 2.0 and not past it.",
+        "values": "yarn and linear state a ring and demand their numbers (--rope-scale always, --yarn-orig-ctx for yarn, and a window above it -- the engine refuses the pair otherwise); none and off take every rope line the file carries back out; and -- unusually among the facts -- unstated strips too, because a profile that names no ring is promising the trained geometry and a stranger's factor surviving the switch in silence would lie about it with nothing in /slots to catch it. Checked when it renders, not when it boots: an exclusive resident on a ring the engine refuses is nothing serving on a drain already spent.",
+        "image": "Mapped only on this engine, for the standing reason: the text-only tags run upstream's entry point and cannot be told, so a profile stating a rope on one of those engines is refused when it renders. This tag was rebuilt for this line on 2026-10-18 and its new id is pinned above; the image before it is kept on the box as local/strata:296b59d2f73c-vision-pre-rope, and a rollback to it re-pins this line and takes the rope fact with it."
       },
       "tool_call_recovery": {
         "why": "The model sometimes writes a call to a tool the request declared in a form beside the template's -- as <parameter=NAME> instead of <function=NAME>, as JSON inside <tool_call>, as a bare <function=NAME> at the start of a line outside code, or as a second call inside the same <tool_call> -- and without this key the engine reads those as prose, which for this house's agent is a turn that looks like an answer and does nothing. serve/server.py reads the run config's top-level \"tool_call_recovery\" and defaults it to false, setup.py never writes it, and upstream measures 92.9% of agent turns' tool calls read as intended off against 98.3% on (1,462 turns of Qwen3.8 under Claude Code, from its own drift corpus). This house's own store, read the same way by scripts/transcript_loops.py --dropped, has none: 0 of 16,702 turns that wanted a tool arrived as prose carrying the call's markup, and no step ended in the parser's error, over every turn this resident served without the switch.",

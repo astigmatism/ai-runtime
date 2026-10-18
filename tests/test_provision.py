@@ -623,7 +623,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         # from the environment: only what a test states below is in force.
         for key in ('VISION_DEVICE', 'SAMPLING', 'CONTEXT', 'PLE_GGUF', 'CONVERSATION_CACHE_MIB',
                     'CONVERSATION_CACHE_MIN_FREE_MIB', 'CONVERSATION_CACHE_SLOTS',
-                    'CONVERSATION_CACHE_MIN_TOKENS'):
+                    'CONVERSATION_CACHE_MIN_TOKENS', 'ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX'):
             env.pop(key, None)
         if extra:
             env.update(extra)
@@ -964,6 +964,111 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.start(device=None, extra={'VISION': 'no'})
         self.assertEqual(self.config.read_text(), before)
         self.assertEqual(self.setup_calls(), [])
+
+    def test_the_stated_ring_is_written_into_the_args_list_the_engine_reads(self):
+        # Fact 8. A window past the trained one is YaRN interpolation and the engine only reads that
+        # out of its args list, fixed at startup because cached keys are post-RoPE. The three pairs
+        # arrive together, which is the only shape that leaves no half a ring behind.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--model', '/weights/shard.gguf',
+            '--max-context', '262144', '--kv', 'k8v4']})
+        run = self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '524288',
+            'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '262144'})
+        args = json.loads(self.config.read_text())['args']
+        for flag, value in (('--rope-scaling', 'yarn'), ('--rope-scale', '2.0'),
+                            ('--yarn-orig-ctx', '262144')):
+            self.assertEqual(args.count(flag), 1)
+            self.assertEqual(args[args.index(flag) + 1], value)
+        # The window the same boot states is written too, and every unrelated argument goes back
+        # byte for byte -- including a rope-sounding neighbour nothing here wrote.
+        self.assertEqual(args[args.index('--max-context') + 1], '524288')
+        self.assertEqual([a for a in args if a.startswith('--') and a not in
+            ('--rope-scaling', '--rope-scale', '--yarn-orig-ctx', '--max-context')],
+            ['--serve', '--model', '--kv'])
+        self.assertIn('wrote --rope-scaling yarn, --rope-scale 2.0, --yarn-orig-ctx 262144', run.stdout)
+        self.assertEqual(self.setup_calls(), [])
+
+    def test_the_ring_is_written_once_and_then_left_alone(self):
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '524288']})
+        rope = {'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '262144'}
+        self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '524288', **rope})
+        placed = self.config.read_text()
+        self.assertIn('already in the args list',
+            self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '524288', **rope}).stdout)
+        self.assertEqual(self.config.read_text(), placed)
+
+    def test_a_stranger_s_ring_does_not_survive_the_switch_back(self):
+        # The landmine this fact was designed for: the 512K configuration wrote a factor 2.0 into a
+        # workspace's args list, the operator selects the 262K sibling, and a 262K window read
+        # through somebody else's ring boots, serves, answers wrong, and matches /slots exactly --
+        # the one verification the switch has cannot see it, so silence here must strip.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '262144',
+            '--rope-scaling', 'yarn', '--rope-scale', '2.0', '--yarn-orig-ctx', '262144',
+            '--kv', 'k8v4']})
+        run = self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '262144'})
+        args = json.loads(self.config.read_text())['args']
+        for flag in ('--rope-scaling', '--rope-scale', '--yarn-orig-ctx'):
+            self.assertNotIn(flag, args)
+        self.assertIn('removed --rope-scaling, --rope-scale, --yarn-orig-ctx the profile does not state',
+            run.stdout)
+        # The window and the unrelated neighbours come back exactly as they were read.
+        self.assertEqual(args, ['--serve', '--max-context', '262144', '--kv', 'k8v4'])
+
+    def test_off_takes_every_rope_line_back_out_rather_than_writing_words_for_none(self):
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '262144',
+            '--rope-scaling', 'linear', '--rope-scale', '1.5']})
+        run = self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '262144',
+            'ROPE_SCALING': 'off'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertNotIn('--rope-scaling', args)
+        self.assertNotIn('--rope-scale', args)
+        self.assertIn('the profile does not state', run.stdout)
+
+    def test_a_ring_the_engine_cannot_read_fails_the_boot_before_the_file(self):
+        # Same refusal as the window has, for the same reason: every one of these is an argument the
+        # engine parses at startup, and a refused boot costs less than a serving wrong one --
+        # especially this one, which the switch cannot catch afterwards at all.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '524288']})
+        before = self.config.read_text()
+        base = {'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '262144'}
+        # Each case is a complete statement of the boot's rope environment; None takes a variable
+        # out, which is what "stated no scale" means here.
+        for breakage, message in (
+                ({'ROPE_SCALING': 'ntk', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '262144'},
+                 'not one of yarn, linear, none'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': None, 'YARN_ORIG_CTX': '262144'},
+                 'no positive ROPE_SCALE'),
+                ({'ROPE_SCALING': 'linear', 'ROPE_SCALE': None, 'YARN_ORIG_CTX': None},
+                 'no positive ROPE_SCALE'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': 'two', 'YARN_ORIG_CTX': '262144'},
+                 'no positive ROPE_SCALE'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '0', 'YARN_ORIG_CTX': '262144'},
+                 'no positive ROPE_SCALE'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0.1', 'YARN_ORIG_CTX': '262144'},
+                 'no positive ROPE_SCALE'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': None},
+                 'no positive YARN_ORIG_CTX'),
+                ({'ROPE_SCALING': 'yarn', 'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '524288'},
+                 'does not exceed the trained one')):
+            with self.subTest(case=str(breakage)):
+                env = {key: value for key, value in breakage.items() if value is not None}
+                run = self.start(device=None,
+                    extra={'VISION': 'no', 'CONTEXT': '524288', **env}, expect_fail=True)
+                self.assertNotIn('upstream --serve', run.stdout)
+                self.assertIn(message, run.stderr)
+                self.assertEqual(self.config.read_text(), before)
+
+    def test_the_ring_and_the_window_arrive_with_the_card_on_the_same_boot(self):
+        # A fresh workspace asked for a 512K ring: the setup pass this entry point runs, the window,
+        # and the ring all have to land on one boot, because the switch verifies the booted engine
+        # against the profile and cannot spend a second drain on the way.
+        run = self.start(extra={'CONTEXT': '524288', 'ROPE_SCALING': 'yarn',
+            'ROPE_SCALE': '2.0', 'YARN_ORIG_CTX': '262144'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(cfg['vision']['cuda_device'], 4)
+        self.assertEqual(cfg['args'][cfg['args'].index('--max-context') + 1], '524288')
+        self.assertEqual(cfg['args'][cfg['args'].index('--rope-scaling') + 1], 'yarn')
+        self.assertEqual(len(self.setup_calls()), 1)
+        self.assertIn('upstream --serve', run.stdout)
 
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()

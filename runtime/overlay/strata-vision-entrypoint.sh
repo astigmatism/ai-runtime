@@ -1,8 +1,8 @@
 #!/bin/sh
 # This house's overlay on Strata's own entry point, not an upstream file.
 #
-# Seven facts about this container have to reach the engine's own run config. Four of them are not
-# arguments the engine takes; the last three are, but they go in the run config's "args" list, which
+# Eight facts about this container have to reach the engine's own run config. Four of them are not
+# arguments the engine takes; the last four are, but they go in the run config's "args" list, which
 # setup.py writes and offers no flag to extend.
 #
 # 1. That it runs an image encoder at all (with which mmproj). The "vision" section of the run
@@ -79,6 +79,18 @@
 #    fails the boot before anything is written. No ceiling is repeated here: the runtime refuses a
 #    window the router cannot carry when it renders, before anything is drained, and the engine reports
 #    the window it starts on or does not start.
+# 8. Which position ring the window is read through. The profile states ROPE_SCALING (yarn or linear),
+#    ROPE_SCALE and, for yarn, YARN_ORIG_CTX, and they are engine arguments -- --rope-scaling,
+#    --rope-scale, --yarn-orig-ctx -- fixed at startup because cached K is post-RoPE. The pack is
+#    trained to 262,144 with no scaling keys of its own, so a window wider than that is interpolation
+#    and a window at or under it is native. Unusually, silence here is a statement: a profile that
+#    names no ring promises the native one, so this fact DROPS any rope block the file carries when
+#    the profile states nothing -- the one fact where leaving the file alone would be a lie, because
+#    a 262,144 window left reading through a stranger's factor 2.0 boots, serves, and answers through
+#    positions the profile never promised, and the switch has no /slots number to catch it on. yarn
+#    demands a --yarn-orig-ctx and a window above it (the engine refuses the pair otherwise); a scale
+#    that is not a positive float fails the boot before anything is written. The measurements behind
+#    shipping any factor at all are in docs/deployment.md, "Beyond the ladder" and the factor table.
 #
 # So: when the container is told the encoder's card, make sure the config it is about to start
 # carries a vision section, and write the card into it. When it is told a sampling preset, make sure
@@ -118,6 +130,9 @@ CONVERSATION_CACHE_MIB="${CONVERSATION_CACHE_MIB:-}"
 CONVERSATION_CACHE_MIN_FREE_MIB="${CONVERSATION_CACHE_MIN_FREE_MIB:-}"
 CONVERSATION_CACHE_SLOTS="${CONVERSATION_CACHE_SLOTS:-}"
 CONVERSATION_CACHE_MIN_TOKENS="${CONVERSATION_CACHE_MIN_TOKENS:-}"
+ROPE_SCALING="${ROPE_SCALING:-}"
+ROPE_SCALE="${ROPE_SCALE:-}"
+YARN_ORIG_CTX="${YARN_ORIG_CTX:-}"
 PLE_GGUF="${PLE_GGUF:-}"
 
 # The same tag the upstream entry point derives, so what follows writes the file it is about to read.
@@ -369,6 +384,13 @@ rest = sys.argv[4:]
 with open(path, encoding='utf-8-sig') as handle:
     cfg = json.load(handle)
 args = cfg.get('args')
+if op == 'drop' and not isinstance(args, list):
+    # A file that carries no argv carries none of these flags either: dropping from it is a
+    # no-op, not a failed boot. (Writing INTO such a file stays a refusal below -- inventing
+    # the engine's argv list here would say more about the engine's defaults than we know.)
+    print('strata overlay: %s carries no args list; none of %s is in force'
+          % (path, ', '.join(rest)), flush=True)
+    sys.exit(0)
 if not isinstance(args, list):
     print('strata overlay: %s has no args list to write %s into' % (path, suffix), file=sys.stderr,
           flush=True)
@@ -551,8 +573,79 @@ apply_ple_table() {
     edit_args ple set --ple-gguf "$PLE_GGUF"
 }
 
+positive_float() {
+    # $1 = the name to blame in the message, $2 = the value. Digits with at most one point and more
+    # than zero: the engine parses this as a float, and a rope scale it cannot parse is a boot that
+    # does not happen -- which is the whole house style for arguments the engine refuses.
+    case "$2" in
+        '' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+    esac
+    python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$2" 2>/dev/null
+}
+
+apply_rope_scaling() {
+    # Fact 8. What positions the engine reads its window with. The pack is trained to 262,144 and
+    # carries no rope scaling keys, so any window wider than that is YaRN interpolation and every
+    # narrower promise is the native geometry -- which is why silence here STRIPS instead of leaving
+    # the file alone: a rope block a wider profile wrote must not survive the switch back in silence,
+    # because a 262,144 window read through factor 2.0 is a session that boots, serves, and answers
+    # through the wrong position ring. The profile is the authority and not the file; for geometry
+    # that has always been true, this fact just says so out loud.
+    #
+    # Measured on this box on 2026-10-18, same pack, same engine: factor 2.0 to 524,288 boots in
+    # 100 s like the trained window does, decodes within noise of it, and answers a 493K-token tail
+    # question identically in five rounds where the trained edge answers its own edge half the time.
+    # The factor ladder (docs/deployment.md) drew the shipping line at 2.0; a profile that states a
+    # steeper one is borrowing against that ladder's tail, and should say so in its variant_label.
+    case "$ROPE_SCALING" in
+        '' | none | off)
+            if [ -f "$cfg" ]; then
+                edit_args rope drop --rope-scaling --rope-scale --yarn-orig-ctx
+            fi
+            return 0
+            ;;
+        yarn | linear)
+            ;;
+        *)
+            echo "strata overlay: ROPE_SCALING=$ROPE_SCALING is not one of yarn, linear, none. A" >&2
+            echo "  geometry the engine has never heard of is a crash loop for an exclusive resident." >&2
+            return 1
+            ;;
+    esac
+    if ! positive_float ROPE_SCALE "$ROPE_SCALE"; then
+        echo "strata overlay: ROPE_SCALING=$ROPE_SCALING states no positive ROPE_SCALE to go with it." >&2
+        echo "  The rope scale is the statement; the scaling name only says which interpolation reads" >&2
+        echo "  it, and leaving it to the engine's default is how a window gets a ring nobody named." >&2
+        return 1
+    fi
+    set -- --rope-scaling "$ROPE_SCALING" --rope-scale "$ROPE_SCALE"
+    if [ "$ROPE_SCALING" = yarn ]; then
+        if ! positive YARN_ORIG_CTX "$YARN_ORIG_CTX"; then
+            echo "strata overlay: ROPE_SCALING=yarn states no positive YARN_ORIG_CTX: YaRN needs to" >&2
+            echo "  know which trained window it is stretching, and --yarn-orig-ctx's own default is" >&2
+            echo "  262144 only for this generation's packs -- a number to be stated, not assumed." >&2
+            return 1
+        fi
+        if positive CONTEXT "$CONTEXT_STATED" && [ "$CONTEXT_STATED" -le "$YARN_ORIG_CTX" ]; then
+            echo "strata overlay: CONTEXT_STATED=$CONTEXT_STATED with YARN_ORIG_CTX=$YARN_ORIG_CTX:" >&2
+            echo "  the engine refuses a YaRN window that does not exceed the trained one it scales." >&2
+            return 1
+        fi
+        set -- "$@" --yarn-orig-ctx "$YARN_ORIG_CTX"
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and a position ring has to be written into it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write the position ring into" >&2
+            return 1
+        fi
+    fi
+    edit_args rope set "$@"
+}
+
 apply_max_context
 apply_conversation_cache
 apply_ple_table
+apply_rope_scaling
 
 exec ./docker-entrypoint.upstream.sh "$@"

@@ -315,23 +315,28 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([x['profile'] for x in configs['selectable']], list(CONFIGURATIONS))
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
             ['flash-next-strata-solo-thinking-recovery',
-             'flash-next-strata-solo-thinking-recovery-cache'])
+             'flash-next-strata-solo-thinking-recovery-cache',
+             'flash-next-strata-solo-thinking-recovery-cache-yarn'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)'])
+            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
+            'Qwen3.8 Flash-Next (512K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
-        # on it -- and it shows up twice, because both configurations of this resident move on every
-        # rung: the run config is one file per workspace, and two configurations of one resident that
-        # disagreed about the window would make a switch between them a resize. The pair keeps 160K,
-        # which is why all four numbers are named.
+        # on it -- and the two 256K configurations move together on every rung: the run config is one
+        # file per workspace, and two configurations of one resident that disagreed about the window
+        # would make a switch between them a resize. The 512K configuration states that resize as a
+        # fact of its own -- window and ring are its one variable from its sibling -- so the label
+        # says 512K. The pair keeps 160K, which is why all five numbers are named.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144])
-        # Two selectable configurations of one backend as of 2026-10-18: the model name is the same
-        # because it is the same model, so what tells the operator which is which is the variant label.
-        # It also says what the second one turns on, because that is the only choice left to make here.
-        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-2:]],
+            [163840, 163840, 262144, 262144, 524288])
+        # Three selectable configurations of the Flash-Next backend as of 2026-10-18: the model name
+        # is the same because it is the same model, so what tells the operator which is which is the
+        # variant label. It also says what each one turns on, because that is the only choice left
+        # to make here.
+        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-3:]],
             ['card sampling + call recovery',
-             'card sampling + call recovery + parked conversations'])
+             'card sampling + call recovery + parked conversations',
+             'card sampling + call recovery + parked conversations + YaRN 2.0 window'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)

@@ -300,6 +300,7 @@ class ConfigurationTests(unittest.TestCase):
         expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
             'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-solo-thinking-recovery-cache-yarn': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -329,24 +330,29 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index('--flash-attn') + 1], 'on')  # required by tensor mode
                 self.assertEqual(argv[argv.index('--fit') + 1], 'off')  # fitting is not implemented for tensor mode
 
-    def test_context_ceiling_is_the_router_contract_native_window(self):
+    def test_context_ceiling_is_the_router_contract(self):
+        # The ceiling is the coordinated number it shares with LLM Router's RESIDENT_CONTEXT_LIMIT:
+        # widening it is a two-repo release, and the router half shipped first (llm-router 0d9dc83,
+        # 2026-10-18) because publishing a catalog above a router's ceiling 503s every model route.
+        # The native window of the Qwen3.8 pack is 262,144; everything above it is rope scaling and
+        # the profile must state the ring (engine_rope_scaling refuses the rest at render).
         from runtime.config import ROUTER_CONTEXT_LIMIT
-        self.assertEqual(ROUTER_CONTEXT_LIMIT, 262144)
+        self.assertEqual(ROUTER_CONTEXT_LIMIT, 524288)
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             path = config / 'profiles/qwen27b-q6k-pair.json'
             definition = read(path)
-            for tokens in (262145, 0, '262144'):
+            for tokens in (524289, 0, '524288'):
                 with self.subTest(tokens=tokens):
                     definition['context_tokens'] = tokens
                     path.write_text(json.dumps(definition))
-                    with self.assertRaisesRegex(RuntimeError, 'router contract: 1–262144 tokens'):
+                    with self.assertRaisesRegex(RuntimeError, 'router contract: 1–524288 tokens'):
                         render(config, BASELINE['host'], 'qwen27b-q6k-pair')
                     with self.assertRaisesRegex(RuntimeError, 'router contract'):
                         available_profiles(config)
-            definition['context_tokens'] = 262144
+            definition['context_tokens'] = 524288
             path.write_text(json.dumps(definition))
-            self.assertEqual(render(config, BASELINE['host'], 'qwen27b-q6k-pair')['catalog']['context_length'], 262144)
+            self.assertEqual(render(config, BASELINE['host'], 'qwen27b-q6k-pair')['catalog']['context_length'], 524288)
 
     def test_invalid_repeated_arguments_or_missing_model_mount_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,7 +377,8 @@ class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-            'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache'))
+            'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
+            'flash-next-strata-solo-thinking-recovery-cache-yarn'))
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
@@ -530,7 +537,7 @@ class RegistryTests(unittest.TestCase):
                 # A solo configuration has no second resident to name, and saying it does is a
                 # configuration that lies about what it will launch.
                 (SOLO, lambda definition: definition.update(everyday=EVERYDAY_PROFILE), 'runs no second resident'),
-                ('qwen27b-q8-pair', lambda definition: definition.update(context_tokens=262145), 'router contract')]:
+                ('qwen27b-q8-pair', lambda definition: definition.update(context_tokens=524289), 'router contract')]:
             with self.subTest(profile=name):
                 with self.assertRaisesRegex(RuntimeError, expected):
                     self.registry_with(name, mutate)
@@ -725,6 +732,38 @@ class EnvironmentEngineTests(unittest.TestCase):
                 len(service['deploy']['resources']['reservations']['devices'][0]['device_ids']), 4)
             self.assertEqual(bundle['catalog']['models'][0]['input_modalities'], ['text'])
 
+    def test_the_rope_statements_refuse_on_the_image_without_the_entry_point(self):
+        # The rollback story for the ring is the story for every entry-point fact: the text-only tag
+        # runs upstream's entry point, there is nothing in that image to write a rope into the run
+        # config, and the refusal names what a profile can do instead (drop the line, which rolls a
+        # 512K promise back to a trained-window one -- and the ceiling refuses the window by itself).
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            name = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
+            path = config / ('profiles/' + name + '.json')
+            definition = read(path)
+            definition['engine'] = 'strata-296b59d2f73c'
+            path.write_text(json.dumps(definition))
+            for flag in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
+                         '--conversation-cache-min-free-mib', '--conversation-cache-slots',
+                         '--conversation-cache-min-tokens', '--ple-gguf',
+                         '--rope-scaling', '--rope-scale', '--yarn-orig-ctx'):
+                with self.subTest(argument=flag):
+                    with self.assertRaisesRegex(RuntimeError, flag + ' has no environment variable'):
+                        render(config, vision_host(), name)
+                    definition['arguments'].pop(flag, None)
+                    definition['argument_order'].remove(flag)
+                    path.write_text(json.dumps(definition))
+            # With every entry-point statement gone the image renders -- the window is what is left
+            # of the 512K claim, and it is the contract that answers: 262,144 or nothing.
+            bundle = render(config, vision_host(), name)
+            environment = bundle['compose']['services']['coding']['environment']
+            for variable in ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'SAMPLING'):
+                self.assertNotIn(variable, environment)
+            definition['context_tokens'] = 262144
+            path.write_text(json.dumps(definition))
+            self.assertEqual(render(config, vision_host(), name)['catalog']['context_length'], 262144)
+
     def test_the_solo_resident_is_published_without_llama_cpp_only_claims(self):
         bundle = self.bundle()
         entry = bundle['catalog']['models'][0]
@@ -824,8 +863,17 @@ class EnvironmentEngineTests(unittest.TestCase):
         # runtime/overlay/), log build-0.1.44.1-vision-context-20261018.log beside it. Receipt
         # ops/reports/20261018-strata-vision-context/README.md. The image before it is kept as
         # local/strata:296b59d2f73c-vision-pre-context.
+        #
+        # And again on 2026-10-18 for the fact-8 layer: the entry point, now
+        # ee4cf6b909700eb58ce27ddf98f00c650cbb3c5698e76d98baee6939c81a0495, writes the position ring
+        # a rope-scaled window is read through (ROPE_SCALING/ROPE_SCALE/YARN_ORIG_CTX -> --rope-scaling
+        #/--rope-scale/--yarn-orig-ctx) and strips any ring the profile does not state, because a
+        # 262K sibling must never boot through the 512K configuration's factor in silence. Same base,
+        # same upstream half, built from /tmp/overlay-rope with the canonical recipe; the image before
+        # it is kept as local/strata:296b59d2f73c-vision-pre-rope, which is also what a rollback of
+        # this pin boots.
         self.assertEqual(engine['image_id'],
-                         'sha256:e98bff6b9a83ff03667e3492c249082fa5ee7ebf6a4b12963e8f2a8ba61fc377')
+                         'sha256:406ed64fb9bbc82e45a28f807790852ae0328c8bd0ddf4c5c607bcc546dce924')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
@@ -841,7 +889,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         # produced it are in the repo: the route-skip verdict is unreadable without the comparator
         # that prints confidence intervals, and the conversation cache is invisible to the benchmark
         # altogether, because a benchmark never lets its own conversations go cold.
-        for profile in ('flash-next-strata-solo-thinking-recovery-cache',):
+        for profile in ('flash-next-strata-solo-thinking-recovery-cache',
+                        'flash-next-strata-solo-thinking-recovery-cache-yarn'):
             warnings = read(ROOT / 'config/profiles' / (profile + '.json'))['catalog']['deployment_warnings']
             measured = [w for w in warnings if w.startswith('Measured on 2026-')]
             self.assertEqual(len(measured), 1, profile + ' states no measured verdict')
@@ -909,8 +958,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 2, 'the call-recovery and conversation-cache '
-            'configurations are the environment-interface ones; the greedy preset and the '
+        self.assertEqual(len(environment), 3, 'the environment-interface configurations are the '
+            'call-recovery, conversation-cache and rope-rung ones; the greedy preset and the '
             'route-tail skip left with their configurations on 2026-10-18, and their measurements '
             'are in docs/deployment.md')
         for name in environment:
@@ -947,7 +996,8 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     # the sampling preset, then the recovery switch -- and a different quant or window
     # in either one fails that check and restores this invariant by hand.
     SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo-thinking-recovery',
-        'flash-next-strata-solo-thinking-recovery-cache')}
+        'flash-next-strata-solo-thinking-recovery-cache',
+        'flash-next-strata-solo-thinking-recovery-cache-yarn')}
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
         engines = read(ROOT / 'config/shared.json')['engines']
@@ -998,13 +1048,29 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
     # about a cache that is off -- and then all of them come out together, because the question is
     # unchanged: does anything else move?
     STEPS = (('flash-next-strata-solo-thinking-recovery-cache', 'flash-next-strata-solo-thinking-recovery',
-        ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')),)
+        ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')),
+        ('flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-solo-thinking-recovery-cache',
+        ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'CONTEXT')))
 
     def rendered(self, name, variables):
         bundle = render(ROOT / 'config', BASELINE['host'], name)
-        for variable in (variables,) if isinstance(variables, str) else variables:
+        variables = (variables,) if isinstance(variables, str) else variables
+        for variable in variables:
             bundle['compose']['services']['coding']['environment'].pop(variable, None)
             bundle['manifest']['services'][0]['recommended_environment'].pop(variable, None)
+        if 'CONTEXT' in variables:
+            # A window step carries one number, and CONTEXT is where the launch receives it; the
+            # same number then goes out through the published contract (catalog and manifest) and
+            # into the display name and capability name that name it. A step that changes the
+            # window must set that number aside wherever it lands, or the test measures the echo
+            # and not the change -- and the echo is exactly what the step is allowed to move.
+            for contract in [bundle['catalog'], *bundle['catalog']['models'],
+                    *bundle['manifest']['services']]:
+                for key in ('context_length', 'total_context_length', 'context_tokens', 'display_name'):
+                    contract.pop(key, None)
+                capability = contract.get('capability_profile')
+                if capability is not None:
+                    capability.pop('name', None)
         bundle.pop('config_sha256')
         # The identity, and the prose that names the difference, are the only other things allowed to
         # differ; both are set aside so a launch change cannot hide behind them.
@@ -1027,7 +1093,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         to take out of the run config a block another configuration wrote. Every configuration of
         this engine therefore states both switches, whichever way it wants them."""
         stated = {'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
-            'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on')}
+            'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on'),
+            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on')}
         self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
         for name, expectations in stated.items():
             with self.subTest(profile=name):
@@ -1043,7 +1110,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         by every configuration of this engine, and the two refinements appear only where a budget
         makes them mean something."""
         stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
-            'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off')}
+            'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
+            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off')}
         self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):
@@ -1128,6 +1196,48 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,
                     r'refines a conversation cache this configuration has switched off'):
                 render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
+
+    def test_a_ring_the_engine_cannot_read_refuses_before_anything_renders(self):
+        """The rope statements are refused the way every entry-point fact is: at render, because an
+        exclusive resident started on a ring the engine refuses is nothing serving on a drain already
+        spent. A ring word the engine has never heard; a ring with no scale; a scale that is not a
+        positive number; yarn with no trained window named; a yarn window that does not exceed the
+        trained one it stretches (the engine refuses the pair); and numbers stated beside `off`,
+        where every rope line is being taken back out."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            name = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
+            path = config / ('profiles/' + name + '.json')
+            original = read(path)
+            for argument, stated, refuses in (
+                    ('--rope-scaling', 'ntk', 'rope-scaling states ntk'),
+                    ('--rope-scaling', '2.0', 'rope-scaling states 2.0'),
+                    ('--rope-scale', 'two', 'no positive [-][-]rope-scale'),
+                    ('--rope-scale', '0', 'no positive [-][-]rope-scale'),
+                    ('--rope-scale', '2.0.1', 'no positive [-][-]rope-scale'),
+                    ('--yarn-orig-ctx', 'half', 'no positive [-][-]yarn-orig-ctx'),
+                    ('--yarn-orig-ctx', '524288', 'does not stretch')):
+                with self.subTest(argument=argument, value=stated):
+                    definition = json.loads(json.dumps(original))
+                    definition['arguments'][argument] = stated
+                    path.write_text(json.dumps(definition))
+                    with self.assertRaisesRegex(RuntimeError, refuses):
+                        render(config, BASELINE['host'], name)
+            for gone in ('--rope-scale', '--yarn-orig-ctx'):
+                definition = json.loads(json.dumps(original))
+                del definition['arguments'][gone]
+                definition['argument_order'].remove(gone)
+                path.write_text(json.dumps(definition))
+                with self.subTest(missing=gone):
+                    with self.assertRaisesRegex(RuntimeError, '[-][-]' + gone[2:]):
+                        render(config, BASELINE['host'], name)
+            # A number beside `off` is a statement about a ring that is being taken back out.
+            definition = json.loads(json.dumps(original))
+            definition['arguments']['--rope-scaling'] = 'off'
+            path.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError,
+                    'refines a rope scaling this configuration has switched to off'):
+                render(config, BASELINE['host'], name)
 
 
 class ServiceIdentityTests(unittest.TestCase):

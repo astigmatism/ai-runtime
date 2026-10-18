@@ -33,7 +33,8 @@ from pathlib import Path
 # all is not an option: that is a catalog a contract client cannot address, which is the same hole as
 # nothing serving.
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-    'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache')
+    'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
+    'flash-next-strata-solo-thinking-recovery-cache-yarn')
 # Reduced from five Strata configurations to two on 2026-10-18, after both new levers had been
 # measured on this box: the greedy step and the card-sampling step are settled policy rather than a
 # live question, and the route-tail skip came back a wash on the only axis this machine can read.
@@ -82,13 +83,14 @@ PAIR_GROUPS = ('daytime', 'nighttime')
 # A solo configuration reserves both text pairs, in this order, and runs no second resident.
 EXCLUSIVE_GROUP = 'all'
 GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
-# LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
-# native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
-ROUTER_CONTEXT_LIMIT = 262144
-GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
-# LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT, llm-router 7235329 and later): the
-# native 256K window of the Qwen3.8 models. Older routers reject catalogs above 163840 tokens.
-ROUTER_CONTEXT_LIMIT = 262144
+# LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT in the router's model-catalog.js;
+# llm-router 7235329 and later carried 262144, the native window of the Qwen3.8 models). The step to
+# 524,288 went out as a coordinated release on 2026-10-18 -- router first, then this controller --
+# because catalog validation is atomic per read: a 524,288 publication at a router still on 262144
+# 503s every model route until it is repointed. A window above 262,144 is rope scaling, and the
+# profile must state the ring it ships on (engine_rope_scaling); the measurements are in
+# docs/deployment.md. Older routers reject catalogs above 262144, and older still above 163840.
+ROUTER_CONTEXT_LIMIT = 524288
 
 
 def require_router_context(tokens):
@@ -423,6 +425,62 @@ def engine_ple_table(name, engine, options, artifacts):
         'downloaded fails when it renders and not when the engine starts')
 
 
+def positive_decimal(value):
+    # Digits with at most one point and more than zero -- the shape a rope scale takes. Every other
+    # argument validator in this file is isdigit()/positive-int; a rope scale is the first float the
+    # house states, so it gets its own check rather than an isdigit that would refuse '2.0'.
+    if re.fullmatch(r'[0-9]*\.?[0-9]+', value) is None:
+        return False
+    try:
+        return float(value) > 0
+    except ValueError:
+        return False
+
+
+ROPE_SCALINGS = ('yarn', 'linear', 'none', 'off')
+
+
+def engine_rope_scaling(name, engine, options, context_tokens):
+    """Which position ring a session is read through, and why a window past 262,144 has to say so.
+
+    The Qwen3.8 pack is trained to 262,144 and carries no rope scaling of its own; a wider window is
+    YaRN interpolation and nothing else. A profile states --rope-scaling (yarn|linear) with a positive
+    --rope-scale, and yarn names the trained window it stretches with --yarn-orig-ctx; the entry point
+    writes the engine arguments (facts 5/6 write-all-or-remove-all shape, so a wider profile's ring
+    cannot survive a switch back to its 256K sibling in silence), and the engine fixes the ring at
+    startup because cached keys are post-RoPE. Checked here rather than at boot for the standing
+    reason: yarn without a scale, or a scale that is not a positive number, or a yarn window that does
+    not exceed the trained one, is an engine that refuses to start -- and for an exclusive resident
+    that is nothing serving on a drain already spent. A float validator lives here now too, because
+    --rope-scale is the first decimal the house states and every other argument is an integer.
+    """
+    if engine['environment'].get('--rope-scaling') is None:
+        return
+    stated = str(options.get('--rope-scaling', 'none'))
+    require(stated in ROPE_SCALINGS, name + ': --rope-scaling states ' + stated + '; the values are '
+        + ', '.join(ROPE_SCALINGS) + '. A geometry the engine has never heard of is a crash loop, so a '
+        'profile states one of these words and never a value of its own')
+    if stated in ('none', 'off'):
+        for key in ('--rope-scale', '--yarn-orig-ctx'):
+            require(key not in options, name + ': ' + key + ' refines a rope scaling this '
+                'configuration has switched to ' + stated + '; state a ring before its numbers')
+        return
+    scale = str(options.get('--rope-scale', ''))
+    require(scale != '' and positive_decimal(scale), name + ': --rope-scaling ' + stated +
+        ' states no positive --rope-scale to go with it. The scale is the statement; the scaling name '
+        'only says which interpolation reads it, and leaving it to the engine default is how a window '
+        'gets a ring nobody named')
+    if stated == 'yarn':
+        orig = str(options.get('--yarn-orig-ctx', ''))
+        require(orig != '' and orig.isdigit() and int(orig) > 0, name +
+            ': --rope-scaling yarn states no positive --yarn-orig-ctx. YaRN needs to know which '
+            'trained window it is stretching, and the engine argument\'s own default is a number to '
+            'be stated, not assumed')
+        require(int(context_tokens) > int(orig), name + ': --rope-scaling yarn on a ' +
+            str(context_tokens) + '-token window with --yarn-orig-ctx ' + orig + ' does not stretch '
+            'anywhere: the engine refuses a YaRN window that does not exceed the trained one it scales')
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
 
@@ -504,7 +562,8 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
                  'until this line is dropped'
                  if key in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
                             '--conversation-cache-min-free-mib', '--conversation-cache-slots',
-                            '--conversation-cache-min-tokens', '--ple-gguf') else ''))
+                            '--conversation-cache-min-tokens', '--ple-gguf',
+                            '--rope-scaling', '--rope-scale', '--yarn-orig-ctx') else ''))
             continue
         require(variable not in environment, name + ': two arguments map to ' + variable)
         environment[variable] = '' if value is True else str(value)
@@ -512,6 +571,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     engine_tool_call_recovery(name, engine, options)
     engine_conversation_cache(name, engine, options)
     engine_ple_table(name, engine, options, definition['artifacts'])
+    engine_rope_scaling(name, engine, options, ctx)
     model_target = options[model_argument]
     require(model_target in [a['target'] for a in definition['artifacts']],
         name + ': the model argument must reference a declared artifact mount')
