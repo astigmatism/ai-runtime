@@ -132,7 +132,7 @@
       "detail": "the engine's own MTP draft layer, installed with its state on first start; automatic drafting is left on"
     },
     "capability_profile": {
-      "name": "qwen3.8-flash-next-ud-iq4-xs-strata-160k",
+      "name": "qwen3.8-flash-next-ud-iq4-xs-strata-256k",
       "text": true,
       "streaming": true,
       "vision": true,
