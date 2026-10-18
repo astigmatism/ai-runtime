@@ -377,5 +377,96 @@ class ARepetitionIsReportedAndNotGated(unittest.TestCase):
         self.assertEqual((code, reasons), (0, []))
 
 
+@requires_harness
+class TheTailQuestionScoresWhatTheHeadQuestionCannotSee(unittest.TestCase):
+    """`--tail` exists for one reason: an enumeration copied from the top of a 245,000-token
+    prompt is copied out of its first few thousand tokens, so it reports "no difference" about a
+    change to how the engine treats position 200,000 — it never looked there. A change to
+    position handling (a rope scaling, a window above the trained one) is exactly the class of
+    change that has to be priced in answers, so the question has to be about the end."""
+
+    def test_the_default_question_is_the_one_every_baseline_answered(self):
+        """Untouched bytes. The recorded runs on this box — the sampling arms, the session-size
+        ladder — are all comparisons against these prompts, so a tail mode that quietly reworded
+        the default question would invalidate all of them at once."""
+        for p in replay.corpus(("code-4k", "tool-4k", "prose-32k")):
+            self.assertNotIn("LAST", p["messages"][1]["content"])
+        self.assertEqual([p["sha256"] for p in replay.corpus()],
+                         [p["sha256"] for p in replay.corpus(tail=5)])
+
+    def test_a_tail_run_asks_about_the_same_corpus_and_a_different_end_of_it(self):
+        """One variable: the prompt bytes and their hashes are identical, the question is not, and
+        the items it wants are not anywhere in the head of the answer the old question got.
+
+        Checked for the two shapes whose items are unique. The prose shape repeats one sentence
+        of boilerplate verbatim in every block, so in prose a tail item and a head item can be the
+        same sentence — which is also why a session this long is measured with the tool shape, and
+        why `--edge` builds itself out of records and not out of prose."""
+        head = {p["label"]: p for p in replay.corpus()}
+        tail = {p["label"]: p for p in replay.corpus(tail=4)}
+        for label, p in tail.items():
+            self.assertEqual(p["sha256"], head[label]["sha256"])
+            self.assertIn("LAST 4", p["messages"][1]["content"])
+            self.assertEqual(len(p["expected"]), 4)
+            if p["kind"] == "prose":
+                continue
+            self.assertFalse(set(p["expected"]) & set(p["first_items"]),
+                             f"{label}: the tail question asks for something the head already has")
+
+    def test_the_ground_truth_is_actually_in_the_prompt_it_is_asked_about(self):
+        """Scored, not read — but only if the truth is derivable from the corpus text rather than
+        assumed from the builder. If a builder shape changes and the reader stops finding the
+        items, that is a silent zero on every future tail run."""
+        for p in replay.corpus(tail=3):
+            body = p["messages"][1]["content"]
+            for item in p["expected"]:
+                if p["kind"] == "code":
+                    # The answer is a composite the question asks for, so its two halves are what
+                    # has to be in the prompt, not the joined line.
+                    name, field = item.split(": ")
+                    self.assertIn(f"class {name}:", body, f"{p['label']}: {name} is not in it")
+                    self.assertIn(f"def __init__(self, {field},", body,
+                                  f"{p['label']}: {name}'s field is not in it")
+                else:
+                    self.assertIn(item, body, f"{p['label']}: {item} is not in it")
+            whole = replay.expected_items(p["kind"], body)
+            self.assertGreaterEqual(len(whole), 8 * len(p["expected"]),
+                                    f"{p['label']}: no tail to speak of, only a head")
+
+    def test_an_answer_from_the_head_scores_zero_and_says_where_it_came_from(self):
+        """The failure this instrument is for: the model does not report losing the tail, it
+        answers fluently, in order, from the top of the prompt. Recall alone would show a zero;
+        `answered_from` is what tells a lost tail apart from a broken harness."""
+        p = next(p for p in replay.corpus(tail=5) if p["kind"] == "tool")
+        perfect = replay.score_answer("\n".join(p["expected"]), p["expected"], p["first_items"])
+        self.assertEqual((perfect["recall"], perfect["answered_from"], perfect["in_order"]),
+                         (1.0, "tail", True))
+        head = replay.score_answer("\n".join(p["first_items"]), p["expected"], p["first_items"])
+        self.assertEqual((head["recall"], head["answered_from"]), (0.0, "head"))
+        lost = replay.score_answer("The records above list many paths across the runtime.",
+                                   p["expected"], p["first_items"])
+        self.assertEqual((lost["recall"], lost["answered_from"]), (0.0, "other"))
+        half = replay.score_answer("\n".join(p["expected"][2:]), p["expected"], p["first_items"])
+        self.assertEqual((half["recall"], half["answered_from"]), (0.6, "tail"))
+
+    def test_the_score_travels_with_the_sample_and_only_appears_when_asked_for(self):
+        """A tail run has to be readable as one after the fact — and a run that never asked must
+        not grow a column that reads as a zero."""
+        p = next(p for p in replay.corpus(tail=5) if p["kind"] == "tool")
+        row = {"label": "tool-4k", "ok": True, "phase": "warm", "decode_tps": 100.0,
+               "prompt_tps": 900.0, "ttft_s": 4.0, "drafts_offered": 10, "drafts_accepted": 9,
+               "answer_sha256": "a" * 16, "repeat_streak": 1, "dup_line_pct": 0.0,
+               "score": replay.score_answer("\n".join(p["expected"]), p["expected"],
+                                            p["first_items"])}
+        s = replay.summarise([row])
+        self.assertEqual((s["tool-4k"]["tail_recall_median"], s["tool-4k"]["answered_from"]),
+                         (1.0, "tail"))
+        self.assertEqual(s["tool-4k"]["tail_in_order"], 1)
+        plain = replay.summarise([{k: v for k, v in row.items() if k != "score"}])
+        self.assertNotIn("tail_recall_median", plain["tool-4k"])
+        replay.table(s, "renders with the tail columns")
+        replay.table(plain, "renders without them")
+
+
 if __name__ == "__main__":
     unittest.main()

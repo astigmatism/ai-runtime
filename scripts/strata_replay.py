@@ -175,14 +175,39 @@ def _fill(kind: str, seed: int, target: int) -> str:
     return "".join(out)
 
 
-def _ask(kind: str, body: str) -> list:
+def _ask(kind: str, body: str, tail: int = 0) -> list:
     """The same question every time, so the greedy continuation is the same every time.
 
     Each task asks for an enumeration copied out of the prompt, for two reasons. Decode is
     only measurable over a few hundred tokens, and a summary stops at twenty; and copying
     from the context is what a coding session actually does, so the draft acceptance this
     measures is the acceptance the workload sees.
+
+    `tail` asks the same enumeration about the **last** `tail` items instead of the whole
+    context. It exists because an enumeration from the top cannot see the tail: at 245,000
+    tokens the answer is about twenty lines copied from the first few thousand tokens, so
+    a change in how the engine treats position 200,000 leaves it untouched, and an
+    instrument that is blind to the thing under test is worse than no instrument -- it
+    reports "no difference" about a change it did not look at. Asking for the end of the
+    list asks for something only in the tail, and the expected answer is derivable from the
+    corpus the harness generated itself, so it is a score and not an impression.
     """
+    if tail:
+        if kind == "code":
+            task = (f"From the module above, list the LAST {tail} classes defined in it, one per "
+                    "line, in the order they appear, each line written as `class_name: field`, "
+                    "where field is the one it assigns to itself in __init__. No preamble and no "
+                    "commentary.")
+        elif kind == "tool":
+            task = (f"From the records above, list the `path` value of the LAST {tail} records, "
+                    "one per line, in the order they appear, with no count and no commentary.")
+        else:
+            task = (f"Quote the LAST {tail} sentences of the passage above verbatim, one per "
+                    "line, in the order they appear. Do not summarise, do not reorder, and add "
+                    "no commentary.")
+        return [{"role": "system",
+                 "content": "You are a careful senior engineer. Answer exactly as asked."},
+                {"role": "user", "content": body + "\n\n" + task}]
     if kind == "code":
         task = ("List every class defined in the module above, one per line, in the order they "
                 "appear, each line written as `class_name: field`, where field is the one it "
@@ -241,7 +266,67 @@ def edge_cell(window, fraction, max_tokens):
     return ("edge-%dk" % (tokens // 1024), EDGE_KIND, EDGE_SEED, tokens), None
 
 
-def corpus(keep=ALL_CELLS, extra=()) -> list:
+def expected_items(kind: str, body: str) -> list:
+    """Every item the question asks for, in the order the corpus contains them.
+
+    Read back out of the generated text rather than accumulated while generating it, so the
+    ground truth is the same statement the question is -- "the `path` value of each record"
+    -- and a change to the builder moves the truth with it instead of drifting.
+    """
+    if kind == "tool":
+        out = []
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    out.append(json.loads(line)["path"])
+                except (ValueError, KeyError):
+                    pass
+        return out
+    if kind == "code":
+        lines = body.splitlines()
+        out = []
+        for i, line in enumerate(lines):
+            if not line.startswith("class "):
+                continue
+            name = line[len("class "):].rstrip(":")
+            field = ""
+            for follow in lines[i + 1:i + 6]:
+                if "def __init__(self, " in follow:
+                    field = follow.split("def __init__(self, ", 1)[1].split(",", 1)[0]
+                    break
+            out.append(f"{name}: {field}")
+        return out
+    return [part.strip() for part in body.split(". ") if part.strip()]
+
+
+def score_answer(text: str, expected: list, first: list = None) -> dict:
+    """What the answer got of the tail, and where in the context it went looking.
+
+    `recall` counts items present anywhere in the answer, so it survives a stray prefix or a
+    reformatted line; `answered_from` is the part that actually distinguishes the failure. A
+    model that has lost the tail does not say so, it answers the question it has always been
+    able to answer, from the top of the prompt -- and an answer that is fluent, in order and
+    entirely from the head scores zero on recall while looking like a normal run.
+    """
+    lines = [line.strip().strip("`") for line in text.splitlines() if line.strip()]
+    body = "\n".join(lines)
+    hits = [item for item in expected if item in body]
+    recall = round(len(hits) / len(expected), 3) if expected else None
+    positions = [body.index(item) for item in hits]
+    first = first or []
+    if recall is not None and recall >= 0.5:
+        where = "tail"
+    elif any(item and item in head for item in first for head in lines[:3]):
+        where = "head"
+    else:
+        where = "other"
+    return {"expected_n": len(expected), "recall": recall, "in_order": bool(hits)
+            and positions == sorted(positions), "exact": lines == list(expected),
+            "answered_from": where}
+
+
+def corpus(keep=ALL_CELLS, extra=(), tail: int = 0) -> list:
     """The prompts, each a pure function of the constants in this file.
 
     `extra` carries a cell whose size is not a constant of this file -- see `--edge` -- and it is
@@ -254,9 +339,14 @@ def corpus(keep=ALL_CELLS, extra=()) -> list:
         if label not in keep:
             continue
         body = _fill(kind, seed, int(tokens * CPT[kind]))
-        prompts.append({"label": label, "kind": kind, "target_tokens": tokens,
-                        "messages": _ask(kind, body),
-                        "sha256": hashlib.sha256(body.encode()).hexdigest()[:16]})
+        prompt = {"label": label, "kind": kind, "target_tokens": tokens,
+                  "messages": _ask(kind, body, tail),
+                  "sha256": hashlib.sha256(body.encode()).hexdigest()[:16]}
+        if tail:
+            items = expected_items(kind, body)
+            prompt["expected"] = items[-tail:]
+            prompt["first_items"] = items[:3]
+        prompts.append(prompt)
     return prompts
 
 
@@ -517,13 +607,24 @@ def summarise(rows: list) -> dict:
                       "looped": sum(1 for s in streaks if s >= LOOP_STREAK),
                       "dup_line_median": round(statistics.median(dups), 1),
                       "answers": sorted({r["answer_sha256"] for r in cell})}
+        scored = [r["score"] for r in cell if r.get("score")]
+        if scored:
+            recalls = [s["recall"] for s in scored if s["recall"] is not None]
+            kinds = {s["answered_from"] for s in scored}
+            out[label]["tail_recall_median"] = (round(statistics.median(recalls), 3)
+                                                if recalls else None)
+            out[label]["tail_in_order"] = sum(1 for s in scored if s["in_order"])
+            out[label]["answered_from"] = max(
+                kinds, key=lambda w: sum(1 for s in scored if s["answered_from"] == w))
     return out
 
 
 def table(summary: dict, title: str) -> None:
+    scored = any("tail_recall_median" in s for s in summary.values())
     print(f"\n{title}")
     print(f"{'cell':12s} {'n':>2s} {'decode':>7s} {'95% CI':>16s} {'spread':>7s} "
-          f"{'prefill':>8s} {'first':>7s} {'accept':>7s} {'repeat':>8s}  answers")
+          f"{'prefill':>8s} {'first':>7s} {'accept':>7s} {'repeat':>8s}"
+          + (f" {'tail':>6s} {'from':>6s}" if scored else "") + "  answers")
     for label, s in summary.items():
         lo, hi = s["decode_ci95"]
         ci = f"[{lo}, {hi}]" if s["n"] > 1 and lo else "-"
@@ -531,7 +632,9 @@ def table(summary: dict, title: str) -> None:
               f"{str(s['decode_spread']):>7s} {str(s['prompt_median']):>8s} "
               f"{str(s['ttft_median']):>7s} {str(s['accept_pct']) + '%':>7s}  "
               f"{str(s.get('repeat_streak', '-')):>3s}x{str(s.get('dup_line_median', '-')):>4s}%  "
-              f"{len(s['answers'])} distinct")
+              + (f"{str(s.get('tail_recall_median', '-')):>6s} "
+                 f"{str(s.get('answered_from', '-')):>6s}  " if scored else "")
+              + f"{len(s['answers'])} distinct")
 
 
 # ------------------------------------------------------------------------------------ main
@@ -550,6 +653,15 @@ def main() -> int:
                          "by an instrument that cannot reach it -- and a window that is being "
                          "resized run by run needs a cell whose size is read off the engine "
                          "rather than written in this file")
+    ap.add_argument("--tail", type=int, default=0, metavar="N",
+                    help="Ask each cell for its LAST N items instead of its first ones, and score "
+                         "what comes back against the corpus. An enumeration from the top of a "
+                         "245,000-token prompt is copied out of its first few thousand tokens, so "
+                         "it cannot see a change to how the engine treats position 200,000; the "
+                         "end of the list can, and here it is scored rather than read. Meaningful "
+                         "on the code and tool shapes, whose items are unique; the prose shape "
+                         "repeats its boilerplate verbatim, so a tail there is not distinguishable "
+                         "from a head.")
     ap.add_argument("--rounds", type=int, default=6)
     ap.add_argument("--warmup", type=int, default=1,
                     help="Rounds whose prompt cache is cold, reported apart and never pooled "
@@ -597,7 +709,7 @@ def main() -> int:
             return 2
         extra = (cell,)
         keep += (cell[0],)
-    prompts = corpus(keep, extra)
+    prompts = corpus(keep, extra, args.tail)
 
     if window:
         over = [p for p in prompts if p["target_tokens"] + args.max_tokens > window]
@@ -637,6 +749,9 @@ def main() -> int:
                 d.update(label=p["label"], kind=p["kind"], round=rnd, corpus_sha256=p["sha256"],
                          target_tokens=p["target_tokens"], busy_before=busy, attempt=attempt,
                          phase="cold" if rnd < args.warmup else "warm")
+                if args.tail:
+                    d["score"] = score_answer(r.get("text", ""), p["expected"], p["first_items"])
+                    d["answer"] = r.get("text", "")[:4000]
                 if d["ok"] and not busy:
                     break
                 discarded.append(d)
@@ -653,7 +768,10 @@ def main() -> int:
                 print(f"  run {rnd + 1} [{d['phase']:4s}] {p['label']}: decode "
                       f"{d['decode_tps']} tok/s, first token {d['ttft_s']} s, "
                       f"{d['prompt_tokens']} prompt tokens, {d['generated_tokens']} tokens, "
-                      f"answer {d['answer_sha256']}{note}", flush=True)
+                      f"answer {d['answer_sha256']}"
+                      + (f", tail {d['score']['recall']} of {d['score']['expected_n']} from the "
+                         f"{d['score']['answered_from']}" if d.get("score") else "")
+                      + note, flush=True)
             time.sleep(args.settle)
 
     warm = [r for r in rows if r["phase"] == "warm"]
@@ -692,6 +810,10 @@ def main() -> int:
                   f"{'outside' if outside else 'inside'} the recorded interval; "
                   f"{args.sampling} answer {'unchanged' if same else 'CHANGED'}"
                   + ("" if same or args.sampling == "greedy" else " (expected on a sampled arm)"))
+            was, now = q.get("tail_recall_median"), s.get("tail_recall_median")
+            if was is not None and now is not None:
+                print(f"  {label:12s} tail recall {was} -> {now}; answered from the "
+                      f"{q.get('answered_from')} there, the {s.get('answered_from')} here")
         prior_corpus = {r["label"]: r.get("corpus_sha256") for r in prior.get("rows", [])}
         for p in prompts:
             was = prior_corpus.get(p["label"])
@@ -708,6 +830,7 @@ def main() -> int:
                               "max_tokens": args.max_tokens, "think": args.think,
                               "sampling": args.sampling,
                               "window": window, "edge": args.edge or None,
+                              "tail": args.tail or None,
                               **SAMPLING_ARMS[args.sampling], "cells": list(keep)},
                    "summary": summary, "cold": summarise(cold), "rows": rows,
                    "discarded": discarded}, f, indent=1)
