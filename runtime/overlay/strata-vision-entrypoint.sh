@@ -1,8 +1,8 @@
 #!/bin/sh
 # This house's overlay on Strata's own entry point, not an upstream file.
 #
-# Six facts about this container have to reach the engine's own run config. Four of them are not
-# arguments the engine takes; the last two are, but they go in the run config's "args" list, which
+# Seven facts about this container have to reach the engine's own run config. Four of them are not
+# arguments the engine takes; the last three are, but they go in the run config's "args" list, which
 # setup.py writes and offers no flag to extend.
 #
 # 1. That it runs an image encoder at all (with which mmproj). The "vision" section of the run
@@ -66,10 +66,24 @@
 #    per second and never streamed to a card. The file is checked to exist before it is written: the
 #    engine's own help says that without this key "LAYER 1's PLE IS SILENTLY SKIPPED", and a silently
 #    missing layer is the failure mode this overlay exists to refuse.
+# 7. How long a session it holds. The profile states it as CONTEXT, and it is an engine argument --
+#    --max-context, in that same args list -- but setup.py only ever uses it during the setup pass,
+#    which the upstream entry point runs once per workspace (fact 1). So raising a profile from 160K
+#    to a wider window skipped the pass, left the --max-context the workspace was born with sitting in
+#    the args list, and booted an engine on the old window; the switch then verified /slots against the
+#    window the profile had promised and refused it with reason 'slot context' after the drain, and the
+#    restoration brought the old window back. That is why the window is written into the args list on
+#    every start from the stated CONTEXT rather than being left to the file: for the other facts "the
+#    profile is the authority and not the file" is a matter of taste, and here it is the only thing that
+#    makes a session size a deployable setting at all. A CONTEXT that is not a positive number of tokens
+#    fails the boot before anything is written. No ceiling is repeated here: the runtime refuses a
+#    window the router cannot carry when it renders, before anything is drained, and the engine reports
+#    the window it starts on or does not start.
 #
 # So: when the container is told the encoder's card, make sure the config it is about to start
 # carries a vision section, and write the card into it. When it is told a sampling preset, make sure
-# that config exists at all, and write the block into it. Where the section or the file is missing,
+# that config exists at all, and write the block into it. When it is told a session window, write that
+# window into the args list the engine reads its context from. Where the section or the file is missing,
 # the setup pass that would create it is the one the upstream entry point would have run for this
 # exact environment, so this runs it itself (the function keeps its argument list out of this entry
 # point's own); a fresh workspace pays that pass once here instead of twice later, and a workspace
@@ -81,7 +95,11 @@ set -e
 STRATA_DATA="${STRATA_DATA:-/data}"
 FAMILY="${FAMILY:-qwen}"
 MODEL="${MODEL:-IQ2_XS}"
-CONTEXT="${CONTEXT:-32768}"
+# Kept twice on purpose: what the environment actually stated, and what the setup pass is handed when
+# nothing did. Fact 7 is written only for the first of those, so a container started by hand over an
+# existing workspace keeps the window it was set up with instead of being quietly resized to 32768.
+CONTEXT_STATED="${CONTEXT:-}"
+CONTEXT="${CONTEXT_STATED:-32768}"
 VISION="${VISION:-no}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8080}"
@@ -415,6 +433,35 @@ digits() {
     return 0
 }
 
+apply_max_context() {
+    # Fact 7. Unstated is not a statement: a container started by hand, over a workspace somebody set
+    # up, keeps the window that workspace carries. There is no "off" for this one either -- the window
+    # is the one setting the engine has to have an opinion about, and the engine's own default (4096)
+    # is not a session this house would notice.
+    if [ -z "$CONTEXT_STATED" ]; then
+        return 0
+    fi
+    if ! positive CONTEXT "$CONTEXT_STATED"; then
+        echo "strata overlay: CONTEXT=$CONTEXT_STATED is not a number of tokens, and it is not left to" >&2
+        echo "  the setup pass to discover. A config that quietly keeps the window the workspace was" >&2
+        echo "  born with boots fine, serves, and is refused by the switch for reporting a context other" >&2
+        echo "  than the one the profile promised -- after the drain. Better a boot that does not happen." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and the session window has to be written into it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write the session window into" >&2
+            return 1
+        fi
+    fi
+    # Written on every start, and not only when a setup pass ran. This is the one fact where the file
+    # being authoritative is not a preference: the controller verifies the window the engine reports
+    # against the number it rendered into the catalog, so a window that is only right on the first boot
+    # of a workspace is a profile that cannot be resized at all.
+    edit_args ctx set --max-context "$CONTEXT_STATED"
+}
+
 apply_conversation_cache() {
     if [ "$CONVERSATION_CACHE_MIB" = off ]; then
         if [ -f "$cfg" ]; then
@@ -504,6 +551,7 @@ apply_ple_table() {
     edit_args ple set --ple-gguf "$PLE_GGUF"
 }
 
+apply_max_context
 apply_conversation_cache
 apply_ple_table
 

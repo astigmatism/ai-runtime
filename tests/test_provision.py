@@ -542,7 +542,10 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
     reach and one for the engine's python the pass calls. The same entry point also writes the run
     config's optional ``sampling`` block from ``SAMPLING``, because the engine's own default is greedy
     and its setup has no flag for that block either; both statements are tested here against the same
-    stubs.
+    stubs. And it writes the session window ``CONTEXT`` states into the ``--max-context`` of the
+    config's ``args`` list, because the setup pass that would otherwise have written it runs once per
+    workspace and a profile that widens the window is not a fresh workspace -- which is tested here
+    too, including the boot that must not happen when the stated window is not a token count.
     """
     OVERLAY = 'runtime/overlay/strata-vision-entrypoint.sh'
     CONFIG = 'config/strata-unsloth-ud-iq4_xs.json'
@@ -595,6 +598,15 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
             '                         "gpu": value != "cpu", "max_tokens": 1536, **kept}\n'
             '    else:\n'
             '        cfg.pop("vision", None)\n'
+            # setup.py always writes the argv the engine is started from, and the window it was asked
+            # for is in it as --max-context. An existing list is carried over, which is what the pass
+            # does for a workspace it is only being asked to add a section to.
+            '    ctx = args[args.index("--context") + 1] if "--context" in args else "32768"\n'
+            '    argv = old.get("args")\n'
+            '    if not isinstance(argv, list) or not argv:\n'
+            '        argv = ["--serve", "--model", "/weights/shard-00001-of-00003.gguf",\n'
+            '                "--api-type", "enterprise", "--port", "8080", "--max-context", ctx]\n'
+            '    cfg["args"] = argv\n'
             '    with open("strata-%s.json" % tag, "w") as f:\n'
             '        json.dump(cfg, f, indent=1)\n')
         stub.chmod(0o755)
@@ -607,10 +619,12 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
     def start(self, device='4', family='unsloth', model='UD-IQ4_XS', extra=None, expect_fail=False):
         env = {**os.environ, 'STRATA_DATA': str(self.workspace), 'FAMILY': family, 'MODEL': model,
                'VISION': 'yes', 'SETUP_CALL_LOG': str(self.calls)}
-        # Two statements the host shell may happen to carry and this entry point must not read
-        # silently from the environment: only what a test states below is in force.
-        env.pop('VISION_DEVICE', None)
-        env.pop('SAMPLING', None)
+        # Statements the host shell may happen to carry and this entry point must not read silently
+        # from the environment: only what a test states below is in force.
+        for key in ('VISION_DEVICE', 'SAMPLING', 'CONTEXT', 'PLE_GGUF', 'CONVERSATION_CACHE_MIB',
+                    'CONVERSATION_CACHE_MIN_FREE_MIB', 'CONVERSATION_CACHE_SLOTS',
+                    'CONVERSATION_CACHE_MIN_TOKENS'):
+            env.pop(key, None)
         if extra:
             env.update(extra)
         if device is not None:
@@ -861,6 +875,95 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         # configuration that wanted it gone says off.
         self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'thinking'})
         self.assertIs(json.loads(self.config.read_text())['tool_call_recovery'], True)
+
+    def test_the_stated_window_becomes_the_context_the_engine_starts_on(self):
+        # The window a profile states is rendered into the catalog, shown in the portal, and verified
+        # against the engine's own /slots before the switch is allowed to publish it. So the number in
+        # this file has to be the number the engine boots on, and a file that keeps the window the
+        # workspace was born with is a resident refused for reporting another context -- after the
+        # drain, which is the expensive place to discover it.
+        self.given({'model': 'UD-IQ4_XS', 'context': 163840,
+            'args': ['--serve', '--model', '/weights/shard-00001-of-00003.gguf', '--max-context',
+                     '163840', '--kv', 'k8v4', '--kv-resident', '32768']})
+        run = self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '196608'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args.count('--max-context'), 1)
+        self.assertEqual(args[args.index('--max-context') + 1], '196608')
+        # Every other argument the engine is started from goes back exactly as it was read: the window
+        # is the one thing this boot was told to change, and a resident that lost --kv-resident on the
+        # way would pay for it in VRAM it no longer has.
+        self.assertEqual([a for a in args if a.startswith('--') and a != '--max-context'],
+            ['--serve', '--model', '--kv', '--kv-resident'])
+        self.assertEqual(args[args.index('--kv') + 1], 'k8v4')
+        self.assertEqual(args[args.index('--kv-resident') + 1], '32768')
+        self.assertIn('wrote --max-context 196608', run.stdout)
+        self.assertEqual(self.setup_calls(), [])
+
+    def test_the_window_is_written_once_and_then_left_alone(self):
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '163840']})
+        self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '196608'})
+        placed = self.config.read_text()
+        self.assertIn('already in the args list (--max-context 196608)',
+            self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '196608'}).stdout)
+        self.assertEqual(self.config.read_text(), placed)
+
+    def test_a_workspace_whose_args_list_names_no_window_gets_the_stated_one(self):
+        # --max-context absent is the engine's own default of 4096, which is not a session this house
+        # would notice, and a profile that states a window does not mean "whatever the file prefers".
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--kv', 'k8v4']})
+        self.start(device=None, extra={'VISION': 'no', 'CONTEXT': '262144'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args[args.index('--max-context') + 1], '262144')
+
+    def test_a_wider_window_reaches_the_engine_on_the_boot_that_asks_for_it(self):
+        # The bug this fact exists for: a workspace set up at 160K, asked by a profile edit for 256K.
+        # The upstream entry point skips its setup pass (the config exists), so nothing else in the
+        # boot ever looks at CONTEXT again, the engine comes up on 163840, and the switch refuses it
+        # with reason 'slot context'. One boot has to carry both statements at once -- the encoder's
+        # card, which needs the setup pass, and the window, which needs the file that pass wrote.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '163840']})
+        run = self.start(extra={'CONTEXT': '262144'})
+        cfg = json.loads(self.config.read_text())
+        self.assertEqual(len(self.setup_calls()), 1)
+        self.assertEqual(cfg['vision']['cuda_device'], 4)
+        self.assertEqual(cfg['args'][cfg['args'].index('--max-context') + 1], '262144')
+        self.assertIn('upstream --serve', run.stdout)
+
+    def test_a_fresh_workspace_boots_on_the_window_its_profile_states(self):
+        # No config at all: the pass this entry point runs is handed the stated window, and the args
+        # list it produces carries it -- written again if the pass decided otherwise, because the
+        # profile is the authority and the switch checks the engine and not the intent.
+        run = self.start(extra={'CONTEXT': '196608'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args[args.index('--max-context') + 1], '196608')
+        calls = self.setup_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][calls[0].index('--context') + 1], '196608')
+        self.assertIn('upstream --serve', run.stdout)
+
+    def test_a_window_that_is_not_a_token_count_fails_the_boot_before_the_file(self):
+        # A window the engine cannot parse is nothing serving, and a window quietly dropped is a
+        # resident refused after the drain for a context nobody asked for. Either way the boot does
+        # not happen, and it does not happen with the workspace left as it was.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '163840']})
+        before = self.config.read_text()
+        for stated in ('192K', '0', '-1', '163 840'):
+            with self.subTest(window=stated):
+                run = self.start(device=None, extra={'VISION': 'no', 'CONTEXT': stated},
+                    expect_fail=True)
+                self.assertNotIn('upstream --serve', run.stdout)
+                self.assertIn('CONTEXT=' + stated + ' is not a number of tokens', run.stderr)
+                self.assertEqual(self.config.read_text(), before)
+
+    def test_a_container_started_with_no_window_leaves_the_workspace_alone(self):
+        # Nothing stated is not a statement. The default this script carries (32768) is for the setup
+        # pass of a workspace that has no config; over one that has one it would silently resize a
+        # session to a quarter of what the configuration that built it asked for.
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '163840']})
+        before = self.config.read_text()
+        self.start(device=None, extra={'VISION': 'no'})
+        self.assertEqual(self.config.read_text(), before)
+        self.assertEqual(self.setup_calls(), [])
 
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()
