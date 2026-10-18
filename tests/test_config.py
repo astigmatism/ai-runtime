@@ -809,8 +809,23 @@ class EnvironmentEngineTests(unittest.TestCase):
         # The image this line pointed at before the rebuild is kept on the box as
         # local/strata:296b59d2f73c-vision-pre-cache, so this line is the rollback: one re-pin, one
         # deploy, and the box is running the entry point that knows nothing about a conversation cache.
+        #
+        # Rebuilt again on 2026-10-18, again for one layer: the entry point, now
+        # 7adc6bae12393a6298a560fda0e6ff5af7606407fa69ad02bc0ba9abd5c0dcb5, which writes the session
+        # window the profile states into the args list the engine reads it from. The upstream half is
+        # byte for byte the file above (e85f40f57d036d1247804321a1164be707873712851e093998df97a2398b76b2),
+        # the base and both base digests are the same, and 22 layers come back identical at every
+        # index but the one that carries the entry point. Proven by running the entry point in the
+        # built image against a copy of this box's real run config, at the production environment with
+        # CONTEXT raised: the args list came back with two entries different, `163840` out and
+        # `196608` in, every other key of the file byte for byte what it was, and the line "already"
+        # for the encoder's card, the sampling preset, the recovery switch and the cache budget. Built
+        # from the canonical build dir on the box (~/ops/strata-build/overlay, the recipe in
+        # runtime/overlay/), log build-0.1.44.1-vision-context-20261018.log beside it. Receipt
+        # ops/reports/20261018-strata-vision-context/README.md. The image before it is kept as
+        # local/strata:296b59d2f73c-vision-pre-context.
         self.assertEqual(engine['image_id'],
-                         'sha256:761cafff21bc3d11adb593153665580f3e515a10d7f30f87b54536725c1cc8d2')
+                         'sha256:e98bff6b9a83ff03667e3492c249082fa5ee7ebf6a4b12963e8f2a8ba61fc377')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
