@@ -516,8 +516,12 @@ cards and nothing else, and reads the same boot line.
 **What it states.** `gpu_group: daytime` and no `exclusive`, so `--gpus 0,1` are the daytime pair and the
 encoder moves to `CUDA2` — the third visible device, wherever the cards happen to end, which is the
 placement change that let this configuration and the four-card one share one `host.json`
-([Shared vision GPU](shared-vision.md)). `RESIDENT_BUDGET_GIB` 44 rather than 55: the two cards hold 48
-GiB between them and the Everyday resident is loaded beside them for the first time on this box.
+([Shared vision GPU](shared-vision.md)). `RESIDENT_BUDGET_GIB` 32 rather than 55: the pair holds **40,952 MiB** — `nvidia-smi
+--query-gpu=index,name,memory.total` says 24,576 for the RTX 3090 and 16,376 for the RTX 4080 SUPER, and
+the four cards the resident is calibrated on total 69,616 MiB — so 55 GiB is 80.9 % of four cards and the
+same fraction of this pair is 32. It is a ceiling the setup pass calibrates placement against rather than
+an allocation, and only the setup pass reads it: an already-calibrated workspace keeps the placement it
+was given, which is one of two reasons this configuration provisions into a workspace of its own.
 `VRAM_RESERVE_MIB` 512 rather than the 2,048 this box has been carrying as a workspace hand edit, because
 the reserve is per card and the comparison is not: 2,048 MiB is 5.0 % of the four cards it was written
 for and **10.0 %** of this pair, and at the 2.31 MiB a cached expert measured on 2026-10-19 the 1,536 MiB

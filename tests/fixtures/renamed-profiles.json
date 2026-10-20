@@ -29,8 +29,8 @@
   },
   "flash-next-strata-two-card-iq4-xs": {
     "previous_id": null,
-    "compose_sha256": "8499e07f9e0bb91f64bd2686c63fcb1e59b980e436b6efb6905a8bbb88b5eb0a",
-    "coding_service_sha256": "cff9f39413316835a235018c4d74a5ccbaea56f758c48b0f39af4df54682171f",
+    "compose_sha256": "0b46ad752cd59fbbc7cb510a0991f803aa686f63588420f5401a5f33541a9355",
+    "coding_service_sha256": "695bd33dfa4bf0fd12b57291bfae3bac286abd4a33ff17429731953379de8162",
     "note": "New on 2026-10-20, not a rename: the two-card probe, which runs the resident's own pack, window and sampling preset on the RTX 3090 and RTX 4080 SUPER with the Everyday resident loaded on the other pair. Pinned at creation because it is the first paired configuration whose coding side is not llama.cpp, so its compose_sha256 is the first pin of the night-side resident beside a Strata backend -- the pairing the vision-GPU placement change made possible, and the one a later edit to that placement would move without touching a profile. It is also the first configuration to state the VRAM reserve, the control vector and the engine log path in source (overlay facts 9-11) instead of carrying them as hand edits inside a workspace."
   }
 }
