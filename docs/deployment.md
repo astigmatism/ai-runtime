@@ -621,6 +621,58 @@ Both arms are run, whichever way the probe reads: two cards, then the 3-bit pack
 A probe that looks fine and a quant that then moves the coverage line are both results, and the one
 outcome that teaches nothing is a quant skipped because the probe "obviously" had to be fine.
 
+### What the pair actually measured (2026-10-20)
+
+Carrying the two numbers over instead of re-deriving them is the whole difference between a trial and an
+accident. Booted at 07:27 UTC with `--vram-reserve-mib 2048 --resident-budget-gib 55` on the RTX 3090 and
+the RTX 4080 SUPER, the pair reads:
+
+```text
+strata generate: expert cache auto: 9.60 GiB free, 2048 MiB reserved (+0 MiB for the draft head) -> 2345 slots
+strata generate: resident RAM mode: 41.01 GiB of experts in RAM (page-locked), 3393 in the GPU cache
+strata serve: 1688 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 1587 MiB of VRAM free with everything loaded
+strata serve: resident RAM: 41.01 GiB of experts in RAM, 52492 exchanged with the VRAM tier, 0 blob reads from the file
+strata serve: decode expert cache hit rate: 87.4% (195972 hits / 224181 lookups)
+```
+
+No request died, nothing read the file, and both cards kept a metre and a half of VRAM in hand. The
+resident budget, given its own value instead of a fraction of the cards, took **41.01 GiB** -- more than
+the 32 GiB the arithmetic had called for and more than the four-card layout's 33.48 GiB, which is exactly
+what a smaller card set needs: the experts the GPUs cannot hold have to be somewhere, and RAM is the only
+somewhere the engine can page-lock.
+
+The coverage line is the result the probe was built to read, and it is surprising:
+
+| layout | cached pairs of 24,576 | share of routed mass | placement search |
+| --- | --- | --- | --- |
+| four cards (in service) | 16,452 | ~96.3 % | best of 15,180 placements |
+| two cards | **9,795** | **~96.9 %** | best of 46 placements |
+
+The pair caches **40.5 % fewer** expert pairs and still covers more of the routed mass, because rank
+order is steep -- the heaviest pairs arrive first, and the two-card layout simply stops earlier down the
+same curve. So both halves of the 3-bit rule fire at once, and the honest reading is the one that was
+written down as the abort line: at 96.9 % of the routed mass `IQ3_S` is **not earned**, even though the
+expert *count* fell four times as far as the trigger set for buying it. Count is the wrong unit for this
+purchase and mass is the right one. The caveat, kept where it can be seen: the pair's placement search
+examined 46 candidates where the four-card layout examined 15,180, and the engine itself warns that with
+mismatched cards the prediction `may not rank them` -- so 96.9 % is what the search believes, not what a
+user feels. What a user feels is [the replay](#what-the-trial-measured-in-its-first-day-of-real-traffic-2026-10-14).
+
+One more thing this trial found, because it cost three hours and belongs to whoever comes next: turns
+began failing with `EMPTY_UPSTREAM_RESPONSE` -- reasoning streamed, then `finish_reason: stop`, no
+answer -- at prompt sizes from 140 tokens to 170,598, on both configurations, and on the day before the
+trial as well. Every software explanation was wrong. The machine had the answer:
+
+```text
+NVRM: Xid (PCI:0000:1a:00): 31, pid=3013814, name=strata: MMU Fault: ENGINE GRAPHICS GPC6 ...
+RTX 4080 SUPER   enforced.power.limit 255.00 W   of power.default_limit 320.00 W
+```
+
+A GPU MMU page fault inside the inference process, on a card running 20 % below its default power limit.
+`journalctl -k -b | grep -i xid` is readable here without sudo and should be the first thing read when
+the model starts producing strange turns, before any amount of reasoning about prompts and parsers.
+
 ### Why a configuration that starts serving and then dies is the one gap left
 
 The probe was switched to at 06:11 UTC on 2026-10-20 and the switch **succeeded**: `apply` drained,
