@@ -297,12 +297,22 @@ def engine_vision_gpu(name, host, engine, options, environment, text_devices):
     require(requested in ('no', 'none', 'yes', 'gpu'), name + ': --vision states ' + requested +
         '; a profile for a host with a shared vision GPU states the text-only default and lets the '
         'renderer move the encoder onto that card, and a CPU encoder is not what the card is for')
-    index = host.get('vision_cuda_device')
-    require(type(index) is int and index == len(text_devices), name +
-        ': vision_cuda_device must be ' + str(len(text_devices)) + ', the index this container '
-        'numbers the shared vision GPU at. The encoder is placed by that number alone, so it has to '
-        'be the last of the reserved cards in nvidia-smi order; a card that is not last on the bus '
-        'is not the card the text GPUs leave free.')
+    # The encoder's card is a number in the container's own CUDA_VISIBLE_DEVICES, and it is derived
+    # here rather than read from the host. The container is handed the text cards and then the shared
+    # card, so the shared card is numbered len(text_devices) in that order -- and one host now serves
+    # a solo configuration whose text model takes four cards alongside a paired one whose text model
+    # takes two, so the same card is CUDA4 in one container and CUDA2 in the other and a single host
+    # integer cannot name both. What keeps the encoder off a text card is not the number: it is the
+    # require above refusing the shared card as a text-pair member, and this function appending it
+    # last. host.json's vision_cuda_device is a statement about the solo case, which is the number a
+    # person reads when they look at the host; nothing here obeys it, so it cannot be wrong in a way
+    # that moves the encoder.
+    index = len(text_devices)
+    stated = host.get('vision_cuda_device')
+    require(stated is None or type(stated) is int, name +
+        ': vision_cuda_device, if a host states it at all, is an int. It documents the index the '
+        'solo configuration numbers the shared vision GPU at; the encoder is placed by the value '
+        'derived above, so a host stating a string is a typo, not a placement decision.')
     environment[engine['environment']['--vision']] = 'yes'
     environment[device_variable] = str(index)
     return [*text_devices, vision], index

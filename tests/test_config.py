@@ -66,6 +66,20 @@ class ConfigurationTests(unittest.TestCase):
                 if name in EXCLUSIVE:
                     self.assertEqual(digest(compose), expected['compose_sha256'])
 
+    def test_nothing_in_service_is_relaunched_by_a_revision_that_did_not_mean_to(self):
+        # A revision that changes the launch of what is serving is a deliberate act, not a side effect
+        # of adding a neighbour. config_sha256 is what the controller compares against the live
+        # container, so a change here does not refuse -- it recreates a running model. Two of these
+        # bundles also carry the Everyday resident's launch inside them, so the night-side model's
+        # projector and MTP draft are pinned here too: they ride on the index the shared vision GPU is
+        # assigned, which is exactly the thing a change to the vision placement moves without any new
+        # profile mentioning it.
+        pinned = read(ROOT / 'tests/fixtures/active-bundles.json')
+        self.assertEqual(set(pinned['bundles']), set(CONFIGURATIONS))
+        for name, expected in sorted(pinned['bundles'].items()):
+            with self.subTest(profile=name):
+                self.assertEqual(render(ROOT / 'config', vision_host(), name)['config_sha256'], expected)
+
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
@@ -680,17 +694,55 @@ class EnvironmentEngineTests(unittest.TestCase):
             service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
             self.assertNotIn('SAMPLING', service['environment'])
 
-    def test_the_encoder_is_placed_on_the_card_the_text_model_leaves_free(self):
-        # The encoder takes its card from a number, and that number is the shared card only while the
-        # shared card is the last of the ones this container reserves. Any other value puts the encoder
-        # on a text card and leaves a fifth card idle, which is expensive, quiet, and a render error:
-        # a host that states a number it cannot mean is refused rather than obeyed.
-        for device in (0, 3, 5, '4', None):
+    def test_the_encoder_is_placed_at_the_end_of_whatever_cards_the_container_is_given(self):
+        # The encoder takes its card from a number in the container's own CUDA_VISIBLE_DEVICES, and the
+        # number is derived from how many text cards this configuration reserves -- not from a host
+        # integer. One host states one host.json, and it now serves a solo configuration whose text
+        # model takes four cards and a paired one whose text model takes two, so the same physical
+        # card is CUDA4 in one container and CUDA2 in the other. What keeps the encoder off a text
+        # card is that the shared card is refused as a text-pair member and appended last: a host
+        # stating any other number is ignored, and only a value that cannot be an index at all is a
+        # typo worth refusing over.
+        for stated in (0, 3, 4, 9):
             host = vision_host()
-            host['vision_cuda_device'] = device
-            with self.subTest(vision_cuda_device=device), \
-                self.assertRaisesRegex(RuntimeError, 'vision_cuda_device'):
-                render(ROOT / 'config', host, SOLO)
+            host['vision_cuda_device'] = stated
+            with self.subTest(vision_cuda_device=stated):
+                bundle = render(ROOT / 'config', host, SOLO)
+                service = bundle['compose']['services']['coding']
+                visible = [int(x) for x in service['environment']['CUDA_VISIBLE_DEVICES'].split(',')]
+                # The number is derived, so every int the host states is ignored. What places the
+                # encoder is that the shared card is the last card this container is given, and the
+                # index names it: the reserved list ends on the vision GPU, and the container numbers
+                # what it is given from 0.
+                self.assertEqual(visible, list(range(len(visible))))
+                self.assertEqual(bundle['manifest']['services'][0]['gpu_device_ids'][-1], VISION)
+                self.assertEqual(service['environment']['VISION_DEVICE'], str(len(visible) - 1))
+        with self.subTest(vision_cuda_device='4'), self.assertRaisesRegex(RuntimeError, 'is an int'):
+            host = vision_host(); host['vision_cuda_device'] = '4'
+            render(ROOT / 'config', host, SOLO)
+
+    def test_a_two_card_strata_layout_places_its_encoder_beside_two_text_cards(self):
+        # The rendering this whole change exists for: the same host.json, the same image, and a Strata
+        # configuration whose text model takes half the cards. Before 2026-10-20 the two layouts were
+        # mutually exclusive in one host file, because the solo layout's number was the only one the
+        # host could state.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / ('profiles/' + SOLO + '.json')
+            definition = read(path)
+            definition.pop('exclusive'); definition['gpu_group'] = 'daytime'
+            definition['arguments']['--gpus'] = '0,1'
+            definition['container']['environment']['CUDA_VISIBLE_DEVICES'] = '0,1'
+            path.write_text(json.dumps(definition))
+            service = render(config, vision_host(), SOLO)['compose']['services']['coding']
+            self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2')
+            self.assertEqual(service['environment']['VISION_DEVICE'], '2')
+            self.assertEqual(service['environment']['GPUS'], '0,1')
+            self.assertEqual(service['environment']['VISION'], 'yes')
+            # And the solo layout still renders on that same host, at its own number.
+            solo = render(ROOT / 'config', vision_host(), SOLO)['compose']['services']['coding']
+            self.assertEqual(solo['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3,4')
+            self.assertEqual(solo['environment']['VISION_DEVICE'], '4')
 
     def test_an_engine_that_cannot_name_the_encoder_card_is_lent_no_card(self):
         # Rolling this profile back to the text-only image of the same revision is a profile change, and
