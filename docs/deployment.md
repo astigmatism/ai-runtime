@@ -516,17 +516,34 @@ cards and nothing else, and reads the same boot line.
 **What it states.** `gpu_group: daytime` and no `exclusive`, so `--gpus 0,1` are the daytime pair and the
 encoder moves to `CUDA2` — the third visible device, wherever the cards happen to end, which is the
 placement change that let this configuration and the four-card one share one `host.json`
-([Shared vision GPU](shared-vision.md)). `RESIDENT_BUDGET_GIB` 32 rather than 55: the pair holds **40,952 MiB** — `nvidia-smi
---query-gpu=index,name,memory.total` says 24,576 for the RTX 3090 and 16,376 for the RTX 4080 SUPER, and
-the four cards the resident is calibrated on total 69,616 MiB — so 55 GiB is 80.9 % of four cards and the
-same fraction of this pair is 32. It is a ceiling the setup pass calibrates placement against rather than
-an allocation, and only the setup pass reads it: an already-calibrated workspace keeps the placement it
-was given, which is one of two reasons this configuration provisions into a workspace of its own.
-`VRAM_RESERVE_MIB` 512 rather than the 2,048 this box has been carrying as a workspace hand edit, because
-the reserve is per card and the comparison is not: 2,048 MiB is 5.0 % of the four cards it was written
-for and **10.0 %** of this pair, and at the 2.31 MiB a cached expert measured on 2026-10-19 the 1,536 MiB
-a card it gives back is on the order of **1,330 cached experts** — more coverage than the whole quant
-step this probe is a prerequisite for. `CONTROL_VECTOR`/`CONTROL_VECTOR_LAYERS` carry the fitted
+([Shared vision GPU](shared-vision.md)). `RESIDENT_BUDGET_GIB` 55 and `VRAM_RESERVE_MIB` 2048 — the two numbers the configuration in service
+carries as hand edits inside its workspace, carried over rather than re-derived, and they are worth a
+paragraph because re-deriving them is what went wrong first time. Both were sized from the cards: the pair
+holds **40,952 MiB** (`nvidia-smi --query-gpu=index,name,memory.total` says 24,576 for the RTX 3090 and
+16,376 for the RTX 4080 SUPER) against the resident's 69,616 MiB, so 55 GiB looked like 80.9 % of four
+cards and became 32, and a per-card reserve of 2,048 MiB looked like 10.0 % of this pair instead of 5.0 %
+of four and became 512. Measured on 2026-10-20 from that run's own log:
+
+```text
+strata generate: expert cache auto: 9.60 GiB free, 512 MiB reserved (+0 MiB for the draft head) -> 2806 slots
+strata serve: 172 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 852
+strata serve: CUDA1: 69 MiB of VRAM free with everything loaded - LOW: ... add --vram-reserve-later-mib 1211
+strata generate: resident RAM mode: 32.00 GiB of experts in RAM (page-locked), 4057 in the GPU cache
+strata serve: WARNING: 2671 of the 3270 borrowed slots have no RAM copy: their experts are streamed from the model file during every chunk
+strata serve: file tier I/O this request: the OS read 44639.2 MB from storage (41262 major faults) for 26625.6 MB of expert reads
+ggml-cuda (strata mmq): out of memory: cudaMalloc(&p, size)  in alloc at src/prefill/ggml_cuda_host.cu:127
+```
+
+So the reserve is not coverage. It is where prefill staging and window-graph capture are allocated, and the
+~1,330 slots the arithmetic "gave back" were the room the first real request needed — at 512 MiB the engine
+asked for 852 and 1,211 and then died in the allocation. And `--resident-budget-gib` is a ceiling on *RAM*,
+which a smaller card set needs **more** of and not less: capped at 32 the pair put 2,671 of its 3,270
+borrowed slots outside RAM and read 26.6 GB of experts from storage in 41,262 major faults, for a prefill
+of 79.6 tok/s where the resident reads the file zero times. Two cards that cannot hold a request buy
+nothing; that is the probe's first result, and it was found by a human noticing the daytime model was not
+in VRAM (see [why nothing brought it back](#why-a-configuration-that-starts-serving-and-then-dies-is-the-one-gap-left)).
+It is also a ceiling only the setup pass reads: an already-calibrated workspace keeps the placement it was
+given, which is one of two reasons this configuration provisions into a workspace of its own. `CONTROL_VECTOR`/`CONTROL_VECTOR_LAYERS` carry the fitted
 direction that 256K decoding depends on here, `STRATA_LOG` puts the engine log on the workspace instead
 of in the container's stdout, and those three plus the reserve are the first instances of overlay facts
 9-11 used in a profile: what the configuration in service still carries as hand edits, this one declares
@@ -604,6 +621,41 @@ Both arms are run, whichever way the probe reads: two cards, then the 3-bit pack
 A probe that looks fine and a quant that then moves the coverage line are both results, and the one
 outcome that teaches nothing is a quant skipped because the probe "obviously" had to be fine.
 
+### Why a configuration that starts serving and then dies is the one gap left
+
+The probe was switched to at 06:11 UTC on 2026-10-20 and the switch **succeeded**: `apply` drained,
+started both residents, waited for the engine to be healthy *with its model resident*, published it, and
+returned `changed_roles: ["coding", "everyday"]`. The engine then answered its own verification request —
+57 tokens, 6 tokens generated, 67.5 tok/s — and died on the next thing a real user sent it:
+
+```text
+strata serve: WARNING: only 172 MiB of VRAM free at the start of this request (below 512 MiB)
+ggml-cuda (strata mmq): out of memory: cudaMalloc(&p, size)  in alloc at .../ggml_cuda_host.cu:127
+```
+
+Nothing in the runtime disagreed, because nothing was looking. Restoration — the machine's own way back to
+the configuration that works — is armed in exactly two places, and both of them are inside a transaction
+that is failing: `schedule_restoration()` is called when a switch raises and when a recovery raises. A
+transaction that completed is closed, `active.json` says so, and a backend that publishes, passes its own
+health and residency checks, and then kills itself on the first request it is actually given is a
+*successful* switch that stopped being true. `docker` restarted the container under
+`restart: unless-stopped`, and each reboot took 115 s and ended the same way, because the request that
+killed it was simply the next request.
+
+Daytime was unserved from 06:12:54 (the engine's last line) until a human used the lever at 06:17:24 —
+transaction `ffbe471f`, back on `flash-next-strata-solo-thinking-recovery-cache` at 06:19:31. The
+plan this configuration was written against promised that a bad new configuration would go back to the
+working one by itself, and it did not, for this one reason: the promise was implemented as "a switch that
+fails", and the failure was a switch that succeeded.
+
+The shape of the fix is small and the tests for it belong in `tests/test_restoration.py` with the rest of
+them: a switch that publishes a self-provisioning engine should keep watching that engine for a while, and
+a coding container that exits inside that window should arm the same restoration a failed switch arms,
+with the same backoff and the same rule that the host is never left drained with nobody serving. Until it
+exists, the honest statement is that a two-card experiment can be *switched* unattended and cannot yet be
+*survived* unattended, and that the memory headroom of the thing being switched to is the reason you would
+want it.
+
 ### The 3-bit arm: `flash-next-strata-two-card-iq3-s`
 
 One variable from the probe: the pack. ISTA-DASLab's GSQ-RCO `IQ3_S` at revision
@@ -630,7 +682,7 @@ has to be right.
 `test_the_two_card_quant_arm_is_the_probe_with_its_pack_swapped` is the guarantee: the two arms' rendered
 launches are compared and may differ only in the pack they name, the shards they mount, the workspace
 each owns, and the contract keys that echo a pack (`model`, `default_model`, `model_path`,
-`quantization`, `revision`, the capability name). The cards, the reserve, the 32 GiB budget, the window,
+`quantization`, `revision`, the capability name). The cards, the reserve, the resident budget, the window,
 the sampling preset, the parked conversations, the recovery switch, the speculation, the control vector
 and the night-side resident are held identical by that test rather than by the fact that both profiles
 were generated from one another.

@@ -1260,6 +1260,16 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         cards = ('CUDA_VISIBLE_DEVICES', 'GPUS', 'VISION_DEVICE')
         declared = ('RESIDENT_BUDGET_GIB', 'VRAM_RESERVE_MIB', 'CONTROL_VECTOR',
                     'CONTROL_VECTOR_LAYERS', 'STRATA_LOG')
+        # And the two memory numbers are the tuned ones rather than a fresh guess, because they were
+        # re-invented once already: 512 MiB reserved and a 32 GiB resident budget, both derived from the
+        # cards' VRAM, and the pair then reported '172 MiB of VRAM free with everything loaded' and
+        # 'CUDA1: 69 MiB of VRAM free', asked for --vram-reserve-mib 852 and --vram-reserve-later-mib
+        # 1211, streamed 26.6 GB of experts from storage across 41,262 major faults, and died in
+        # 'ggml-cuda (strata mmq): out of memory: cudaMalloc' on its first real request. A reserve is
+        # what prefill staging and window capture live in, and the resident budget is a ceiling on *RAM*
+        # that a smaller card set needs more of, not less: neither is a fraction of a card's VRAM.
+        self.assertEqual(pc['environment']['VRAM_RESERVE_MIB'], '2048')
+        self.assertEqual(pc['environment']['RESIDENT_BUDGET_GIB'], '55')
         self.assertEqual({k: v for k, v in pc['environment'].items() if k not in cards + declared},
             {k: v for k, v in rc['environment'].items() if k not in cards},
             probe + ' differs from the configuration in service in its cards and in the five settings '

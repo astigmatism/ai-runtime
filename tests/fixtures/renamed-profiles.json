@@ -29,14 +29,14 @@
   },
   "flash-next-strata-two-card-iq4-xs": {
     "previous_id": null,
-    "compose_sha256": "0b46ad752cd59fbbc7cb510a0991f803aa686f63588420f5401a5f33541a9355",
-    "coding_service_sha256": "695bd33dfa4bf0fd12b57291bfae3bac286abd4a33ff17429731953379de8162",
+    "compose_sha256": "eb4832924ab11e304b3ac690ef7fb44878a8d5c63ebe00273c5e33237048ed17",
+    "coding_service_sha256": "8ac0bfed0d90f7890155d855454ac2a6e32e391f23636e332a8285d86da912dd",
     "note": "New on 2026-10-20, not a rename: the two-card probe, which runs the resident's own pack, window and sampling preset on the RTX 3090 and RTX 4080 SUPER with the Everyday resident loaded on the other pair. Pinned at creation because it is the first paired configuration whose coding side is not llama.cpp, so its compose_sha256 is the first pin of the night-side resident beside a Strata backend -- the pairing the vision-GPU placement change made possible, and the one a later edit to that placement would move without touching a profile. It is also the first configuration to state the VRAM reserve, the control vector and the engine log path in source (overlay facts 9-11) instead of carrying them as hand edits inside a workspace."
   },
   "flash-next-strata-two-card-iq3-s": {
     "previous_id": null,
-    "compose_sha256": "c576729820ea34cec9fd2c5acd6290dfa492fef8bc4317fbc10d5e4adf99f04f",
-    "coding_service_sha256": "16054bce34a97dfdb5c5317cfcef60cfe5d458d5c01fa7614a993c74a4ecc066",
+    "compose_sha256": "b69e5653394957ba7cab0466068b87a9ef69becbb41a2fd4510c07bc39c7529f",
+    "coding_service_sha256": "2e3907dc2270f7ac014b3ddc24328be1d4e52184369dfdb4cfc6287abfcbf0c7",
     "note": "New on 2026-10-20, not a rename: the second arm of the two-card trial. It is the two-card probe with one variable changed -- the pack, from Unsloth's UD-IQ4_XS to ISTA-DASLab's GSQ-RCO IQ3_S at revision ed59f92082b1e93c0e96d60a8b11aab089b52f09, two shards and 83,617,662,656 bytes -- which makes it the first configuration on this host whose artifact set differs from the resident's while its launch does not. Pinned at creation for the reason the probe is: the compose digest is the only thing that notices a later edit moving the night-side resident this arm loads beside itself."
   }
 }

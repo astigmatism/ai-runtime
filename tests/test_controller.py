@@ -343,7 +343,7 @@ class ControllerTests(unittest.TestCase):
             ['card sampling + call recovery',
              'card sampling + call recovery + parked conversations',
              'card sampling + call recovery + parked conversations + YaRN 2.0 window',
-             'two cards, 512 MiB a card reserved',
+             'two cards, nothing else changed',
              'two cards, the 3.5-bit pack'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
