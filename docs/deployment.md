@@ -544,7 +544,7 @@ greediness of a reply, the parked conversations and their floor, the recovery sw
 the KV placement, the 262,144 window, the pack, the revision string, the capability profile. The
 variables taken out are a named set rather than a discovered diff, so a tuning flag cannot escape the
 comparison by being reclassified as a card. `nighttime` answers from the Everyday resident at its own
-98,304 while `daytime` stays at 256,144 — the two session lengths the trial is run at, asserted off the
+98,304 while `daytime` stays at 262,144 — the two session lengths the trial is run at, asserted off the
 published contract.
 
 **Running it.** `python3 -m runtime gate --profile flash-next-strata-two-card-iq4-xs` refuses before
@@ -559,10 +559,28 @@ says the shards were mapped and not re-read.
 **The readings that decide it, all of them from the engine's own log** (`/data/strata-engine.log` on the
 probe's workspace, which is why `STRATA_LOG` is declared):
 
+The four-card column is not folklore. Read on 2026-10-20 at 05:09 UTC, from the boot the deploy of this
+revision gave the configuration in service, with
+`grep -a -E 'caches hold|predicted|expert cache auto|resident RAM|blob reads' <workspace>/strata-engine.log`:
+
+```text
+strata generate: expert cache auto: 6.75 GiB free, 2048 MiB reserved (+0 MiB for the draft head) -> 1464 slots
+strata generate: layer split auto: K=5,26,37 - predicted 27.8 ms per decode window; the caches hold
+  16452 of 24576 profiled pairs (~96.3% of the routed mass), best of 15180 placements
+strata serve: resident RAM: 33.48 GiB of experts in RAM, 2132 exchanged with the VRAM tier, 0 blob reads from the file
+strata serve: decode expert cache hit rate: 98.8% (347815 hits / 351973 lookups)
+```
+
+That is the reference the two-card arms are compared against, and it cross-checks the arithmetic above:
+the same `fprintf` computes `slots = (free − reserve) / max_blob`, so at that moment a cached expert
+cost 3.32 MiB of the card's free memory — an upper bound on the 2.31 MiB figure, because the reserve term
+in the engine also carries the prefill window and the draft head (`src/program/generate.cpp`, the
+`expert cache auto` line). Read the arm's own line rather than trusting either constant.
+
 | Reading | Four-card, recorded | Two-card, what it has to show |
 | --- | --- | --- |
 | `the caches hold N of 24576 profiled pairs (~x % of the routed mass)` | 16,295 – 16,571 pairs, ~96.5 % | the whole point; `IQ3_S` is a coverage purchase only if two cards cost 15 % or more of that count |
-| `predicted N ms per decode window` | 27.5 ms | up, and how far is the decode story |
+| `predicted N ms per decode window` | 27.5 – 27.8 ms | up, and how far is the decode story |
 | decode p10, requests at 131K and above | 82.3 tok/s (171 requests, median 95.3, median context 163,979) | the gate: at or above the box's own tail, not the trial table's 110 |
 | `resident RAM: N GiB` | 33.48 GiB | shared with the Everyday resident for the first time; MemAvailable is the breaker |
 | answer hash, `scripts/strata_replay.py` | the fixed corpus | unchanged. Bench-pooled decode medians carry a ±6 % interval and every lever here trades 4-15 %, so the replay is the measurement and the tok/s figure is the smoke |
