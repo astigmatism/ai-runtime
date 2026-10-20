@@ -305,6 +305,35 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
     return found
 
 
+def ensure_workspace(controller, workspace):
+    """Make the profile's workspace directory if nothing has, and say whether this call made it.
+
+    A self-provisioning engine is supposed to be able to build a workspace from nothing, and the profile
+    owns the directory -- but the daemon refuses a bind whose source is missing ("invalid mount config
+    for type bind: bind source path does not exist", naming the path without saying who was expected to
+    create it) and so refuses the whole switch. Measured on 2026-10-20: the first provisioning of a new
+    two-card Strata profile died there, three lines into a run that had not yet touched a GPU.
+
+    The model root has to exist and the workspace has to be inside it. A profile's workspace is
+    ``<name>/data`` under that root, so requiring the immediate parent to exist would ask for a
+    directory nothing creates either, while inventing a whole tree under a misspelt root is how a pack
+    ends up somewhere nothing looks for it again. Group-writable, like the workspaces this host already
+    holds, because the engine writes into it as its image's user and not as whoever ran the command.
+    """
+    root = Path(controller.host['model_root'])
+    if workspace.is_dir():
+        return False
+    require(root.is_dir(), 'The model root does not exist: ' + str(root) +
+        '; provisioning creates a profile workspace, not a model tree')
+    require(workspace.resolve().is_relative_to(root.resolve()), 'The workspace ' + str(workspace) +
+        ' is outside the model root ' + str(root) + '; refusing to create it')
+    workspace.mkdir(parents=True, exist_ok=True)
+    # Stated, not requested: mkdir's mode argument goes through the process umask, so asking for 0o775
+    # from a shell sitting at 022 arrives as 755 and the engine finds its own workspace read-only.
+    workspace.chmod(0o775)
+    return True
+
+
 def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, poll=POLL_SECONDS, log=print):
     """Take one measurement for a profile and merge it into the receipt the switch reads."""
     require(phase in ('provision', 'warm'), 'Unknown provisioning phase: ' + str(phase))
@@ -324,6 +353,10 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
             'measurement between turns, when nothing is serving')
     port = published_port(cfg, PORT_OFFSET if phase == 'provision' else 0)
     name = cfg['container_name'] + '-provision'
+    # Before the daemon is asked to bind it. A run that made its own workspace proved the profile can
+    # be built from nothing; a run that found one already there did not, and the receipt keeps them
+    # apart.
+    created_workspace = ensure_workspace(controller, workspace)
     # Space before, space after: a pack that consumes a meaningful chunk of the model filesystem is
     # worth knowing the size of, and so is the free space it left behind.
     free_before = free_bytes(workspace)
@@ -343,6 +376,9 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
         'ready_files': list(provision.get('ready_files', [])), 'runs': []}
     receipt['measured_at'] = now()
     run = {'phase': phase, 'reached': result['reached'], 'seconds': result['seconds'], 'container': name,
+        # Whose directory this is matters to the finding: a run that made its own workspace proved the
+        # profile can be built from nothing, and a run that found one already there did not.
+        'workspace_created': created_workspace,
         'port': port, 'via': 'cli', 'pack_bytes': footprint(workspace), 'free_bytes_before': free_before,
         'free_bytes_after': free_bytes(workspace), 'ready_paths': result['ready_paths'],
         'samples': result['samples']}

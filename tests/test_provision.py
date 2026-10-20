@@ -71,6 +71,14 @@ class ProvisioningSystem(fixture.FakeSystem):
             if 'up' in args:
                 role = args[-1]
                 service = spec['services'][role]
+                # The daemon's own rule, learned from the failure it produced on 2026-10-20: a bind
+                # whose source is missing refuses the container, and the message names the path without
+                # saying who was expected to create it. Only the workspace bind is checked, because the
+                # artifact binds of a fixture point at a model tree no test stages on disk.
+                for volume in service['volumes']:
+                    if volume['target'] == '/data' and not Path(volume['source']).exists():
+                        raise RuntimeError('invalid mount config for type "bind": bind source path '
+                            'does not exist: ' + volume['source'])
                 self.throwaway_port = service['ports'][0].split(':')[1]
                 self.throwaway_name = service['container_name']
                 self.devices = service['deploy']['resources']['reservations']['devices'][0]['device_ids']
@@ -123,6 +131,9 @@ class ProvisionTests(unittest.TestCase):
         host['router_state_dir'] = str(self.state / 'router')
         # The workspace has to be a real directory: it is the one thing the tool watches appear.
         host['model_root'] = str(self.state / 'models')
+        # The model tree exists; whether this profile's workspace inside it does is the thing under
+        # test. provisioning is allowed to make the second and not the first.
+        (self.state / 'models').mkdir()
         atomic_json(self.state / 'host.json', host); (self.state / 'router-token').write_text('synthetic-token')
         # The box is serving llama.cpp and the trial is the thing being asked for; a measurement is
         # only interesting while something else holds the cards.
@@ -358,6 +369,36 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(cfg['container_name'], 'qwen38-daytime')
         self.assertEqual(cfg['restart'], 'unless-stopped')
         self.assertEqual(cfg['ports'], ['127.0.0.1:18080:8080'])
+
+    def test_a_workspace_nobody_created_yet_is_made_before_the_daemon_is_asked(self):
+        """A new profile has no workspace, and that is not a reason a human has to be awake.
+
+        The switch is advertised as building a workspace from nothing, and the plan this release is
+        written against is one where nobody is at the keyboard between the drain and the answer. What
+        it actually did on 2026-10-20, on the first provisioning of the two-card profile, was die in
+        the daemon's mount validation three lines in: the directory the profile owns did not exist, so
+        the bind was refused, and the message named the path without saying who was supposed to have
+        made it. The fixture now refuses that way too, so this test would fail as a mount error rather
+        than as a missing key.
+        """
+        self.assertFalse(self.workspace.exists())
+        result = measurement(self.c, PROFILE, limit=60, poll=0, log=lambda line: None)
+        self.assertTrue(self.workspace.is_dir(), 'the run started without making its own workspace')
+        self.assertTrue(result['workspace_ready'])
+        run = (self.c.load('provisioning/' + PROFILE + '.json') or {'runs': []})['runs'][-1]
+        self.assertTrue(run['workspace_created'], 'the receipt does not say it made the directory')
+        # Group-writable, because the engine writes into it as its image's user: the workspaces this
+        # host already holds are 775 and a 755 directory is a boot that cannot write its pack.
+        self.assertEqual(self.workspace.stat().st_mode & 0o777, 0o775)
+
+    def test_a_model_root_that_is_not_there_is_a_refusal_rather_than_a_new_tree(self):
+        """Creating a workspace is bounded by the model root, which is never invented."""
+        shutil.rmtree(self.state / 'models')
+        with self.assertRaisesRegex(RuntimeError, 'model root does not exist'):
+            measurement(self.c, PROFILE, limit=60, poll=0, log=lambda line: None)
+        self.assertFalse((self.state / 'models').exists(),
+            'provisioning invented a model tree under a root that was not there')
+        self.assertFalse(self.workspace.exists())
 
     def test_the_build_is_measured_while_the_serving_backend_is_watched(self):
         """Packing competes with a loaded model; this run is also the answer to whether that matters."""

@@ -233,6 +233,9 @@ class Controller:
         name = cfg['container_name'] + '-provision'
         port = provision_tool.published_port(cfg, provision_tool.PORT_OFFSET)
         files = provision_tool.ready_files(workspace, contract)
+        # The daemon refuses a bind whose source is missing, so the directory the switch is about to
+        # build has to exist before compose is asked to start anything.
+        created = provision_tool.ensure_workspace(self, workspace)
         free_before = provision_tool.free_bytes(workspace)
         spec = self.state / 'provisioning' / (bundle['profile'] + '-compose.json')
         provision_tool.atomic_json(spec, provision_tool.throwaway(bundle, role, name, port))
@@ -244,10 +247,12 @@ class Controller:
             last_line = words[-1] if words else 'no output was captured from the container'
             raise RuntimeError(bundle['profile'] + ': the engine could not build its workspace '
                 '(' + result['reached'] + ' after ' + str(result['seconds']) + 's): ' + last_line)
-        self._record_provision_run(bundle, role, engine, contract, workspace, name, port, result, free_before)
+        self._record_provision_run(bundle, role, engine, contract, workspace, name, port, result,
+            free_before, created)
         return result
 
-    def _record_provision_run(self, bundle, role, engine, contract, workspace, name, port, result, free_before):
+    def _record_provision_run(self, bundle, role, engine, contract, workspace, name, port, result,
+            free_before, created=False):
         """The build the switch just did, in the same receipt the read-only measurement writes, so
         one file is the whole story of the workspace on this machine."""
         receipt = self.load('provisioning/' + bundle['profile'] + '.json') or {
@@ -255,7 +260,7 @@ class Controller:
             'workspace': str(workspace), 'ready_files': list(contract.get('ready_files', [])), 'runs': []}
         receipt['measured_at'] = now()
         run = {'phase': 'provision', 'reached': result['reached'], 'seconds': result['seconds'],
-            'container': name, 'port': port, 'via': 'switch',
+            'container': name, 'port': port, 'via': 'switch', 'workspace_created': created,
             'pack_bytes': provision_tool.footprint(workspace),
             'free_bytes_before': free_before, 'free_bytes_after': provision_tool.free_bytes(workspace),
             'ready_paths': result['ready_paths'], 'samples': result['samples']}
