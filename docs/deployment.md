@@ -725,6 +725,51 @@ the fetch verifies against is what the publisher published and not a transcripti
 total — 77.9 GiB, which is also setup.py's own `download_gb: 83.6` for the tier, arriving on a host with
 496 GB free at 45 % used, so it lands at about 50 %.
 
+**Measured, and it overturned the rule written for it.** Same afternoon, same corpus, same harness, engine
+quiet, five warm rounds; the reference is the four-card configuration re-measured after the power
+correction (`### What the pair actually measured` above explains why the morning reference had to be
+repeated):
+
+| cell | 4 cards, 4-bit — in service | 2 cards, 4-bit | **2 cards, 3.5-bit — this arm** |
+| --- | --- | --- | --- |
+| code-4k | 159.4 | 98.8 | 148.5 |
+| tool-4k | 161.1 | 119.8 | **175.1** |
+| code-32k | 151.7 | 113.1 | **158.9** |
+| prose-32k | 152.1 | 85.4 | 128.4 |
+| tool-128k | 141.2 | 91.1 | 138.5 |
+| edge-158k | 137.7 | 118.1 | **150.6** [146.5, 151.3] |
+
+Both two-card arms clear the agreed floor — the four-card box's own measured `p10 82.3 tok/s` in the 131K+
+bucket — and the 3.5-bit arm does something nobody predicted: **it beats the four-card resident** at the
+bucket where this box's traffic actually lives, by 9.4 %, on half the cards, and at three of the six cells
+outright. Its own boot says why:
+
+```text
+strata generate: native pack: /data/packs/iq3_s experts (largest blob 2.66 MB)
+strata generate: expert cache auto: 11.06 GiB free, 2048 MiB reserved (+0 MiB for the draft head) -> 3654 slots
+strata generate: layer split auto: K=27 - predicted 23.7 ms per decode window; the caches hold 13034 of 24576
+  profiled pairs (~97.9% of the routed mass), best of 46 placements
+strata serve: decode expert cache hit rate: 81.5% ... 2.5% of all 129477 routed
+```
+
+Smaller experts mean 3,654 cached slots where the 4-bit pack fitted 2,345 on the same two cards, and
+**97.9 % of the routed mass** where the four-card 4-bit layout holds 96.3 %. The hit rate is *lower* than
+the 4-bit pair's (81.5 % against 87.4 %) and the arm is still faster, because a miss is cheaper than the
+slot it saved: fewer bytes per expert over the same PCIe links.
+
+The rule this arm was gated on said: buy the smaller pack if the two-card layout's cached-expert count
+falls 15 % or more below the four-card 16,452, and do not buy it if the layout already holds 94.0 % or
+more of the routed mass. On the probe the pair held 9,795 pairs (40 % down, so *buy*) at 96.9 % of the
+mass (so *do not buy*), and the abort line won — which the measurement now shows was the wrong
+conclusion, reached because the rule priced coverage and the box pays in decode. So the rule is recorded
+as falsified rather than as satisfied: coverage mass was never the thing being bought. What the arm
+actually costs is upstream's own 1.2 points of measured agreement against the reference quant, and a
+different recipe (ISTA-DASLab's GSQ-RCO rather than Unsloth's UD) rather than the same weights at fewer
+bits; the greedy answers on this corpus came back identical to the four-card resident on five of six
+cells, the sixth being the cell that differs between two runs of the four-card configuration itself.
+Which of those two columns a person values is an owner decision, and this is the measurement to make it
+on rather than the coverage line that was written before it.
+
 The pack reaches the engine as two words, not a path: `--quant IQ3_S` becomes `MODEL=IQ3_S` and
 `--family qwen` becomes `FAMILY=qwen`, and the entry point assembles the filenames from the family table
 with `GGUF_DIR=/weights`. The profile's `--model` path is the primary shard, and it reaches the launch
