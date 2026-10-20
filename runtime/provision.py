@@ -327,10 +327,20 @@ def ensure_workspace(controller, workspace):
         '; provisioning creates a profile workspace, not a model tree')
     require(workspace.resolve().is_relative_to(root.resolve()), 'The workspace ' + str(workspace) +
         ' is outside the model root ' + str(root) + '; refusing to create it')
-    workspace.mkdir(parents=True, exist_ok=True)
-    # Stated, not requested: mkdir's mode argument goes through the process umask, so asking for 0o775
-    # from a shell sitting at 022 arrives as 755 and the engine finds its own workspace read-only.
-    workspace.chmod(0o775)
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        # Stated, not requested: mkdir's mode argument goes through the process umask, so asking for
+        # 0o775 from a shell sitting at 022 arrives as 755 and the engine finds its own workspace
+        # read-only.
+        workspace.chmod(0o775)
+    except OSError as failure:
+        # The model root is mounted read-only into the container this controller runs in -- measured
+        # on 2026-10-20, when the first provisioning of a new profile reached this line and reported
+        # `[Errno 30] Read-only file system`, which names an errno and no lever. The mount is on
+        # purpose: the runtime does not write model files. So say who can, and with what command.
+        raise RuntimeError('Cannot create the workspace ' + str(workspace) + ': ' + str(failure) +
+            '. The model root is read-only to this process; create the directory on the host -- '
+            'install -d -m 775 ' + str(workspace) + ' -- and run this again') from failure
     return True
 
 

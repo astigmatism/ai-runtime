@@ -391,6 +391,22 @@ class ProvisionTests(unittest.TestCase):
         # host already holds are 775 and a 755 directory is a boot that cannot write its pack.
         self.assertEqual(self.workspace.stat().st_mode & 0o777, 0o775)
 
+    def test_a_model_root_this_process_cannot_write_says_who_can(self):
+        """The production host mounts the model root read-only, and an errno is not a lever.
+
+        Provisioning the two-card profile on 2026-10-20 produced `[Errno 30] Read-only file system:
+        /home/astigmatism/ai/models/strata-pair-iq4xs` -- true, and useless, because nothing the
+        operator or the agent then reading the message could do followed from it. The mount is on
+        purpose, so the refusal names the command that clears it. The test plays the read-only mount
+        with a permission, which is a different errno arriving at the same refusal.
+        """
+        root = self.state / 'models'
+        root.chmod(0o500)
+        self.addCleanup(root.chmod, 0o700)
+        with self.assertRaisesRegex(RuntimeError, 'create the directory on the host'):
+            measurement(self.c, PROFILE, limit=60, poll=0, log=lambda line: None)
+        self.assertFalse(self.workspace.exists())
+
     def test_a_model_root_that_is_not_there_is_a_refusal_rather_than_a_new_tree(self):
         """Creating a workspace is bounded by the model root, which is never invented."""
         shutil.rmtree(self.state / 'models')
