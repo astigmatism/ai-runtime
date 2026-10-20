@@ -1,8 +1,8 @@
 #!/bin/sh
 # This house's overlay on Strata's own entry point, not an upstream file.
 #
-# Eight facts about this container have to reach the engine's own run config. Four of them are not
-# arguments the engine takes; the last four are, but they go in the run config's "args" list, which
+# Eleven facts about this container have to reach the engine's own run config. Five of them are not
+# arguments the engine takes; the other six are, but they go in the run config's "args" list, which
 # setup.py writes and offers no flag to extend.
 #
 # 1. That it runs an image encoder at all (with which mmproj). The "vision" section of the run
@@ -91,6 +91,42 @@
 #    demands a --yarn-orig-ctx and a window above it (the engine refuses the pair otherwise); a scale
 #    that is not a positive float fails the boot before anything is written. The measurements behind
 #    shipping any factor at all are in docs/deployment.md, "Beyond the ladder" and the factor table.
+#  9. How much of each text card the expert cache may not size itself into. VRAM_RESERVE_MIB is MiB, and
+#    like facts 5-8 it is an engine argument (--vram-reserve-mib) with no setup.py flag, so it lands in
+#    that args list. It reaches this entry point for the first time on 2026-10-20 because it has been a
+#    hand edit inside the workspace since 2026-10-12 -- one of the two docs/deployment.md names as
+#    undeclared, surviving only because nothing has reinstalled the workspace. What it costs is slots and
+#    not bytes: the reserve is not held memory, it is room the engine declines to take, and at the 2.31
+#    MiB each cached expert measured 2026-10-19 that is ~885 slots a card. 2,048 MiB was written for four
+#    cards (5.0% of their VRAM); the same number on the two-card pair the trial runs on is 10.0% of that
+#    pair, which is why a reserve calibrated for one layout is not carried unchanged into another. How
+#    many slots it is actually worth is printed by the boot ("expert cache auto: <free> free, <n> MiB
+#    reserved ... -> N slots") and read from there, never computed here. Unstated leaves the file alone.
+#    0 is a value (reserve nothing), so it is accepted; the word that takes the flag out is "off".
+# 10. Which direction is subtracted from the residual stream, how hard, and between which layers. Four
+#    arguments that are one fact: --control-vector-scaled <file>:<scale>, --control-vector-layer-range
+#    <low> <high>, --cvec-mode, --cvec-dir. CONTROL_VECTOR is a path; CONTROL_VECTOR_SCALE defaults to
+#    1.0, the strength this box has served since 2026-10-15; CONTROL_VECTOR_LAYERS is "low:high". The
+#    mode and direction are deliberately NOT configurable here: project/per-layer are properties of the
+#    vector file this house fitted, not of the deployment, and a profile free to get them wrong is a
+#    profile that can subtract a fitted direction in a mode the file was never fitted for. This block is
+#    written by its own function rather than through edit_args for one mechanical reason worth knowing
+#    before editing either: --control-vector-layer-range takes TWO values and edit_args' strip walks
+#    one, so a stale range would leave its second number behind as an orphaned token that the engine
+#    then reads as the following flag's value. Like fact 9 this has been a hand edit since 2026-10-15,
+#    and unlike fact 9 it is on the two-card trial's critical path for a reason that is not
+#    tidiness: the probe is meant to measure the configuration in service minus the card count, and a
+#    vector that rides along in a workspace instead of a profile makes every number that comparison
+#    prints a different configuration's. "off" takes all four out.
+# 11. Where the engine's own log goes. STRATA_LOG is a path, and it is neither of the two kinds above: it
+#    is a top-level key of the run config, which is how the workspace has carried it since 2026-10-12
+#    (the log file's own first line records the preflight that made it). It belongs in this list because
+#    nearly every instrument this house reads -- the expert-cache hit rate, the "resident RAM" line, the
+#    slots the boot sized the cache to, the placement search's predicted window cost -- is read out of
+#    that file, and a durable log whose path lives only inside a directory the controller cannot see is
+#    an instrument that goes missing on the day it is needed. Unstated leaves the file alone, so what is
+#    serving keeps what it was set up with; "off" takes the key out, which puts the log where the engine
+#    puts it.
 #
 # So: when the container is told the encoder's card, make sure the config it is about to start
 # carries a vision section, and write the card into it. When it is told a sampling preset, make sure
@@ -134,6 +170,12 @@ ROPE_SCALING="${ROPE_SCALING:-}"
 ROPE_SCALE="${ROPE_SCALE:-}"
 YARN_ORIG_CTX="${YARN_ORIG_CTX:-}"
 PLE_GGUF="${PLE_GGUF:-}"
+# Facts 9-11, the three settings that reached this container as hand edits inside the workspace.
+VRAM_RESERVE_MIB="${VRAM_RESERVE_MIB:-}"
+CONTROL_VECTOR="${CONTROL_VECTOR:-}"
+CONTROL_VECTOR_SCALE="${CONTROL_VECTOR_SCALE:-}"
+CONTROL_VECTOR_LAYERS="${CONTROL_VECTOR_LAYERS:-}"
+STRATA_LOG="${STRATA_LOG:-}"
 
 # The same tag the upstream entry point derives, so what follows writes the file it is about to read.
 case "$FAMILY" in
@@ -643,9 +685,255 @@ apply_rope_scaling() {
     edit_args rope set "$@"
 }
 
+apply_vram_reserve() {
+    # Fact 9. The reserve is room the engine declines to size the expert cache into, so what it buys is
+    # latency headroom and what it costs is cached experts. Both sides of that are printed by the boot
+    # and neither is computed here, which is why this fact writes a number and does not have an opinion
+    # about it. 0 is accepted because it is a value (reserve nothing); "off" is the word for the flag
+    # not being in force at all, which is the engine's own default.
+    if [ "$VRAM_RESERVE_MIB" = off ]; then
+        if [ -f "$cfg" ]; then
+            edit_args reserve drop --vram-reserve-mib
+        fi
+        return 0
+    fi
+    if [ -z "$VRAM_RESERVE_MIB" ]; then
+        return 0
+    fi
+    if ! digits "$VRAM_RESERVE_MIB"; then
+        echo "strata overlay: VRAM_RESERVE_MIB=$VRAM_RESERVE_MIB is not a number of MiB. The engine" >&2
+        echo "  parses this as an int and does not start on one it cannot read, and for an exclusive" >&2
+        echo "  resident a boot that does not happen is a cheaper outcome than a crash loop." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and a VRAM reserve has to be written into it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write the VRAM reserve into" >&2
+            return 1
+        fi
+    fi
+    edit_args reserve set --vram-reserve-mib "$VRAM_RESERVE_MIB"
+}
+
+edit_cvec() {
+    # Fact 10's writer. It is not edit_args for one reason: --control-vector-layer-range takes TWO
+    # values, and edit_args' strip walks one -- a stale range would leave its second number behind as
+    # an orphaned token, which the engine reads as the following flag's value. The mode and direction
+    # are in the table below and nowhere else, because they are properties of the vector file.
+    ec_op="$1"
+    shift
+    python3 - "$cfg" "$ec_op" "$@" <<'PY'
+import json, os, sys
+
+ARITY = {'--control-vector-scaled': 1, '--control-vector-layer-range': 2,
+         '--cvec-mode': 1, '--cvec-dir': 1}
+MODE = ('--cvec-mode', ['project'])
+DIRECTION = ('--cvec-dir', ['per-layer'])
+
+path, op = sys.argv[1], sys.argv[2]
+rest = sys.argv[3:]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+args = cfg.get('args')
+if not isinstance(args, list):
+    if op == 'drop':
+        print('strata overlay: %s carries no args list; no control vector is in force' % path, flush=True)
+        sys.exit(0)
+    print('strata overlay: %s has no args list to write a control vector into' % path, file=sys.stderr,
+          flush=True)
+    sys.exit(1)
+
+
+def split(current):
+    # Walk the argv with the arity table, so a two-value flag is taken apart as two values.
+    plain, found = [], {}
+    i = 0
+    while i < len(current):
+        token = current[i]
+        if token in ARITY:
+            found[token] = current[i + 1:i + 1 + ARITY[token]]
+            i += 1 + ARITY[token]
+            continue
+        plain.append(token)
+        i += 1
+    return plain, found
+
+
+plain, have = split(args)
+if op == 'drop':
+    if not have:
+        print('strata overlay: no control vector is in the args list; the engine subtracts nothing',
+              flush=True)
+        sys.exit(0)
+    want = plain
+    action = 'removed the control vector the profile does not state: %s' % ', '.join(
+        '%s %s' % (flag, ' '.join(values)) for flag, values in sorted(have.items()))
+else:
+    scaled, low, high = rest[0], rest[1], rest[2]
+    want_block = [('--control-vector-scaled', [scaled]), ('--control-vector-layer-range', [low, high]),
+                  MODE, DIRECTION]
+    if all(have.get(flag) == values for flag, values in want_block):
+        print('strata overlay: control vector already in the args list (%s %s, layers %s-%s, %s %s)'
+              % (scaled, ''.join(have.get('--control-vector-scaled', [''])[1:]), low, high,
+                 MODE[1][0], DIRECTION[1][0]), flush=True)
+        sys.exit(0)
+    want = plain + [value for pair in want_block for value in (pair[0],) + tuple(pair[1])]
+    action = ('wrote the control vector %s over layers %s-%s in %s mode, %s'
+              % (scaled, low, high, MODE[1][0], DIRECTION[1][0]))
+
+cfg['args'] = want
+tmp = path + '.cvec.tmp'
+with open(tmp, 'w', encoding='utf-8') as handle:
+    json.dump(cfg, handle, indent=1)
+    handle.write('\n')
+os.replace(tmp, path)
+print('strata overlay: %s (%s)' % (action, path), flush=True)
+PY
+}
+
+apply_control_vector() {
+    # Fact 10. One fact in four arguments, and it is all-or-nothing on purpose: a vector named with no
+    # layer range is a direction subtracted from whichever layers the engine feels like, and the range
+    # this box serves (4-44) is where the fitted direction lives.
+    case "$CONTROL_VECTOR" in
+        off)
+            if [ -f "$cfg" ]; then
+                edit_cvec drop
+            fi
+            return 0
+            ;;
+        '')
+            return 0
+            ;;
+    esac
+    if [ ! -f "$CONTROL_VECTOR" ]; then
+        echo "strata overlay: CONTROL_VECTOR=$CONTROL_VECTOR is not a file this container can read." >&2
+        echo "  Refusing rather than booting without it: a profile that names a direction and serves" >&2
+        echo "  without it is a configuration whose measurements are not its own, and the absence is" >&2
+        echo "  invisible in every log the engine writes." >&2
+        return 1
+    fi
+    if [ -z "$CONTROL_VECTOR_SCALE" ]; then
+        # 1.0 is the strength this box has served with since 2026-10-15, and the fitted length of the
+        # vector is already that scale's unit -- so the default is the number, not an assumption about
+        # a strength somebody meant to state.
+        CONTROL_VECTOR_SCALE=1.0
+    fi
+    if ! positive_float CONTROL_VECTOR_SCALE "$CONTROL_VECTOR_SCALE"; then
+        echo "strata overlay: CONTROL_VECTOR_SCALE=$CONTROL_VECTOR_SCALE is not a positive number. The" >&2
+        echo "  engine parses it as a float on the same argv entry as the path, so a bad one is a boot" >&2
+        echo "  that does not happen." >&2
+        return 1
+    fi
+    case "$CONTROL_VECTOR_LAYERS" in
+        *:*:*)
+            echo "strata overlay: CONTROL_VECTOR_LAYERS=$CONTROL_VECTOR_LAYERS is not \"low:high\"." >&2
+            return 1
+            ;;
+        *:*)
+            low="${CONTROL_VECTOR_LAYERS%%:*}" high="${CONTROL_VECTOR_LAYERS##*:}"
+            ;;
+        *)
+            low='' high=''
+            ;;
+    esac
+    if ! digits "$low" || ! digits "$high" || [ "$low" -gt "$high" ]; then
+        echo "strata overlay: CONTROL_VECTOR_LAYERS=$CONTROL_VECTOR_LAYERS is not two non-negative" >&2
+        echo "  integers with the first no higher than the second. The range is which layers the" >&2
+        echo "  direction is subtracted from; it is stated, not assumed, exactly like --yarn-orig-ctx." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and a control vector has to be written into it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write the control vector into" >&2
+            return 1
+        fi
+    fi
+    edit_cvec set "$CONTROL_VECTOR:$CONTROL_VECTOR_SCALE" "$low" "$high"
+}
+
+apply_engine_log() {
+    # Fact 11. A top-level key, not an argv entry: the engine reads `log` from the run config, which is
+    # how the workspace has pointed its log at /data since 2026-10-12. Written here so the path is a
+    # profile statement and not a memory held by a directory.
+    if [ "$STRATA_LOG" = off ]; then
+        if [ -f "$cfg" ]; then
+            python3 - "$cfg" <<'PY'
+import json, os, sys
+
+path = sys.argv[1]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+if 'log' not in cfg:
+    print('strata overlay: no log key to remove; the engine writes where it writes', flush=True)
+else:
+    value = cfg.pop('log')
+    tmp = path + '.log.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        json.dump(cfg, handle, indent=1)
+        handle.write('\n')
+    os.replace(tmp, path)
+    print('strata overlay: removed log=%s the profile does not state; the engine keeps its own log'
+          ' location (%s)' % (json.dumps(value), path), flush=True)
+PY
+        fi
+        return 0
+    fi
+    if [ -z "$STRATA_LOG" ]; then
+        return 0
+    fi
+    case "$STRATA_LOG" in
+        /*) ;;
+        *)
+            echo "strata overlay: STRATA_LOG=$STRATA_LOG is not an absolute path, and a relative one is" >&2
+            echo "  written relative to whatever the engine's working directory happens to be -- which" >&2
+            echo "  is how an instrument ends up somewhere nobody looks." >&2
+            return 1
+            ;;
+    esac
+    if [ ! -d "$(dirname "$STRATA_LOG")" ]; then
+        echo "strata overlay: STRATA_LOG=$STRATA_LOG has no directory to write it in. Every instrument" >&2
+        echo "  this house reads (expert-cache hit rate, resident RAM, the slots the boot sized) comes" >&2
+        echo "  out of that file, so a path that cannot be opened is worth a refused boot." >&2
+        return 1
+    fi
+    if [ ! -f "$cfg" ]; then
+        run_setup_pass "$cfg does not exist and the engine log path has to be written into it"
+        if [ ! -f "$cfg" ]; then
+            echo "strata overlay: the setup pass left no $cfg to write the engine log path into" >&2
+            return 1
+        fi
+    fi
+    python3 - "$cfg" "$STRATA_LOG" <<'PY'
+import json, os, sys
+
+path, want = sys.argv[1], sys.argv[2]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+have = cfg.get('log')
+if have == want:
+    print('strata overlay: engine log already %s' % want, flush=True)
+    sys.exit(0)
+if have is not None:
+    print('strata overlay: replacing log=%s the profile does not state' % json.dumps(have), flush=True)
+cfg['log'] = want
+tmp = path + '.engine-log.tmp'
+with open(tmp, 'w', encoding='utf-8') as handle:
+    json.dump(cfg, handle, indent=1)
+    handle.write('\n')
+os.replace(tmp, path)
+print('strata overlay: engine log %s (%s)' % (want, path), flush=True)
+PY
+}
+
 apply_max_context
 apply_conversation_cache
 apply_ple_table
 apply_rope_scaling
+apply_vram_reserve
+apply_control_vector
+apply_engine_log
 
 exec ./docker-entrypoint.upstream.sh "$@"

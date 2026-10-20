@@ -623,7 +623,9 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         # from the environment: only what a test states below is in force.
         for key in ('VISION_DEVICE', 'SAMPLING', 'CONTEXT', 'PLE_GGUF', 'CONVERSATION_CACHE_MIB',
                     'CONVERSATION_CACHE_MIN_FREE_MIB', 'CONVERSATION_CACHE_SLOTS',
-                    'CONVERSATION_CACHE_MIN_TOKENS', 'ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX'):
+                    'CONVERSATION_CACHE_MIN_TOKENS', 'ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX',
+                    'VRAM_RESERVE_MIB', 'CONTROL_VECTOR', 'CONTROL_VECTOR_SCALE',
+                    'CONTROL_VECTOR_LAYERS', 'STRATA_LOG'):
             env.pop(key, None)
         if extra:
             env.update(extra)
@@ -1069,6 +1071,115 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.assertEqual(cfg['args'][cfg['args'].index('--rope-scaling') + 1], 'yarn')
         self.assertEqual(len(self.setup_calls()), 1)
         self.assertIn('upstream --serve', run.stdout)
+
+    def test_the_three_hand_edits_are_written_when_a_profile_states_them(self):
+        # The reserve, the direction and the log path reached this container by somebody editing a
+        # file inside the workspace (docs/deployment.md records the first two as undeclared), which is
+        # fine until the day the workspace is reinstalled and the setting is gone with no profile
+        # mentioning it ever existed. Stated in the profile, they land in the same run config the
+        # engine reads, through the same ceremony as every other fact here.
+        vector = self.workspace / 'refusal-direction-r.gguf'
+        vector.parent.mkdir(parents=True, exist_ok=True)
+        vector.write_text('gguf')
+        self.given({'model': 'UD-IQ4_XS', 'vision': {'cuda_device': 4},
+            'args': ['--serve', '--model', '/weights/shard-1.gguf', '--max-context', '262144']})
+        run = self.start(extra={'VRAM_RESERVE_MIB': '512', 'CONTROL_VECTOR': str(vector),
+            'CONTROL_VECTOR_LAYERS': '4:44', 'STRATA_LOG': str(self.workspace / 'engine.log')})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args[args.index('--vram-reserve-mib') + 1], '512')
+        self.assertEqual(args[args.index('--control-vector-scaled') + 1], '%s:1.0' % vector)
+        self.assertEqual(args[args.index('--control-vector-layer-range') + 1:args.index(
+            '--control-vector-layer-range') + 3], ['4', '44'])
+        self.assertEqual(args[args.index('--cvec-mode') + 1], 'project')
+        self.assertEqual(args[args.index('--cvec-dir') + 1], 'per-layer')
+        # The log is a key of its own, not an argument: that is how the workspace has carried it.
+        self.assertEqual(json.loads(self.config.read_text())['log'], str(self.workspace / 'engine.log'))
+        self.assertNotIn('--log', args)
+        self.assertIn('upstream --serve', run.stdout)
+        # And on the next boot nothing moves, because every one of these writes only on change.
+        again = self.start(extra={'VRAM_RESERVE_MIB': '512', 'CONTROL_VECTOR': str(vector),
+            'CONTROL_VECTOR_LAYERS': '4:44', 'STRATA_LOG': str(self.workspace / 'engine.log')})
+        self.assertIn('already in the args list', again.stdout)
+        self.assertIn('engine log already', again.stdout)
+
+    def test_a_stated_nothing_leaves_the_workspace_exactly_as_it_found_it(self):
+        # This is the test that makes rebuilding the image safe for the configuration in service: it
+        # states none of these three, and its workspace carries all three as hand edits. The new entry
+        # point has to leave every one of them alone, or shipping facts 9-11 is itself a change to
+        # what is serving -- and it would be a change with no drain and no receipt.
+        self.given({'model': 'UD-IQ4_XS', 'vision': {'cuda_device': 4}, 'log': '/data/strata-engine.log',
+            'args': ['--serve', '--max-context', '262144', '--vram-reserve-mib', '2048',
+                     '--control-vector-scaled', '/data/refusal-direction-r.gguf:1.0',
+                     '--control-vector-layer-range', '4', '44', '--cvec-mode', 'project',
+                     '--cvec-dir', 'per-layer']})
+        before = json.loads(self.config.read_text())
+        self.start()
+        self.assertEqual(json.loads(self.config.read_text()), before)
+
+    def test_a_reserve_of_zero_is_a_value_and_off_is_the_absence(self):
+        self.given({'vision': {'cuda_device': 4}, 'args': ['--serve', '--vram-reserve-mib', '2048']})
+        self.start(extra={'VRAM_RESERVE_MIB': '0'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args[args.index('--vram-reserve-mib') + 1], '0')
+        self.start(extra={'VRAM_RESERVE_MIB': 'off'})
+        self.assertNotIn('--vram-reserve-mib', json.loads(self.config.read_text())['args'])
+
+    def test_a_reserve_the_engine_cannot_parse_does_not_boot(self):
+        self.given({'vision': {'cuda_device': 4}, 'args': ['--serve']})
+        self.start(extra={'VRAM_RESERVE_MIB': 'two-gig'}, expect_fail=True)
+
+    def test_moving_a_vector_between_layers_leaves_no_second_number_behind(self):
+        # The reason the control vector is not written through edit_args. Its layer range is the only
+        # two-value flag in this overlay, and a strip that walks one value would leave the high layer
+        # sitting in the argv as an orphan, which the engine reads as the next flag's value: a control
+        # vector applied to layers 45 and 4 with mode set to "44" is not a crash, it is a quiet lie.
+        vector = self.workspace / 'v.gguf'
+        vector.parent.mkdir(parents=True, exist_ok=True)
+        vector.write_text('gguf')
+        self.given({'vision': {'cuda_device': 4}, 'args': ['--serve', '--control-vector-scaled',
+            '%s:1.0' % vector, '--control-vector-layer-range', '4', '44', '--cvec-mode', 'project',
+            '--cvec-dir', 'per-layer', '--max-context', '262144']})
+        self.start(extra={'CONTROL_VECTOR': str(vector), 'CONTROL_VECTOR_LAYERS': '5:45'})
+        args = json.loads(self.config.read_text())['args']
+        self.assertEqual(args.count('44'), 0)
+        self.assertEqual(args[args.index('--control-vector-layer-range') + 1:args.index(
+            '--control-vector-layer-range') + 3], ['5', '45'])
+        # Drop it, and the whole block goes: no flag, and no orphan.
+        self.start(extra={'CONTROL_VECTOR': 'off'})
+        args = json.loads(self.config.read_text())['args']
+        for flag in ('--control-vector-scaled', '--control-vector-layer-range', '--cvec-mode',
+                     '--cvec-dir'):
+            self.assertNotIn(flag, args)
+        self.assertEqual(args, ['--serve', '--max-context', '262144'])
+
+    def test_a_vector_that_is_not_a_file_and_layers_that_are_not_a_range_refuse_the_boot(self):
+        self.given({'vision': {'cuda_device': 4}, 'args': ['--serve']})
+        missing = self.workspace / 'nowhere.gguf'
+        self.start(extra={'CONTROL_VECTOR': str(missing), 'CONTROL_VECTOR_LAYERS': '4:44'},
+            expect_fail=True)
+        self.start(extra={'CONTROL_VECTOR': str(missing), 'CONTROL_VECTOR_LAYERS': ''}, expect_fail=True)
+        missing.parent.mkdir(parents=True, exist_ok=True)
+        missing.write_text('gguf')
+        # Which layers is stated, not assumed: the range is where the fitted direction lives.
+        self.start(extra={'CONTROL_VECTOR': str(missing)}, expect_fail=True)
+        for layers in ('44:4', 'a:b', '4:4:4', ':4', '4:'):
+            with self.subTest(layers=layers):
+                self.start(extra={'CONTROL_VECTOR': str(missing), 'CONTROL_VECTOR_LAYERS': layers},
+                    expect_fail=True)
+        self.start(extra={'CONTROL_VECTOR': str(missing), 'CONTROL_VECTOR_LAYERS': '4:44'})
+        self.assertIn('--cvec-mode', json.loads(self.config.read_text())['args'])
+
+    def test_the_log_path_is_an_absolute_path_in_a_directory_that_exists(self):
+        self.given({'vision': {'cuda_device': 4}, 'args': ['--serve']})
+        self.start(extra={'STRATA_LOG': 'engine.log'}, expect_fail=True)
+        self.start(extra={'STRATA_LOG': str(self.workspace / 'missing' / 'engine.log')},
+            expect_fail=True)
+        # The path this house serves with: an existing directory, a file that is not there yet.
+        self.start(extra={'STRATA_LOG': str(self.workspace / 'strata-engine.log')})
+        self.assertEqual(json.loads(self.config.read_text())['log'],
+            str(self.workspace / 'strata-engine.log'))
+        self.start(extra={'STRATA_LOG': 'off'})
+        self.assertNotIn('log', json.loads(self.config.read_text()))
 
     def test_the_image_installs_this_entry_point_over_the_upstream_one(self):
         dockerfile = (fixture.ROOT / 'runtime/overlay/Dockerfile').read_text()

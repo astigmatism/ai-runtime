@@ -924,8 +924,21 @@ class EnvironmentEngineTests(unittest.TestCase):
         # same upstream half, built from /tmp/overlay-rope with the canonical recipe; the image before
         # it is kept as local/strata:296b59d2f73c-vision-pre-rope, which is also what a rollback of
         # this pin boots.
+        # And again on 2026-10-20 for facts 9-11: the entry point, now
+        # 8dfd5dd2680b53c7526987c9d5536c2cca637310862a988404d7b58cc1846124, writes the per-card VRAM
+        # reserve, the control vector with its layer range, and the engine's durable log path -- the
+        # three settings this box had been carrying as hand edits inside the workspace. Built from
+        # ~/tmp/overlay-build-20261020 on the same base and the same upstream half (receipt
+        # ops/reports/20261020-strata-vision/); the image before it is kept as
+        # local/strata:296b59d2f73c-vision-pre-cvec, which is also what a rollback of this pin boots.
+        # Note what a pin change is: image_id is inside the bundle, so this moved the config_sha256 of
+        # the three configurations that run this image and of none that does not -- tests/fixtures/
+        # active-bundles.json is where that shows up, and the container in service keeps running the
+        # image it was made from until a switch moves it. BuildKit attaches a per-build attestation,
+        # so this id is this box's build of that entry point and not a reproducible digest: the entry
+        # point's own sha256, verified inside the image, is what identifies the content.
         self.assertEqual(engine['image_id'],
-                         'sha256:406ed64fb9bbc82e45a28f807790852ae0328c8bd0ddf4c5c607bcc546dce924')
+                         'sha256:79fc1949f635359f4428b174b4fbc4ed5f5ea0077591a1e7067a8dc1cdcefc62')
         self.assertEqual(engine['repository'], 'https://github.com/Niko1221/Strata')
         self.assertEqual(engine['cuda_architectures'], ['86', '89'])
         self.assertEqual(engine['interface'], 'environment')
