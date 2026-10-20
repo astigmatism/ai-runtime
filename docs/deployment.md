@@ -586,6 +586,52 @@ Both arms are run, whichever way the probe reads: two cards, then the 3-bit pack
 A probe that looks fine and a quant that then moves the coverage line are both results, and the one
 outcome that teaches nothing is a quant skipped because the probe "obviously" had to be fine.
 
+### The 3-bit arm: `flash-next-strata-two-card-iq3-s`
+
+One variable from the probe: the pack. ISTA-DASLab's GSQ-RCO `IQ3_S` at revision
+`ed59f92082b1e93c0e96d60a8b11aab089b52f09` — the same revision this box already mounts this model's
+encoder projector from, so the arm adds two files and no new source:
+
+| Shard | Bytes | sha256 |
+| --- | --- | --- |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` | 54,817,524,224 | `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` | 28,800,138,432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+
+Those two hashes are Hugging Face's own LFS oids, read from
+`https://huggingface.co/api/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/main/IQ3_S`, so what
+the fetch verifies against is what the publisher published and not a transcription. 83,617,662,656 bytes
+total — 77.9 GiB, which is also setup.py's own `download_gb: 83.6` for the tier, arriving on a host with
+496 GB free at 45 % used, so it lands at about 50 %.
+
+The pack reaches the engine as two words, not a path: `--quant IQ3_S` becomes `MODEL=IQ3_S` and
+`--family qwen` becomes `FAMILY=qwen`, and the entry point assembles the filenames from the family table
+with `GGUF_DIR=/weights`. The profile's `--model` path is the primary shard, and it reaches the launch
+only as a mount and as `catalog.model_path` — which is why the artifact list, not the argument, is what
+has to be right.
+
+`test_the_two_card_quant_arm_is_the_probe_with_its_pack_swapped` is the guarantee: the two arms' rendered
+launches are compared and may differ only in the pack they name, the shards they mount, the workspace
+each owns, and the contract keys that echo a pack (`model`, `default_model`, `model_path`,
+`quantization`, `revision`, the capability name). The cards, the reserve, the 32 GiB budget, the window,
+the sampling preset, the parked conversations, the recovery switch, the speculation, the control vector
+and the night-side resident are held identical by that test rather than by the fact that both profiles
+were generated from one another.
+
+**What the arm trades, upstream's own numbers:** against Q8_0 over 4,995 teacher-forced positions,
+`UD-IQ4_XS` is 88.91 % same-top-token at KL 0.101 and `IQ3_S` is 87.69 % at 0.144 — 10.7 GB less weight
+for 1.2 points of agreement. And `setup.py` prices `IQ3_S` at `ram_gb: 62` against `UD-IQ4_XS`'s 48, with
+an arena of 50.3 against 59.5, describing it as needing "a 64 GB PC with little else running". The
+direction of that RAM figure is the opposite of what a smaller pack suggests, and this is the host where
+two engines are resident at once: 123.2 GiB total, 61.8 GiB MemAvailable when this was written. MemAvailable
+under 8 GiB and the arm goes back, same as every breaker here.
+
+**The abort line, agreed before the run:** if the 3-bit boot still reports **94.0 % or more** of the
+routed mass with a cached-expert count less than **15 % below** the probe's, the coverage argument this
+arm exists to test has not been made, and the 78 GiB is released rather than kept as an experiment nobody
+finished. Both readings come from the same boot lines described above, and both arms are run whichever way
+the probe reads: a probe that looks fine and a quant that then moves the coverage line are both results,
+and the one outcome that teaches nothing is a quant skipped because the probe "obviously" had to be fine.
+
 ## Speculative decoding experiments
 
 

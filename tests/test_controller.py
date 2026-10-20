@@ -319,7 +319,8 @@ class ControllerTests(unittest.TestCase):
              'flash-next-strata-solo-thinking-recovery-cache-yarn'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
             'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
-            'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)'])
+            'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)',
+            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one
@@ -333,7 +334,7 @@ class ControllerTests(unittest.TestCase):
         # the first configuration whose display name says something about the hardware. Two rows both
         # reading "Flash-Next (256K)" would be a page where the operator's choice is a coin flip.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144, 524288, 262144])
+            [163840, 163840, 262144, 262144, 524288, 262144, 262144])
         # The Flash-Next configurations, named by prefix rather than by a trailing slice: what tells an
         # operator which of them is which is the variant label, and it also says what each one turns
         # on, because that is the only choice left to make here.
@@ -342,7 +343,8 @@ class ControllerTests(unittest.TestCase):
             ['card sampling + call recovery',
              'card sampling + call recovery + parked conversations',
              'card sampling + call recovery + parked conversations + YaRN 2.0 window',
-             'two cards, 512 MiB a card reserved'])
+             'two cards, 512 MiB a card reserved',
+             'two cards, the 3.5-bit pack'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)

@@ -317,6 +317,7 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery-cache-yarn': 'strata-vision-296b59d2f73c',
             'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-two-card-iq3-s': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -399,12 +400,13 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
             'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
-            'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs'))
+            'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
+            'flash-next-strata-two-card-iq3-s'))
         # Paired is a statement about residents and GPUs -- one text pair plus the Everyday resident on
         # the other -- and not about which engine the coding side runs, which is why a Strata
         # configuration joined this tuple on 2026-10-20 without either 27B pair changing.
         self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-            'flash-next-strata-two-card-iq4-xs'))
+            'flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
         self.assertEqual([x['profile'] for x in registry['always_included']], list(EVERYDAY_PROFILES))
@@ -1040,8 +1042,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 4, 'the environment-interface configurations are the '
-            'call-recovery, conversation-cache and rope-rung ones plus the two-card probe; the greedy '
+        self.assertEqual(len(environment), 5, 'the environment-interface configurations are the '
+            'call-recovery, conversation-cache and rope-rung ones plus the two two-card arms; the greedy '
             'preset and the route-tail skip left with their configurations on 2026-10-18, and their '
             'measurements are in docs/deployment.md')
         for name in environment:
@@ -1106,7 +1108,8 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
             self.assertEqual(sorted(names), sorted(declared),
                 '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
                 'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
-        self.assertEqual(sorted(seen), ['strata-pair-iq4xs/data', 'strata-trial/data'])
+        self.assertEqual(sorted(seen), ['strata-pair-iq3s/data', 'strata-pair-iq4xs/data',
+            'strata-trial/data'])
 
 
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
@@ -1184,7 +1187,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         stated = {'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
             'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on'),
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on'),
-            'flash-next-strata-two-card-iq4-xs': ('thinking', 'on')}
+            'flash-next-strata-two-card-iq4-xs': ('thinking', 'on'),
+            'flash-next-strata-two-card-iq3-s': ('thinking', 'on')}
         # Every configuration this engine serves, derived rather than remembered: the two-card probe is
         # a different topology, and a topology is not an exemption from stating a switch the run config
         # will otherwise inherit from whoever booted into this workspace last.
@@ -1205,7 +1209,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
-            'flash-next-strata-two-card-iq4-xs': ('16384', 'off')}
+            'flash-next-strata-two-card-iq4-xs': ('16384', 'off'),
+            'flash-next-strata-two-card-iq3-s': ('16384', 'off')}
         self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):
@@ -1302,6 +1307,64 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         self.assertEqual(p['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
         self.assertEqual(p['manifest']['services'][0]['parallel_slots'], 1)
         self.assertNotIn('exclusive', read(ROOT / 'config/profiles' / (probe + '.json')))
+
+    def test_the_two_card_quant_arm_is_the_probe_with_its_pack_swapped(self):
+        """The 3-bit arm of the trial is one artifact set deep from the two-card probe.
+
+        `flash-next-strata-two-card-iq3-s` exists to answer a question about a quantization, so the only
+        thing allowed to differ between it and `flash-next-strata-two-card-iq4-xs` is the pack: two
+        GSQ-RCO shards for the three UD-IQ4_XS ones, the quant and family the engine is told, and the
+        model id and workspace that follow from a different pack. Everything the first arm was built to
+        hold still -- the cards, the reserve, the resident budget, the window, the sampling preset, the
+        parked conversations, the recovery switch, the speculation, the control vector, the night-side
+        resident -- has to be held by this one too, or the two arms measure different things and neither
+        answers the question. This is what makes "we only changed the quant" a fact and not an intention.
+        """
+        host = vision_host()
+        iq4 = render(ROOT / 'config', host, 'flash-next-strata-two-card-iq4-xs')
+        iq3 = render(ROOT / 'config', host, 'flash-next-strata-two-card-iq3-s')
+        a, b = iq4['compose']['services']['coding'], iq3['compose']['services']['coding']
+        # What a pack is, as far as the launch is concerned: which quantization and family the engine is
+        # told -- and note that the profile's own --model path never reaches the engine at all, because
+        # the environment interface carries the quant name and GGUF_DIR and the engine assembles the
+        # filenames from its family table.
+        self.assertEqual((b['environment']['MODEL'], b['environment']['FAMILY']), ('IQ3_S', 'qwen'))
+        self.assertEqual((a['environment']['MODEL'], a['environment']['FAMILY']), ('UD-IQ4_XS', 'unsloth'))
+        pack = ('MODEL', 'FAMILY')
+        self.assertEqual({k: v for k, v in b['environment'].items() if k not in pack},
+            {k: v for k, v in a['environment'].items() if k not in pack},
+            'the 3-bit arm differs from the 4-bit arm in the pack it names; anything else in the '
+            'environment is a tuning decision the two arms no longer share')
+        weights = lambda service: sorted(v['target'] for v in service['volumes'] if v['target'] != '/data')
+        self.assertEqual([v for v in weights(b) if 'IQ3_S' not in v],
+            [v for v in weights(a) if 'UD-IQ4_XS' not in v],
+            'the encoder projector and the control vector are mounted by both arms: the shards are the swap')
+        self.assertEqual([v['read_only'] for v in b['volumes'] if v['target'] != '/data'],
+            [True] * (len(b['volumes']) - 1))
+        home = lambda service: [v for v in service['volumes'] if v['target'] == '/data'][0]
+        self.assertTrue(home(b)['source'].endswith('strata-pair-iq3s/data'))
+        self.assertNotEqual(home(b)['source'], home(a)['source'])
+        # The published contract: what the model *is* moves with the pack, and what it *can do* does not.
+        named = ('configuration', 'default_model', 'deployment_warnings', 'display_name', 'model',
+            'model_path', 'models', 'quantization', 'revision', 'capability_profile')
+        # The last of those is worth naming twice over: model_path is the primary shard's host path, so
+        # a pack change moves it, and it is also the one place the profile's own --model value surfaces
+        # in the contract at all.
+        self.assertEqual({k: v for k, v in iq3['catalog'].items() if k not in named},
+            {k: v for k, v in iq4['catalog'].items() if k not in named})
+        m4, m3 = iq4['catalog']['models'][0], iq3['catalog']['models'][0]
+        self.assertNotEqual(m4['quantization'], m3['quantization'])
+        self.assertEqual(m3['model'], 'qwen3.8-flash-next-iq3_s')
+        for key in ('context_length', 'total_context_length', 'input_modalities', 'mtp'):
+            self.assertEqual(m3[key], m4[key], key)
+        self.assertEqual(m3['capability_profile']['name'], 'qwen3.8-flash-next-iq3-s-strata-256k')
+        self.assertEqual(m3['capability_profile']['speculative'], m4['capability_profile']['speculative'])
+        # And the night side is the same launch in both arms, so the two configurations differ to an
+        # operator by the pack they run and to the router by nothing else.
+        self.assertEqual(iq3['compose']['services']['everyday'], iq4['compose']['services']['everyday'])
+        self.assertEqual([m['context_length'] for m in iq3['catalog']['models']
+                          if 'nighttime' in m['aliases']], [98304])
+        self.assertEqual(iq3['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
 
     def test_a_value_outside_the_two_words_refuses_before_anything_renders(self):
         # The entry point writes a JSON boolean and the engine starts on nothing else, so the words

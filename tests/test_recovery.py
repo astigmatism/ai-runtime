@@ -104,6 +104,9 @@ class RecoveryTests(unittest.TestCase):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
         # The Strata resident adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all,
+        # and the two-card 3-bit arm adds ISTA-DASLab's GSQ-RCO IQ3_S: two shards, 83,617,662,656 bytes.
+        # Both quants are mounted by exactly one configuration each, which is the only reason both are
+        # inventory items at all; a pack no configuration runs is a disk problem, not an artifact.
         # and ISTA-DASLab's mmproj (907,543,008 bytes) since the encoder on the shared card has read
         # pictures for it, from 2026-10-16.
         # The XL trial's UD-Q4_K_XL -- four shards, 111,334,654,784 bytes, four rather than three, which
@@ -114,8 +117,8 @@ class RecoveryTests(unittest.TestCase):
         # -- and it goes with them on 2026-10-15. An artifact no configuration mounts is still verified
         # on every validation pass and still occupies the model root, so it belongs to the inventory
         # only while something can run it.
-        self.assertEqual(len(artifacts), 11)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 174592564384)
+        self.assertEqual(len(artifacts), 13)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 258210227040)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

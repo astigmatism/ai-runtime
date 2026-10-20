@@ -1,0 +1,164 @@
+{
+  "id": "flash-next-strata-two-card-iq3-s",
+  "role": "coding",
+  "display_name": "Qwen3.8 Flash-Next Two-Card IQ3_S",
+  "variant_label": "two cards, the 3.5-bit pack",
+  "engine": "strata-vision-296b59d2f73c",
+  "container_name": "qwen38-daytime",
+  "host_port": 18080,
+  "gpu_group": "daytime",
+  "context_tokens": 262144,
+  "retention": {
+    "image": "Shared: the same tag and the same pinned image id as every Strata configuration on this host, whose retention is stated on flash-next-strata-solo-thinking-recovery. Deleting this variant releases no image.",
+    "model": "Its own, and the reason this arm is a configuration rather than an edit: the two GSQ-RCO IQ3_S shards, 83,617,662,656 bytes, mounted beside the encoder projector and the control vector this house already holds. Releasing this variant releases the shards and nothing else, and they are released reference-aware -- docs/model-downloads.json is what says whether anything else still mounts them. A 78 GiB download that no configuration can run is not an artifact, it is a disk problem with a provenance.",
+    "workspace": "This variant's own, and the only thing it owns: strata-pair-iq4xs/data is written by the first boot out of nothing, and releasing it costs the engine draft layer it fetched and the calibration it ran, not the model. A trial whose workspace cannot be thrown away is a trial that quietly becomes a resident.",
+    "reports": "The trial this variant exists to run is recorded in ops/reports/ beside the boot logs it reads; nothing here is released with it."
+  },
+  "argument_order": [
+    "--alias",
+    "--family",
+    "--quant",
+    "--model",
+    "--kv",
+    "--kv-streaming",
+    "--sampling",
+    "--tool-call-recovery",
+    "--conversation-cache-mib",
+    "--conversation-cache-min-free-mib",
+    "--conversation-cache-slots",
+    "--conversation-cache-min-tokens",
+    "--ple-gguf",
+    "--vision",
+    "--gpus",
+    "--layer-split",
+    "--low-ram",
+    "--host",
+    "--port"
+  ],
+  "arguments": {
+    "--alias": "qwen3.8-flash-next-iq3_s",
+    "--family": "qwen",
+    "--quant": "IQ3_S",
+    "--model": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--kv": "k8v4",
+    "--kv-streaming": "auto",
+    "--sampling": "thinking",
+    "--tool-call-recovery": "on",
+    "--conversation-cache-mib": "16384",
+    "--conversation-cache-min-free-mib": "12288",
+    "--ple-gguf": "off",
+    "--vision": "no",
+    "--gpus": "0,1",
+    "--layer-split": "auto",
+    "--low-ram": "off",
+    "--host": "0.0.0.0",
+    "--port": "8080",
+    "--conversation-cache-slots": "2",
+    "--conversation-cache-min-tokens": "16384"
+  },
+  "workspace": {
+    "path": "strata-pair-iq3s/data",
+    "target": "/data"
+  },
+  "artifacts": [
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+      "bytes": 54817524224,
+      "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "target": "/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "bytes": 907543008,
+      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"
+    },
+    {
+      "path": "llm/host-provided/refusal-direction-r.gguf",
+      "target": "/weights/refusal-direction-r.gguf",
+      "bytes": 483520,
+      "sha256": "59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38"
+    }
+  ],
+  "container": {
+    "read_only": false,
+    "stop_grace_period": "180s",
+    "ulimits": {
+      "core": 0,
+      "memlock": -1
+    },
+    "tmpfs": [
+      "/tmp:rw,nosuid,size=2g"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0,1",
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata",
+      "RESIDENT_BUDGET_GIB": "32",
+      "VRAM_RESERVE_MIB": "512",
+      "CONTROL_VECTOR": "/weights/refusal-direction-r.gguf",
+      "CONTROL_VECTOR_LAYERS": "4:44",
+      "STRATA_LOG": "/data/strata-engine.log"
+    },
+    "networks": {
+      "router": {
+        "aliases": [
+          "strata-trial",
+          "qwen38-strata"
+        ]
+      }
+    },
+    "labels": {
+      "local-ai.profile": "primary",
+      "local-ai.role": "coding",
+      "local-ai.retention": "reference-aware: tag, model revision and workspace are released with the profile"
+    }
+  },
+  "catalog": {
+    "backend_url": "http://qwen38-daytime:8080",
+    "backend_kind": "strata",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "quantization": "ISTA-DASLab GSQ-RCO IQ3_S (3.5-bit i-quant, 78 GiB in two shards)",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "mmproj_offload": "gpu",
+    "mmproj_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "mtp": {
+      "enabled": true,
+      "type": "strata-mtp-rt",
+      "detail": "the engine's own MTP draft layer, installed with its state on first start; automatic drafting is left on"
+    },
+    "capability_profile": {
+      "name": "qwen3.8-flash-next-iq3-s-strata-256k",
+      "text": true,
+      "streaming": true,
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "speculative": true,
+      "prompt_cache_volatile": true,
+      "prompt_cache_persistence": false,
+      "nsfw": false
+    },
+    "deployment_warnings": [
+      "One variable from flash-next-strata-two-card-iq4-xs: the pack. Same two cards, same 512 MiB a card reserved, same 32 GiB resident budget, same 262,144 window, same sampling preset, parked conversations, recovery, speculation and control vector. ISTA-DASLab's GSQ-RCO IQ3_S at revision ed59f920 -- the same revision this box already mounts this model's encoder projector from -- in two shards totalling 83,617,662,656 bytes against the resident's three shards of 93,682,584,224: 10.7 GB less weight for 1.2 points of agreement. That is the trade, and it is written as a configuration so the run order is a portal act and not a memory.",
+      "This box refused this quant once already, and this arm exists because the refusal was reasoned from a number nobody had measured on two cards. The record (measured on 2026-10-19 and 2026-10-20 in this box's own engine log: hit rate 98.84%, zero file reads, 96.5% of the routed mass already resident) plus upstream's breakdown, which puts the routed experts at 4.2 ms of a 34.3 ms decode window -- so a smaller pack is a pure accuracy purchase of a non-bottleneck (docs/deployment.md, the 3-bit item). 96.5% is a four-card figure. If two cards cost coverage, the quant becomes a coverage purchase and the argument flips; if they do not, this arm should be declined again on the evidence it generates and not on the older evidence, which is the only reason to spend the download.",
+      "What upstream trades for the 10.7 GB: measured against Q8_0 over 4,995 teacher-forced positions, UD-IQ4_XS is 88.91% same-top-token at KL 0.101 and IQ3_S is 87.69% at 0.144. Upstream's own description of IQ3_S is '3.5-bit i-quant, the best quality (matches the full model), the slowest', with an arena of 50.3 GB against UD-IQ4_XS's 59.5. The instrument here is scripts/strata_replay.py, whose fixed corpus is hashed answer by answer: bench-pooled decode medians carry a plus-minus 6 % bootstrap interval and every lever in this trial trades 4-15 %, so the replay's equality check is the measurement and tok/s is the smoke. Decode is judged against this box's own tail -- p10 82.3 tok/s at 131K and above over 171 requests of the configuration in service -- not against the trial table's 110.",
+      "The risk is RAM, and it is measurable before the switch. setup.py prices this quant at ram_gb 62 against UD-IQ4_XS's 48, and says outright that it 'needs a 64 GB PC with little else running'. This host has 123.2 GiB total and 61.8 GiB MemAvailable when this was written, and this configuration runs two engines at once -- the resident's 262,144 window costs about 3.5 GiB of k8v4 at full width, and the Everyday resident is loaded beside it. The breaker is MemAvailable under 8 GiB, or under 150 MiB free on any card: then this goes back to the configuration that was serving instead of being debugged in service. The line to read is the engine's own 'resident RAM:', which the four-card configuration reports as 33.48 GiB.",
+      "It brings its own 78 GiB and its own workspace. Provisioning runs before the drain, so the pack is staged and checksum-verified while the resident is still answering -- which is also the only moment the download can fail loudly, since the two shards are verified against Hugging Face's own LFS oids (4c1eb2ceb491... and 316b46f3a2db...) before anything is drained. Its workspace, strata-pair-iq3s/data, is provisioned from nothing: the resident budget is read by the setup pass and not by serve, so an existing calibration would answer a different question.",
+      "Coverage is still the reading that decides it, and the boot prints it: 'the caches hold N of 24576 profiled pairs (~x % of the routed mass)' beside the placement search's 'predicted N ms per decode window'. The abort line agreed before the run is a mass figure of 94.0 % or better with the cached-expert count less than 15 % below the probe's: two packs that both hold the routed mass within 2.5 points of each other have not bought the coverage this arm exists to buy, and the 78 GiB goes back.",
+      "Two cards straddle both PEX8747 uplinks (the RTX 3090 under root 64:00.0, the RTX 4080 SUPER under 16:00.0) and the Everyday resident's pair straddles the same two, so cache misses compete with another engine's reads and pcie_frac 0.22 -- a single-stream probe -- cannot see it. Power is unassessed: 1,205 W of card limits, no wall meter. Both are recorded here because a smaller pack changes the traffic over exactly those links."
+    ],
+    "aliases": [
+      "local-active",
+      "daytime"
+    ]
+  }
+}
