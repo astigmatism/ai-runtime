@@ -34,7 +34,7 @@ from pathlib import Path
 # nothing serving.
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
     'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
-    'flash-next-strata-solo-thinking-recovery-cache-yarn')
+    'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs')
 # Reduced from five Strata configurations to two on 2026-10-18, after both new levers had been
 # measured on this box: the greedy step and the card-sampling step are settled policy rather than a
 # live question, and the route-tail skip came back a wash on the only axis this machine can read.

@@ -319,7 +319,7 @@ class ControllerTests(unittest.TestCase):
              'flash-next-strata-solo-thinking-recovery-cache-yarn'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
             'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
-            'Qwen3.8 Flash-Next (512K)'])
+            'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one
@@ -327,16 +327,22 @@ class ControllerTests(unittest.TestCase):
         # would make a switch between them a resize. The 512K configuration states that resize as a
         # fact of its own -- window and ring are its one variable from its sibling -- so the label
         # says 512K. The pair keeps 160K, which is why all five numbers are named.
+        #
+        # The sixth row is where that naming earns its keep: the two-card probe is a 256K configuration
+        # too, and it is the only one of the three whose cards are the reason to select it, so it is
+        # the first configuration whose display name says something about the hardware. Two rows both
+        # reading "Flash-Next (256K)" would be a page where the operator's choice is a coin flip.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144, 524288])
-        # Three selectable configurations of the Flash-Next backend as of 2026-10-18: the model name
-        # is the same because it is the same model, so what tells the operator which is which is the
-        # variant label. It also says what each one turns on, because that is the only choice left
-        # to make here.
-        self.assertEqual([x.get('variant_label') for x in configs['selectable'][-3:]],
+            [163840, 163840, 262144, 262144, 524288, 262144])
+        # The Flash-Next configurations, named by prefix rather than by a trailing slice: what tells an
+        # operator which of them is which is the variant label, and it also says what each one turns
+        # on, because that is the only choice left to make here.
+        strata = [x for x in configs['selectable'] if x['profile'].startswith('flash-next')]
+        self.assertEqual([x.get('variant_label') for x in strata],
             ['card sampling + call recovery',
              'card sampling + call recovery + parked conversations',
-             'card sampling + call recovery + parked conversations + YaRN 2.0 window'])
+             'card sampling + call recovery + parked conversations + YaRN 2.0 window',
+             'two cards, 512 MiB a card reserved'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)

@@ -289,7 +289,7 @@ Sources, all of them the machine's own words: the engine's durable log `ai/strat
 - **The layout the engine chose** (boot lines): `layer split auto: K=5,26,37`, so CUDA0 (RTX 3080 Ti) runs layers 0–4, CUDA1 (the RTX 3090, 23.56 GiB) layers 5–25, CUDA2 layers 26–36 and CUDA3 layers 37–47 plus the head — **predicted 27.5 ms per decode window**, with "the caches hold 16571 of 24576 profiled pairs (**~96.5% of the routed mass**), best of 15180 placements". Expert cache `auto`: **16,420 resident experts, 37,877 MiB** across the four cards (1,895 / 7,563 / 3,812 / 3,150 slots).
 - **The storage hierarchy is not in the serving path, and the RAM budget is over-provisioned by design.** Setup asked for `--resident-budget-gib 55` (the pre-flight's "fits with 55 GiB of its experts in RAM, the rest read from the SSD"), and the engine allocated a **32.90 GiB** page-locked complement instead — because the GPU tier already holds everything but 18.44 GiB of experts. Across all 771 requests: **`0 blob reads from the file`**, and cumulative **expert cache hit rate 98.84% over 367,631,500 lookups** with 0.0% of routed experts read over PCIe. KV is `k8v4` with `--kv-resident 32768` and streaming on: **96.96% of 17.2 M block reads hit VRAM** in the longest sessions.
 - **PCIe is fine.** The probe reports 8.0 GB/s host→device and sets `pcie_frac 0.22` (default 0.55), which makes a cache miss cost ×2.51; `nvidia-smi` shows all four cards at **Gen3 x16**, so the probe is the measured single-stream direction and not a lane fault. Speculation is `--spec 4 --spec-min-p 0.5` on an 835 MiB draft layer, accepting 73–76% in production.
-- **What were hand edits now have a route, and this configuration still uses the hand edits.** `strata-unsloth-ud-iq4_xs.json` differs from its own `.bak-original` by `allowed_hosts`, the durable `log` path, and **`--vram-reserve-mib 2048`**, and by the control-vector block added on 2026-10-15 (`--control-vector-scaled`, `--control-vector-layer-range 4 44`, `--cvec-mode project`, `--cvec-dir per-layer`). Since 2026-10-20 the entry point can write all of those from a profile's environment (overlay facts 9-11), but **this profile does not state them** — it is the configuration in service, and criterion for touching it is a drain it does not need. So they remain workspace edits here, surviving because nothing has reinstalled, and the reason a rebuilt image with three new facts in it is safe under this configuration is `test_a_stated_nothing_leaves_the_workspace_exactly_as_it_found_it`: an unstated fact leaves the file alone. See the reachability note below.
+- **What were hand edits now have a route, and this configuration still uses the hand edits.** `strata-unsloth-ud-iq4_xs.json` differs from its own `.bak-original` by `allowed_hosts`, the durable `log` path, and **`--vram-reserve-mib 2048`**, and by the control-vector block added on 2026-10-15 (`--control-vector-scaled`, `--control-vector-layer-range 4 44`, `--cvec-mode project`, `--cvec-dir per-layer`). Since 2026-10-20 the entry point can write all of those from a profile's environment (overlay facts 9-11), but **this profile does not state them** — it is the configuration in service, and criterion for touching it is a drain it does not need. So they remain workspace edits here, surviving because nothing has reinstalled, and `flash-next-strata-two-card-iq4-xs` is the configuration that does state them, because a trial is where a declared setting belongs and the reason a rebuilt image with three new facts in it is safe under this configuration is `test_a_stated_nothing_leaves_the_workspace_exactly_as_it_found_it`: an unstated fact leaves the file alone. See the reachability note below.
 
 **Decode is flat in context, which was the trial's whole question.** 620 requests that generated at least 120 tokens, bucketed by prompt size:
 
@@ -422,7 +422,7 @@ That is a 7× spread, and it is *not* a constant per-request cost — a fixed-co
 
 **Rejected before spending a drain on them, with the reason:** `q4_0` KV (+4% at 128K, perplexity +8–12% on long documents); 3-bit (above); `--batch 2` / `--batch-groups` (each conversation at ~55% speed, which breaks the floor outright); raising `--spec-min-p` (the house measured −16–24% decode for that change on llama.cpp, acceptance up and speed down); `--kv-resident` up (streaming already hits 97% at 129K, so the cells are not what is missing).
 
-**How these are reached is a real constraint, not a detail.** `STRATA_*` variables and the already-mapped ones go in the profile's `container.environment` and are rendered by existing code with no new mechanism. `--prefill` is mapped in neither direction, and `--pipeline-windows`, `--adapt-async` and `--expert-profile*` have **no environment variable in the entrypoint at all**: they exist only inside `ai/strata-trial/data/config/strata-unsloth-ud-iq4_xs.json`, which is the engine's own state, is what the entrypoint starts from on every fresh container, and is invisible to the controller except through the slot window it reports. Ten statements do have a route now: this house's own entry point (`runtime/overlay/strata-vision-entrypoint.sh`, whose header states each fact it carries) writes the encoder's card, the sampling preset, the tool-call recovery switch, the conversation-cache budget, the PLE table, the session window and the position ring into that file on every boot, from the profile's environment — and, since 2026-10-20, the same entry point writes the three settings that reached this box as workspace hand edits: the per-card VRAM reserve, the control vector with its layer range, and the durable engine log path. `tests/test_provision.py` runs the real script against a stub workspace for each of them. `REINSTALL=1` regenerates that file from the environment and discards the edits that have no such route; the ones the entry point writes it re-asserts, which is what "the profile is the authority and not the file" means in practice. **A tuned argument that earns its place has to end up declared in the profile — the same way `--vram-reserve-mib` should have been — or it is one reinstall away from silently gone.** Each of them is a drain to apply: the warm boot now measures **115.3 s** and provisioning 1.6 s against a 3,600 s readiness bound, so an experiment is cheap, and the agreed circuit breaker (under 8 GiB MemAvailable, or under 150 MiB free on any of the four cards) still means switching back rather than debugging. One thing the route does *not* do is re-tune: setup.py's stored calibration is keyed on a hardware key that includes the context, so a *future* setup pass over a widened workspace spends its 15–30 minutes again.
+**How these are reached is a real constraint, not a detail.** `STRATA_*` variables and the already-mapped ones go in the profile's `container.environment` and are rendered by existing code with no new mechanism. `--prefill` is mapped in neither direction, and `--pipeline-windows`, `--adapt-async` and `--expert-profile*` have **no environment variable in the entrypoint at all**: they exist only inside `ai/strata-trial/data/config/strata-unsloth-ud-iq4_xs.json`, which is the engine's own state, is what the entrypoint starts from on every fresh container, and is invisible to the controller except through the slot window it reports. Ten statements do have a route now: this house's own entry point (`runtime/overlay/strata-vision-entrypoint.sh`, whose header states each fact it carries) writes the encoder's card, the sampling preset, the tool-call recovery switch, the conversation-cache budget, the PLE table, the session window and the position ring into that file on every boot, from the profile's environment — and, since 2026-10-20, the same entry point writes the three settings that reached this box as workspace hand edits: the per-card VRAM reserve, the control vector with its layer range, and the durable engine log path. `flash-next-strata-two-card-iq4-xs` is the first profile to use those three: what this configuration still carries inside its workspace, the probe declares in source, which is the day "an unstated fact leaves the file alone" stopped being a nicety of the overlay and became the reason a rebuilt image is safe under a configuration nobody intended to restart. `tests/test_provision.py` runs the real script against a stub workspace for each of them. `REINSTALL=1` regenerates that file from the environment and discards the edits that have no such route; the ones the entry point writes it re-asserts, which is what "the profile is the authority and not the file" means in practice. **A tuned argument that earns its place has to end up declared in the profile — the same way `--vram-reserve-mib` should have been — or it is one reinstall away from silently gone.** Each of them is a drain to apply: the warm boot now measures **115.3 s** and provisioning 1.6 s against a 3,600 s readiness bound, so an experiment is cheap, and the agreed circuit breaker (under 8 GiB MemAvailable, or under 150 MiB free on any of the four cards) still means switching back rather than debugging. One thing the route does *not* do is re-tune: setup.py's stored calibration is keyed on a hardware key that includes the context, so a *future* setup pass over a widened workspace spends its 15–30 minutes again.
 
 **What is still unmeasured, and which instrument closes it.** Every number above is speed, and the trial has never been through Bench Studio — the 27B configurations each carry "a full Bench Studio coding session (2/2 passed)" while the trial carries a catalog warning that its output "has not been attested on this quant". Three instruments, at three prices, and they are not interchangeable:
 
@@ -496,6 +496,91 @@ The ladder ends where the contract ends. The question it leaves is whether the n
 - **The warnings say what is not yet known.** The bench battery and the vision path have not been run at this geometry; the conversation cache parked through the native ring and restored through the YaRN one is exactly the unmeasured interaction the ladder named, and the profile's own warning names where to look when a switch-back behaves oddly (`/metrics`, restores against re-reads). The demand that would make this the resident rather than the trial — turns above 256K — stood at 0 of 8,623 the evening it shipped; the trial is the owner asking the question the log cannot ask.
 
 Forensics of every measurement quoted above: `~/ops/reports/20261018-yarn-ab/`, and `scripts/strata_replay.py` / `scripts/strata_probe_factors.py` reproduce both probe shapes.
+
+## Two cards instead of four: the two-card probe (2026-10-20)
+
+`flash-next-strata-two-card-iq4-xs` runs the resident's own pack on the RTX 3090 and RTX 4080 SUPER and
+loads the Everyday resident on the other pair. It is a probe, not a second resident: it exists to answer
+one question that four cards have been hiding, and the way back is selecting the configuration that was
+serving, at the portal.
+
+**The question is coverage, not speed.** The four-card layout is described above: `the caches hold 16571
+of 24576 profiled pairs (~96.5% of the routed mass), best of 15180 placements`. A resident that can hold
+96.5 % of the routed mass has no memory-system pressure for a smaller pack to relieve, which is the
+argument on the record against `IQ3_S` ([What the trial measured](#what-the-trial-measured-in-its-first-day-of-real-traffic-2026-10-14),
+item 1). That argument is only valid while the coverage is real, and coverage is a function of the VRAM
+the engine is allowed to page experts into — which is a function of the cards. Nobody has measured the
+two-card side of that, and 96.6 GB of download is an expensive way to find out. So the probe changes the
+cards and nothing else, and reads the same boot line.
+
+**What it states.** `gpu_group: daytime` and no `exclusive`, so `--gpus 0,1` are the daytime pair and the
+encoder moves to `CUDA2` — the third visible device, wherever the cards happen to end, which is the
+placement change that let this configuration and the four-card one share one `host.json`
+([Shared vision GPU](shared-vision.md)). `RESIDENT_BUDGET_GIB` 44 rather than 55: the two cards hold 48
+GiB between them and the Everyday resident is loaded beside them for the first time on this box.
+`VRAM_RESERVE_MIB` 512 rather than the 2,048 this box has been carrying as a workspace hand edit, because
+the reserve is per card and the comparison is not: 2,048 MiB is 5.0 % of the four cards it was written
+for and **10.0 %** of this pair, and at the 2.31 MiB a cached expert measured on 2026-10-19 the 1,536 MiB
+a card it gives back is on the order of **1,330 cached experts** — more coverage than the whole quant
+step this probe is a prerequisite for. `CONTROL_VECTOR`/`CONTROL_VECTOR_LAYERS` carry the fitted
+direction that 256K decoding depends on here, `STRATA_LOG` puts the engine log on the workspace instead
+of in the container's stdout, and those three plus the reserve are the first instances of overlay facts
+9-11 used in a profile: what the configuration in service still carries as hand edits, this one declares
+in source ([the reachability note](#the-switch-prepares-the-trial-itself-and-what-the-measurements-still-do)).
+The vector itself is an artifact — `llm/host-provided/refusal-direction-r.gguf`, 483,520 bytes,
+`59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38`, staged outside the workspace so a
+checksum failure refuses the switch before anything is drained, and documented as the one
+locally-built file in the model inventory. Its own workspace is `strata-pair-iq4xs/data`, never shared
+with the resident's, so the probe can be re-provisioned without touching what is serving.
+
+**Nothing else differs, and that is a test.** `test_the_two_card_probe_carries_the_resident_tuning_and_moves_only_its_cards`
+compares the two rendered launches on a host with the shared encoder and refuses anything beyond the
+cards, the five settings named above, and the vector mount: the sampling preset that defines the
+greediness of a reply, the parked conversations and their floor, the recovery switch, the speculation,
+the KV placement, the 262,144 window, the pack, the revision string, the capability profile. The
+variables taken out are a named set rather than a discovered diff, so a tuning flag cannot escape the
+comparison by being reclassified as a card. `nighttime` answers from the Everyday resident at its own
+98,304 while `daytime` stays at 256,144 — the two session lengths the trial is run at, asserted off the
+published contract.
+
+**Running it.** `python3 -m runtime gate --profile flash-next-strata-two-card-iq4-xs` refuses before
+anything moves if the artifacts or the engine identity are wrong; `provision` builds the workspace while
+the resident is still serving, because provisioning happens before the drain; `apply` (or the portal, or
+`POST /api/profile-switch`) drains, starts, verifies, and publishes. The forward drain refuses rather
+than interrupting a generation, so an 800-second tail question holds the switch open rather than being
+cut — `Drain timed out; no active generation was stopped`. The first boot reads its own run config back:
+`expert cache auto`, the placement line, `resident RAM`, and the `0 blob reads from the file` line that
+says the shards were mapped and not re-read.
+
+**The readings that decide it, all of them from the engine's own log** (`/data/strata-engine.log` on the
+probe's workspace, which is why `STRATA_LOG` is declared):
+
+| Reading | Four-card, recorded | Two-card, what it has to show |
+| --- | --- | --- |
+| `the caches hold N of 24576 profiled pairs (~x % of the routed mass)` | 16,295 – 16,571 pairs, ~96.5 % | the whole point; `IQ3_S` is a coverage purchase only if two cards cost 15 % or more of that count |
+| `predicted N ms per decode window` | 27.5 ms | up, and how far is the decode story |
+| decode p10, requests at 131K and above | 82.3 tok/s (171 requests, median 95.3, median context 163,979) | the gate: at or above the box's own tail, not the trial table's 110 |
+| `resident RAM: N GiB` | 33.48 GiB | shared with the Everyday resident for the first time; MemAvailable is the breaker |
+| answer hash, `scripts/strata_replay.py` | the fixed corpus | unchanged. Bench-pooled decode medians carry a ±6 % interval and every lever here trades 4-15 %, so the replay is the measurement and the tok/s figure is the smoke |
+
+**Breakers, agreed before the run:** MemAvailable under 8 GiB, or under 150 MiB free on any card, and
+the probe goes back to the configuration that was serving rather than being debugged in service. The
+262,144 window costs RAM and not decode — about 3.5 GiB of k8v4 at full width — and 44 GiB is a ceiling
+the engine was asked not to exceed, not an allocation it makes, so the resident RAM line is read and not
+predicted.
+
+**Two things this box cannot see from inside the configuration.** Both text pairs straddle both PEX8747
+uplinks — the RTX 3090 under root `64:00.0`, the RTX 4080 SUPER under `16:00.0`, and the Everyday pair
+across the same two — so this is the first configuration whose expert cache misses compete with another
+engine's reads, and `pcie_frac 0.22` is a single-stream probe that structurally cannot see the
+contention. And power is unassessed rather than safe: 1,205 W of card limits with no wall meter. The
+RTX 3080 that carries the encoder for whichever configuration is selected is running at 2.5 GT/s ×4
+against its 16.0 GT/s ×16, so picture work is slower than the hardware is capable of; no text tensor or
+draft touches that card.
+
+Both arms are run, whichever way the probe reads: two cards, then the 3-bit pack on the same two cards.
+A probe that looks fine and a quant that then moves the coverage line are both results, and the one
+outcome that teaches nothing is a quant skipped because the probe "obviously" had to be fine.
 
 ## Speculative decoding experiments
 

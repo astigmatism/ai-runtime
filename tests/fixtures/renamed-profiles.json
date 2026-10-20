@@ -26,5 +26,11 @@
     "coding_service_sha256": "399309f6dfb102d33b8c8490c7b275827a9f095267f792dbab027e9cf6b23b73",
     "compose_sha256": "6d513ec18ffe2fc3d656c5a58eb51e242014ac7db2f403f90e5e9896d2efb5e8",
     "note": "New on 2026-10-18, one variable from flash-next-strata-solo-thinking-recovery-cache: the window goes to 524,288 and the ring that carries it is stated with it (--rope-scaling yarn --rope-scale 2.0 --yarn-orig-ctx 262144), because past 262,144 the pack's trained window ends and the wider promise is YaRN interpolation or nothing. Measured on this box the same day at exactly this factor (docs/deployment.md, \"Beyond the ladder\" and the factor table): boot 100 s, decode 119.5, a 493K-token tail question answered identically in five rounds. Needs the image this revision pins, because only this house's entry point writes the ring into the engine's run config -- and takes it back out for any profile that does not state one, which is what keeps the 256K sibling native. The 524,288 publication also required LLM Router to widen RESIDENT_CONTEXT_LIMIT first (llm-router 0d9dc83): a catalog above the router's ceiling is refused atomically, every model route answering 503 until it is repointed, so router first is the order, not a suggestion."
+  },
+  "flash-next-strata-two-card-iq4-xs": {
+    "previous_id": null,
+    "compose_sha256": "8499e07f9e0bb91f64bd2686c63fcb1e59b980e436b6efb6905a8bbb88b5eb0a",
+    "coding_service_sha256": "cff9f39413316835a235018c4d74a5ccbaea56f758c48b0f39af4df54682171f",
+    "note": "New on 2026-10-20, not a rename: the two-card probe, which runs the resident's own pack, window and sampling preset on the RTX 3090 and RTX 4080 SUPER with the Everyday resident loaded on the other pair. Pinned at creation because it is the first paired configuration whose coding side is not llama.cpp, so its compose_sha256 is the first pin of the night-side resident beside a Strata backend -- the pairing the vision-GPU placement change made possible, and the one a later edit to that placement would move without touching a profile. It is also the first configuration to state the VRAM reserve, the control vector and the engine log path in source (overlay facts 9-11) instead of carrying them as hand edits inside a workspace."
   }
 }

@@ -1,0 +1,170 @@
+{
+  "id": "flash-next-strata-two-card-iq4-xs",
+  "role": "coding",
+  "display_name": "Qwen3.8 Flash-Next Two-Card",
+  "variant_label": "two cards, 512 MiB a card reserved",
+  "engine": "strata-vision-296b59d2f73c",
+  "container_name": "qwen38-daytime",
+  "host_port": 18080,
+  "gpu_group": "daytime",
+  "context_tokens": 262144,
+  "retention": {
+    "image": "Shared: the same tag and the same pinned image id as every Strata configuration on this host, whose retention is stated on flash-next-strata-solo-thinking-recovery. Deleting this variant releases no image.",
+    "model": "Shared with flash-next-strata-solo-thinking-recovery-cache: the same three UD-IQ4_XS shards, the same encoder projector, and the control vector staged at llm/host-provided/refusal-direction-r.gguf. Deleting this variant releases none of them; a shard is released when no configuration mounts it, which is what the inventory in docs/model-downloads.json is for.",
+    "workspace": "This variant's own, and the only thing it owns: strata-pair-iq4xs/data is written by the first boot out of nothing, and releasing it costs the engine draft layer it fetched and the calibration it ran, not the model. A trial whose workspace cannot be thrown away is a trial that quietly becomes a resident.",
+    "reports": "The trial this variant exists to run is recorded in ops/reports/ beside the boot logs it reads; nothing here is released with it."
+  },
+  "argument_order": [
+    "--alias",
+    "--family",
+    "--quant",
+    "--model",
+    "--kv",
+    "--kv-streaming",
+    "--sampling",
+    "--tool-call-recovery",
+    "--conversation-cache-mib",
+    "--conversation-cache-min-free-mib",
+    "--conversation-cache-slots",
+    "--conversation-cache-min-tokens",
+    "--ple-gguf",
+    "--vision",
+    "--gpus",
+    "--layer-split",
+    "--low-ram",
+    "--host",
+    "--port"
+  ],
+  "arguments": {
+    "--alias": "qwen3.8-flash-next-ud-iq4_xs",
+    "--family": "unsloth",
+    "--quant": "UD-IQ4_XS",
+    "--model": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--kv": "k8v4",
+    "--kv-streaming": "auto",
+    "--sampling": "thinking",
+    "--tool-call-recovery": "on",
+    "--conversation-cache-mib": "16384",
+    "--conversation-cache-min-free-mib": "12288",
+    "--ple-gguf": "off",
+    "--vision": "no",
+    "--gpus": "0,1",
+    "--layer-split": "auto",
+    "--low-ram": "off",
+    "--host": "0.0.0.0",
+    "--port": "8080",
+    "--conversation-cache-slots": "2",
+    "--conversation-cache-min-tokens": "16384"
+  },
+  "workspace": {
+    "path": "strata-pair-iq4xs/data",
+    "target": "/data"
+  },
+  "artifacts": [
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "bytes": 10946624,
+      "sha256": "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4"
+    },
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+      "bytes": 49835229856,
+      "sha256": "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7"
+    },
+    {
+      "path": "llm/unsloth/Qwen3.8-Flash-Next-GGUF/revisions/38bb39ee97821de2c9009abb7e93950eec396e66/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+      "target": "/weights/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+      "bytes": 43836407744,
+      "sha256": "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "target": "/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+      "bytes": 907543008,
+      "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"
+    },
+    {
+      "path": "llm/host-provided/refusal-direction-r.gguf",
+      "target": "/weights/refusal-direction-r.gguf",
+      "bytes": 483520,
+      "sha256": "59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38"
+    }
+  ],
+  "container": {
+    "read_only": false,
+    "stop_grace_period": "180s",
+    "ulimits": {
+      "core": 0,
+      "memlock": -1
+    },
+    "tmpfs": [
+      "/tmp:rw,nosuid,size=2g"
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "0,1",
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata",
+      "RESIDENT_BUDGET_GIB": "44",
+      "VRAM_RESERVE_MIB": "512",
+      "CONTROL_VECTOR": "/weights/refusal-direction-r.gguf",
+      "CONTROL_VECTOR_LAYERS": "4:44",
+      "STRATA_LOG": "/data/strata-engine.log"
+    },
+    "networks": {
+      "router": {
+        "aliases": [
+          "strata-trial",
+          "qwen38-strata"
+        ]
+      }
+    },
+    "labels": {
+      "local-ai.profile": "primary",
+      "local-ai.role": "coding",
+      "local-ai.retention": "reference-aware: tag, model revision and workspace are released with the profile"
+    }
+  },
+  "catalog": {
+    "backend_url": "http://qwen38-daytime:8080",
+    "backend_kind": "strata",
+    "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+    "quantization": "Unsloth Dynamic UD-IQ4_XS (~4-bit, 94 GB)",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "mmproj_offload": "gpu",
+    "mmproj_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "mtp": {
+      "enabled": true,
+      "type": "strata-mtp-rt",
+      "detail": "the engine's own MTP draft layer, installed with its state on first start; automatic drafting is left on"
+    },
+    "capability_profile": {
+      "name": "qwen3.8-flash-next-ud-iq4-xs-strata-256k",
+      "text": true,
+      "streaming": true,
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "speculative": true,
+      "prompt_cache_volatile": true,
+      "prompt_cache_persistence": false,
+      "nsfw": false
+    },
+    "deployment_warnings": [
+      "A trial, not a resident. It answers daytime and the local-active compatibility alias from the same container name and port the configuration in service uses, so no client is retold anything, and it answers nighttime from the Everyday resident loaded beside it on the other pair rather than from itself. Everything it measures is a reason to change something else; nothing here is a reason to depend on it staying.",
+      "Two cards instead of four, and 512 MiB a card instead of 2,048. Those are the only two differences from flash-next-strata-solo-thinking-recovery-cache: the pack, the window, the sampling preset, the tool-call recovery, the conversation cache, the speculation, the control vector and the KV settings are the ones in service, carried over verbatim. The reserve is deliberately not carried over at its old value: 2,048 MiB a card is 5.0 % of the four cards it was written for and 10.0 % of this pair, and at the 2.31 MiB a cached expert measured on 2026-10-19 the 1,536 MiB a card it gives back is on the order of 1,330 cached experts -- more coverage than the whole quant step this trial is a prerequisite for. It is stated here as part of the two-card step rather than left as a workspace edit, and what it is worth is read from the boot's own 'expert cache auto: ... reserved ... -> N slots' line, not from that arithmetic.",
+      "Coverage is the axis to read, and the boot prints it: 'the caches hold N of 24576 profiled pairs (~x % of the routed mass)', alongside the placement search's 'predicted N ms per decode window'. The four-card boots this box has run hold between 16,166 and 16,571 pairs at 96.5 % of the routed mass, which is why the mass figure has at most 3.5 points to lose and why a smaller pack is a coverage purchase before it is a speed one. The host's own verdict on the latter is on the record: the routed experts are 4.2 ms of a 34.3 ms decode window, so a smaller pack buys accuracy, not decode -- and this probe, which changes the card count and nothing else, is what says how much coverage two cards actually cost before 96.6 GB is spent finding out.",
+      "The first configuration on this box where two engines are resident at once, so the RAM figures that have never been shared are shared now. The 262,144-token window costs RAM and not decode -- about 3.5 GiB of k8v4 at full width, against a 'resident RAM: 33.48 GiB' engine that already runs; MemAvailable was 61.8 GiB when this was written and the agreed breaker is 8 GiB. Read the engine's resident RAM line and MemAvailable, and compare the line across the arms rather than trusting the ceiling: 44 GiB is a ceiling the engine was asked not to exceed, not an allocation it makes.",
+      "Both text pairs on this box straddle both PEX8747 uplinks -- the RTX 3090 sits under root 64:00.0 and the RTX 4080 SUPER under 16:00.0, and the Everyday pair straddles the same two -- so this is the first configuration whose cache misses compete with another engine's reads. The probe's pcie_frac 0.22 is a single-stream measurement and structurally cannot see that contention; the hit-rate and '0 blob reads from the file' lines in the log can. Power is unassessed, not safe: 1,205 W of card limits and no wall meter on this host.",
+      "Measured on 2026-10-19 and 2026-10-20, out of the configuration in service's own engine log: this box's median daytime context is 163,979 tokens, and the requests at or above 131K -- which is where the traffic actually lives -- decode at p10 82.3, median 95.3 tok/s over 171 requests of the current boot. That p10, not the trial table's 110 tok/s, is the floor to judge this configuration against: held to 110, a healthy two-card boot reads as 13 % regressed. The instrument is scripts/strata_replay.py, whose fixed corpus is hashed answer by answer, because bench-pooled decode medians carry a plus-minus 6 % bootstrap interval while every lever in this trial trades 4-15 % -- so the replay's equality check is the measurement and the tok/s figure is the smoke.",
+      "The encoder is on the shared RTX 3080 here too, placed at CUDA2 by the renderer rather than CUDA4, which is the change that lets this configuration and the four-card one coexist in one host file. That card is currently running at 2.5 GT/s x4 against its 16.0 GT/s x16 maximum, so picture work is slower than the hardware is capable of; the text cards are unaffected, and no text tensor or draft uses that card in any configuration."
+    ],
+    "aliases": [
+      "local-active",
+      "daytime"
+    ]
+  }
+}

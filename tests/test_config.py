@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from pathlib import Path
 import shutil
 import tempfile
@@ -315,6 +316,7 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
             'flash-next-strata-solo-thinking-recovery-cache-yarn': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -324,8 +326,13 @@ class ConfigurationTests(unittest.TestCase):
             bundle = render(ROOT / 'config', host_for(name), name)
             for role in ('coding', 'everyday'):
                 with self.subTest(profile=name, role=role):
-                    self.assertEqual(bundle['compose']['services'][role]['image'], engine['tag'])
-                    self.assertEqual(service_engine(bundle, role), engine)
+                    # Being paired is not the same as being llama.cpp: the two-card Strata probe loads
+                    # the Everyday resident on the other pair exactly as the 27B pair does, and runs a
+                    # different image as itself. Each role is held to its own engine, which is the
+                    # stronger reading and the one that stays true as the house grows.
+                    want = engines[expected[name] if role == "coding" else expected[EVERYDAY_PROFILE]]
+                    self.assertEqual(bundle['compose']['services'][role]['image'], want['tag'])
+                    self.assertEqual(service_engine(bundle, role), want)
 
     def test_nighttime_uses_tensor_parallel_placement_across_its_pair(self):
         night = read(ROOT / 'config/profiles' / (EVERYDAY_PROFILE + '.json'))
@@ -392,8 +399,12 @@ class RegistryTests(unittest.TestCase):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
             'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
-            'flash-next-strata-solo-thinking-recovery-cache-yarn'))
-        self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair'))
+            'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs'))
+        # Paired is a statement about residents and GPUs -- one text pair plus the Everyday resident on
+        # the other -- and not about which engine the coding side runs, which is why a Strata
+        # configuration joined this tuple on 2026-10-20 without either 27B pair changing.
+        self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
+            'flash-next-strata-two-card-iq4-xs'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # Every second resident a configuration names is listed, the default first.
         self.assertEqual([x['profile'] for x in registry['always_included']], list(EVERYDAY_PROFILES))
@@ -954,12 +965,18 @@ class EnvironmentEngineTests(unittest.TestCase):
         # produced it are in the repo: the route-skip verdict is unreadable without the comparator
         # that prints confidence intervals, and the conversation cache is invisible to the benchmark
         # altogether, because a benchmark never lets its own conversations go cold.
-        for profile in ('flash-next-strata-solo-thinking-recovery-cache',
-                        'flash-next-strata-solo-thinking-recovery-cache-yarn'):
+        for profile in sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment'):
+            # Derived from the engine interface rather than a list of names: a configuration added
+            # tomorrow cannot opt out of carrying the measurement it was built on by not being in a
+            # tuple somebody remembered to edit. The date and the percentage are looked for anywhere in
+            # a warning, because this house writes a verdict as prose ("STRATA_HC_Q8=1 was measured on
+            # 2026-10-14 and reverted: ...") and not as a header format.
             warnings = read(ROOT / 'config/profiles' / (profile + '.json'))['catalog']['deployment_warnings']
-            measured = [w for w in warnings if w.startswith('Measured on 2026-')]
-            self.assertEqual(len(measured), 1, profile + ' states no measured verdict')
-            self.assertRegex(measured[0], r'\d')
+            measured = [w for w in warnings
+                        if re.search(r'(?:Measured|measured|tried) on 2026-\d\d-\d\d', w)
+                        and re.search(r'[-+]?\d[\d.]*\s*%', w)]
+            self.assertTrue(measured, profile + ' ships a lever with no dated measurement in its '
+                'warnings: the portal renders this prose as the reason to select it')
         # The instruments themselves live in scripts/, which the runtime image does not copy -- the
         # candidate image this test also runs inside ships runtime, config and tests -- so their
         # presence is asserted where they are read, from a checkout, while the verdict above is
@@ -1023,10 +1040,10 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 3, 'the environment-interface configurations are the '
-            'call-recovery, conversation-cache and rope-rung ones; the greedy preset and the '
-            'route-tail skip left with their configurations on 2026-10-18, and their measurements '
-            'are in docs/deployment.md')
+        self.assertEqual(len(environment), 4, 'the environment-interface configurations are the '
+            'call-recovery, conversation-cache and rope-rung ones plus the two-card probe; the greedy '
+            'preset and the route-tail skip left with their configurations on 2026-10-18, and their '
+            'measurements are in docs/deployment.md')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -1047,7 +1064,11 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     at the same directory. If they ever do, whichever finishes first declares the other's half-built
     workspace ready, and the switch spends its readiness window on a machine that has not packed its
     model yet. The second quant that exposed this was retired the same day; the invariant and the
-    broadened marker stay, because the next quant trial is exactly what they were written for.
+    broadened marker stay, because the next quant trial is exactly what they were written for -- and it
+    arrived on 2026-10-20 as flash-next-strata-two-card-iq4-xs, which is why the declared set below has
+    a workspace of its own in it rather than a fourth name on the resident's line: a trial that shares
+    a workspace with the configuration it is being compared against cannot be re-provisioned without
+    touching what is serving, which is the one thing a trial may not do.
     """
 
     # One workspace may be shared by a declared variant pair. The invariant is about a pack: two
@@ -1072,17 +1093,20 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
             if not engines[profile['engine']].get('provisioning'):
                 continue
             workspace = profile['workspace']['path']
+            # The message is built with the same default as the check: a workspace of its own is the
+            # normal case, and a guard that raises KeyError on it instead of passing would have hidden
+            # this class of failure until the first profile that owned a directory (2026-10-20).
             self.assertIn(name, self.SHARED_WORKSPACES.get(workspace, (name,)),
                 '%s provisions into %s, which is only ever shared by %s: a ready marker read off the '
                 'engine would let either one answer for the other'
-                % (name, workspace, ', '.join(self.SHARED_WORKSPACES[workspace])))
+                % (name, workspace, ', '.join(self.SHARED_WORKSPACES.get(workspace, (name,)))))
             seen.setdefault(workspace, []).append(name)
         for workspace, names in seen.items():
             declared = self.SHARED_WORKSPACES.get(workspace, (names[0],))
             self.assertEqual(sorted(names), sorted(declared),
                 '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
                 'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
-        self.assertEqual(sorted(seen), ['strata-trial/data'])
+        self.assertEqual(sorted(seen), ['strata-pair-iq4xs/data', 'strata-trial/data'])
 
 
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
@@ -1159,8 +1183,12 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         this engine therefore states both switches, whichever way it wants them."""
         stated = {'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
             'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on'),
-            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on')}
-        self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
+            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on'),
+            'flash-next-strata-two-card-iq4-xs': ('thinking', 'on')}
+        # Every configuration this engine serves, derived rather than remembered: the two-card probe is
+        # a different topology, and a topology is not an exemption from stating a switch the run config
+        # will otherwise inherit from whoever booted into this workspace last.
+        self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, expectations in stated.items():
             with self.subTest(profile=name):
                 environment = self.rendered(name, '-')\
@@ -1176,8 +1204,9 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         makes them mean something."""
         stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
-            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off')}
-        self.assertEqual(set(stated), {n for step in self.STEPS for n in step[:2]})
+            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
+            'flash-next-strata-two-card-iq4-xs': ('16384', 'off')}
+        self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):
                 definition = read(ROOT / 'config/profiles' / (name + '.json'))
@@ -1195,6 +1224,84 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                             name + ' refines a conversation cache it has switched off')
                     else:
                         self.assertIn(refinement, arguments)
+
+    def test_the_two_card_probe_carries_the_resident_tuning_and_moves_only_its_cards(self):
+        """What "all the fine tuning is carried over" means as a check and not as a sentence.
+
+        The two-card probe answers one question -- what do two of the four cards cost -- and the answer
+        is readable only if every other decision the configuration in service makes is the same
+        decision in this one: the greediness the sampling preset sets, the parked conversations and
+        their floor, the recovery switch, the speculation, the KV placement, the window, the pack, the
+        fitted direction. So the two launches are compared with the card difference taken out, on the
+        host that has the shared encoder, and anything else that moves is refused.
+
+        It is the mirror image of the STEPS check above. That one allows one variable between two
+        configurations of one topology; this one allows a topology and nothing else, which is also why
+        the variables it takes out are named as a set rather than discovered from the diff: a tuning
+        flag that drifted into the card column would otherwise stop being a difference by being
+        reclassified.
+        """
+        # The comparison is against the configuration in service, not against its sibling one step
+        # up the chain: a trial is measured against what is running, and what is running is the
+        # conversation cache.
+        probe, resident = ('flash-next-strata-two-card-iq4-xs',
+            'flash-next-strata-solo-thinking-recovery-cache')
+        host = vision_host()
+        p, r = render(ROOT / 'config', host, probe), render(ROOT / 'config', host, resident)
+        pc, rc = p['compose']['services']['coding'], r['compose']['services']['coding']
+        # The card column, and the five settings the probe declares in source that the configuration
+        # in service still carries as hand edits inside its workspace (overlay facts 9-11, and the
+        # budget the pair shares with the Everyday resident).
+        cards = ('CUDA_VISIBLE_DEVICES', 'GPUS', 'VISION_DEVICE')
+        declared = ('RESIDENT_BUDGET_GIB', 'VRAM_RESERVE_MIB', 'CONTROL_VECTOR',
+                    'CONTROL_VECTOR_LAYERS', 'STRATA_LOG')
+        self.assertEqual({k: v for k, v in pc['environment'].items() if k not in cards + declared},
+            {k: v for k, v in rc['environment'].items() if k not in cards},
+            probe + ' differs from the configuration in service in its cards and in the five settings '
+            'it brings out of the workspace; a sixth difference is a tuning decision nobody agreed to '
+            'change')
+        # What the probe adds to the container is one read-only weight: the control vector, staged
+        # outside the workspace so the controller verifies it before a switch drains anything.
+        vector = [v for v in pc['volumes'] if str(v['target']).endswith('refusal-direction-r.gguf')]
+        self.assertEqual(len(vector), 1)
+        self.assertTrue(vector[0]['read_only'])
+        # Everything else it mounts is the resident's own pack, and its /data is the one directory it
+        # owns alone: a trial that shares a provisioning workspace with the configuration it is being
+        # measured against cannot be re-provisioned without touching what is serving.
+        weights = lambda volumes: [v for v in volumes if v['target'] != '/data']
+        self.assertEqual(weights([v for v in pc['volumes'] if v is not vector[0]]), weights(rc['volumes']))
+        home = lambda service: [v for v in service['volumes'] if v['target'] == '/data'][0]
+        self.assertFalse(home(pc)['read_only'])
+        self.assertTrue(home(pc)['source'].endswith('strata-pair-iq4xs/data'))
+        self.assertNotEqual(home(pc)['source'], home(rc)['source'])
+        # The published contract moves only where the cards are named. quantization, revision, the
+        # capability profile and the window are the resident's own words, reused verbatim: two
+        # configurations of one model that disagree about what the model is would make the portal
+        # describe a different model every time the cards were moved.
+        stated = ('aliases', 'configuration', 'cuda_visible_devices', 'deployment_warnings',
+            'display_name', 'exclusive', 'gpu_names', 'gpu_uuids', 'models', 'text_gpu_uuids',
+            'vision_device', 'vision_gpu_shared')
+        self.assertEqual({k: v for k, v in p['catalog'].items() if k not in stated},
+            {k: v for k, v in r['catalog'].items() if k not in stated})
+        self.assertEqual(p['catalog']['models'][0]['quantization'],
+            r['catalog']['models'][0]['quantization'])
+        # The two session lengths the trial runs at, read off the published contract and not from a
+        # launch flag: 262,144 for the resident `daytime` answers, and the Everyday resident's own
+        # 98,304 for `nighttime`. A paired configuration publishes both entries, which is what makes
+        # the second number visible here at all -- a solo configuration cannot show it, because there
+        # the same backend answers nighttime at its own width.
+        self.assertEqual(p['catalog']['models'][0]['context_length'], 262144)
+        self.assertEqual(r['catalog']['models'][0]['context_length'], 262144)
+        self.assertEqual([m['context_length'] for m in p['catalog']['models']
+                          if 'nighttime' in m['aliases']], [98304])
+        # And the four cards are still exactly two + two + the encoder, shared with nothing: the
+        # night-side resident this configuration loads beside itself is the launch the 27B pair loads,
+        # byte for byte, which is the claim the shared-vision placement was built to allow.
+        night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services']['everyday']
+        self.assertEqual(p['compose']['services']['everyday'], night)
+        self.assertEqual(p['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
+        self.assertEqual(p['manifest']['services'][0]['parallel_slots'], 1)
+        self.assertNotIn('exclusive', read(ROOT / 'config/profiles' / (probe + '.json')))
 
     def test_a_value_outside_the_two_words_refuses_before_anything_renders(self):
         # The entry point writes a JSON boolean and the engine starts on nothing else, so the words

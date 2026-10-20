@@ -114,8 +114,8 @@ class RecoveryTests(unittest.TestCase):
         # -- and it goes with them on 2026-10-15. An artifact no configuration mounts is still verified
         # on every validation pass and still occupies the model root, so it belongs to the inventory
         # only while something can run it.
-        self.assertEqual(len(artifacts), 10)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 174592080864)
+        self.assertEqual(len(artifacts), 11)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 174592564384)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():
@@ -141,7 +141,12 @@ class RecoveryTests(unittest.TestCase):
                         if source.get('path') in downloads:
                             self.assertEqual(downloads[source['path']]['sha256'], source['sha256'])
                             self.assertEqual(downloads[source['path']]['bytes'], source['bytes'])
-            self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry], [])
+            # One locally built artifact is inventoried, and only one: the fitted control vector the
+            # two-card configuration declares. Listing the paths that are allowed to be local is the
+            # point -- a second hand-built file appearing in a profile has to be added here on purpose,
+            # because an artifact with no public source cannot be re-fetched by the box that lost it.
+            self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry],
+                ['llm/host-provided/refusal-direction-r.gguf'])
 
 
 if __name__ == '__main__':

@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import CONFIGURATIONS, read, render
+from runtime.config import CONFIGURATIONS, engine_interface, read, render
 from runtime.controller import Controller
 from runtime.system import atomic_json
 from tests.test_controller import FakeSystem
@@ -13,6 +13,15 @@ from tests.test_controller import FakeSystem
 ROOT = Path(__file__).resolve().parents[1]
 BASE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
 VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
+ENGINES = read(ROOT / 'config/shared.json')['engines']
+
+
+def argv_engine(profile):
+    """Whether this configuration's backend is handed an argument vector, which is what the UUID
+    notation below describes. An environment-interface backend is addressed by index instead, so the
+    CUDA_VISIBLE_DEVICES this test compares is a UUID list only for the former -- and since 2026-10-20
+    a paired configuration is not the same thing as an argument-vector one."""
+    return engine_interface(ENGINES[read(ROOT / 'config/profiles' / (profile + '.json'))['engine']]) == 'argv'
 
 
 def vision_host():
@@ -31,7 +40,12 @@ class VisionTests(unittest.TestCase):
         for profile in (p for p in CONFIGURATIONS if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
+            # The night-side resident is the same launch whichever configuration loads it, and that is
+            # worth asserting across a paired configuration built on a different engine as well as the
+            # two that share one.
             self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)
+            if not argv_engine(profile):
+                continue
             for role, cfg in gpu['compose']['services'].items():
                 prior = cpu['compose']['services'][role]
                 group = 'daytime' if role == 'coding' else 'nighttime'
