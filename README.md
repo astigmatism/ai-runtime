@@ -78,6 +78,8 @@ The development checkout is `/Users/astigmatism/Projects/ai-runtime`; Rosalina's
 
 Rosalina reads public GitHub over HTTPS. It requires no GitHub write credentials. The updater fetches only fast-forward changes, builds an image marked with the exact source commit, validates it before draining work, and reconciles only changed backends. The source checkout advances after the candidate controller is healthy. A failed update retains the previous image and configuration, and reports its recovery state. Read [deployment and recovery](docs/deployment.md) before the initial migration.
 
+Moving the household's clients off Rosalina's own router and onto the shared one is staged in [the transition runbook](docs/router-transition.md), with the window each stage costs and what reverses it.
+
 ### Where to change settings
 
 - `config/shared.json`: shared launch arguments, container defaults, output/reasoning policy, network, and named engine identities.
