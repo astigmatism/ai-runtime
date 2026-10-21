@@ -1897,8 +1897,12 @@ class MoreThanOneMachineTests(unittest.TestCase):
         self.assertNotIn('/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf',
             [volume['target'] for volume in service['volumes']])
         self.assertFalse(bundle['catalog']['capability_profile']['vision'])
-        self.assertEqual([entry['aliases'] for entry in bundle['catalog']['models']],
-            [['local-active', 'daisy']])
+        # One name, and it is not the household's default name. `local-active` is what a router
+        # answers an unnamed request with, and it answers that from one host; a second catalog
+        # claiming it is either refused by the router's collision rule or, without the rule, two
+        # machines saying they are the model the house is using. The name moves with the router's
+        # default host, and moving it is a switch like any other.
+        self.assertEqual([entry['aliases'] for entry in bundle['catalog']['models']], [['daisy']])
         # And the image it runs is the one with SASS this machine can execute: the tag in service on the
         # four-GPU host is refused here by name, which is the guard a second machine needs and the one
         # nothing in the launch itself would ever have noticed.
