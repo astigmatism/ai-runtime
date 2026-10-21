@@ -9,7 +9,7 @@ git clone https://github.com/astigmatism/ai-runtime.git
 cd ai-runtime
 ```
 
-This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and configuration-switching UI/API, with a container CLI for recovery and administration.
+This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and configuration-switching UI/API, with a container CLI for recovery and administration. One router fronts the household and one runtime owns each machine; how a machine's active catalog reaches a router that is not on its own filesystem is [one router, more than one machine](docs/federation.md), currently a design.
 
 ## Current configurations
 
