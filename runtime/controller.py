@@ -28,6 +28,7 @@ from .system import System, atomic_json, future, lock, now
 # restarted during a coffee break finds its catalog on the next pass, and long enough that a router
 # down for the afternoon is not asked five times a minute, every minute, for hours.
 ANNOUNCE_RETRY_SECONDS = 300
+DRAIN_HEAL_SECONDS = 60
 
 class RouterRefused(RuntimeError):
     """A router answered and said no."""
@@ -238,6 +239,48 @@ class Controller:
         be removed from the code, which is why nothing reads it any more.
         """
         return any(report['draining'] for _, report in self.drain_reports(healing))
+
+    def release_orphan_drain(self):
+        """Reopen a router that is holding traffic for a machine that is not switching.
+
+        A drain belongs to a transaction, and it is released when the transaction ends. That pairing
+        breaks in one ordinary way: the pass that releases it finds the router unreachable — a router
+        redeployed underneath, a controller restarted mid-switch with the record already resolved — and
+        the drain is left on the router with a reason naming a run that finished an hour ago. The
+        machine is then serving a model its own router refuses to hand out, and this runtime says so
+        about itself (`serving()` is false while a drain is held), which means a page that looks broken
+        is describing something real that nobody intended.
+
+        Only a drain whose reason is one of this runtime's own transaction ids is released. An operator
+        holding traffic to look at a card is not an orphan, and a machine that reopened the door out
+        from under a human would be worse than the stall it fixed.
+        """
+        if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
+            return False  # Something of ours is in flight, and it owns its drain.
+        # The announcement pass runs whenever a page is looked at, and a machine with nothing to say
+        # should still be quiet: this asks at most once a minute, which is far quicker than any person
+        # notices a stall and far slower than any router minds being asked.
+        last = self.load('drain.json', {})
+        if last.get('checked_at', '') > future(-DRAIN_HEAL_SECONDS):
+            return False
+        try:
+            held = [report for _, report in self.drain_reports(healing=False)
+                if report['draining'] and str(report.get('reason') or '').startswith('local-ai-runtime:')]
+        except Exception:
+            self.save('drain.json', {'checked_at': now(), 'error': 'the router would not answer'})
+            return False  # A router that will not answer is a question, not an answer.
+        self.save('drain.json', {'checked_at': now(), 'held': len(held),
+            'reasons': sorted({str(r.get('reason')) for r in held})})
+        if not held:
+            return False
+        try:
+            self.set_drain(False, {'id': 'orphan-drain'})
+        except Exception:
+            # Left for the next minute, which is the same answer the announcement loop gives a router
+            # that is down for the afternoon: the door is still shut, and asking again is cheap.
+            return False
+        self.save('drain.json', {'checked_at': now(), 'released_at': now(), 'held': len(held)})
+        return True
 
     def router_view(self):
         """One router's runtime-state, for the read-only surfaces that have always shown one.
@@ -1630,6 +1673,9 @@ class Controller:
             return None  # Nothing of this revision is serving; there is nothing to claim.
         if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
             return None  # A switch is in flight and will publish with its own verification.
+        # The same pass that asks whether the household was told what is serving asks whether anyone is
+        # still parked behind a drain belonging to a run that has already finished.
+        self.release_orphan_drain()
         record = ((status or {}).get('publication') if status is not None
             else self.load('publication.json', {})) or {}
         expected_sinks = {(s['kind'], s['name']) for s in self.sinks()}
@@ -1648,7 +1694,7 @@ class Controller:
         except Exception as error:
             self.save('publication.json', {**(self.load('publication.json', {})),
                 'failed_at': now(), 'retry_at': future(ANNOUNCE_RETRY_SECONDS),
-                'runtime_revision': self.revision, 'configuration': active['profile'],
+                'runtime_revision': self.revision, 'configuration': active.get('profile'),
                 'error': str(error)})
             return None
 

@@ -343,6 +343,44 @@ class RestorationTests(unittest.TestCase):
         self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertFalse(self.c.restoration_pending())
 
+    def test_a_drain_left_by_a_finished_attempt_is_released(self):
+        """The drain outlives the transaction when the pass that would release it cannot reach the
+        router: the machine is serving, the router is not handing anything out, and only the reason
+        string says who was owed the release."""
+        self.strand_the_backend()
+        (self.state / 'transaction.json').unlink(missing_ok=True)
+        self.assertTrue(self.c.draining_for_me(healing=False), 'parked behind a drain nobody owns')
+        self.assertTrue(self.c.release_orphan_drain())
+        self.assertFalse(self.system.draining)
+        # Released once, and the same pass is not asked again for a minute: an announcement loop that
+        # polled every router it has would be a new kind of noise in a house that has one page.
+        self.assertFalse(self.c.release_orphan_drain())
+
+    def test_a_drain_somebody_else_is_holding_is_left_alone(self):
+        """An operator holding traffic to look at a card is not an orphan. The reason is the only
+        thing that distinguishes the two, and it is treated as the contract it is."""
+        self.strand_the_backend()
+        (self.state / 'transaction.json').unlink(missing_ok=True)
+        self.system.reason = 'operator: swap the card'
+        self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+
+    def test_the_announcement_loop_is_what_releases_it(self):
+        """No new loop, and no waiting for a person to notice: the pass that already reports whether
+        this machine was heard from is the one that reopens the door."""
+        self.strand_the_backend()
+        (self.state / 'transaction.json').unlink(missing_ok=True)
+        self.c.announce(self.web_state['status'])
+        self.assertFalse(self.system.draining)
+
+    def test_an_in_flight_attempt_keeps_its_own_drain(self):
+        self.strand_the_backend()
+        transaction = self.c.load('transaction.json', {}) or {}
+        transaction['phase'] = 'draining'
+        self.c.save('transaction.json', transaction)
+        self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+
     def test_the_one_action_is_enough_when_the_record_is_the_only_thing_left(self):
         """The 04:12 case: the transaction is gone, the drain is set, only the record knows."""
         self.strand_the_backend()

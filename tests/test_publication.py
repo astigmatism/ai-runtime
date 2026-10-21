@@ -452,7 +452,14 @@ class AnnouncementTests(PublisherTests):
         controller = self.adopt()
         before = list(self.router.calls)
         controller.announce({'publication': controller.load('publication.json')})
-        self.assertEqual(self.router.calls, before)
+        # Nothing is republished. The one thing a quiet pass is allowed to ask is whether anybody is
+        # still parked behind a drain this machine opened, and it asks once a minute — so the pass
+        # after this one, inside the minute, says nothing at all.
+        after = list(self.router.calls)
+        self.assertEqual([(c[0], c[1]) for c in after[len(before):]],
+            [('GET', '/admin/api/runtime-state')])
+        controller.announce({'publication': controller.load('publication.json')})
+        self.assertEqual(self.router.calls, after)
 
     def test_adding_a_router_publishes_even_when_the_local_receipt_is_successful(self):
         controller = self.adopt()
