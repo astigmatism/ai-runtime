@@ -8,6 +8,15 @@ So the order below is: move the runtime first, where a mistake is a warning on a
 
 **Never let both routers be unable to serve.** The legacy router stays installed, running and fed until the last client has been quiet on the new one for longer than a working day. Everything else — the order of the stages, which step gets a window, which step does not — comes from that one rule, plus the ordinary one that a change which recreates a model is scheduled and a change which does not is not.
 
+## Where it stands
+
+Measured on 2026-10-21, in the order the stages went:
+
+- Stage 0 is done. Rosalina runs the current revision with the resident untouched, and her page publishes to the file sink exactly as before.
+- Stage 3 is done on the router: a pushed catalog is no longer made incomplete by a marker it never needed, the host list is a line in the router's own installer instead of a shell variable in whoever's session deployed it last, and `local` is off the roster because a router that declares a host it can never publish reports itself degraded forever. The client's gate — `validateRouterMetadata` in the Harness plugin — accepts the new router's document today.
+- Stage 1 is in progress: `host_id`, the two credentials and the push target are on Rosalina, and the receipt from `192.168.1.23` is what closes it.
+- Stage 2 is the only step that costs a client anything, and it has not been started.
+
 ## What is true right now, measured
 
 | Fact | Value | Where it comes from |
@@ -54,7 +63,22 @@ What stage 1 costs is a new way for a *later* switch to fail: a router that refu
 
 **Stage 2 — the reachability window, and the only one.** Stating `backend_address: "192.168.1.4"` moves the published port and the advertised URL together, which moves `config_sha256`, which means the resident is recreated. Measured warm boot of the configuration serving now is 112.5 seconds; add the drain and the verification and call it two to three minutes during which the legacy router refuses new admissions. The drain waits for in-flight requests rather than cutting them, so a turn already streaming finishes; what does not get served is a request started inside the window, and the DSH retry policy (two retries) will usually not outlast it. So: pick a moment when the page shows nothing active and no session is mid-task, say so out loud, and do it. Take the opportunity in the same window to confirm the thing stage 4 depends on — `GET http://192.168.1.23:11434/v1/router/capabilities` reporting `available: true` for `daytime` and no `ROUTER_CANNOT_REACH_BACKEND:rosalina` warning.
 
-**Stage 3 — make the new router describable.** Land the router's completeness fix and the `ROUTER_HOSTS` cleanup, redeploy, and read back what a *client* would read: the capabilities document, run through the DSH plugin's own `validateRouterMetadata` against a live document rather than a fixture. That script is the gate for stage 4 and it costs nothing to run again later.
+**Stage 3 — make the new router describable.** Land the router's completeness fix and the `ROUTER_HOSTS` cleanup, redeploy, and read back what a *client* would read: the capabilities document, run through the DSH plugin's own `validateRouterMetadata` against a live document rather than a fixture. That check is the gate for stage 4 and it costs nothing to run again later — the plugin is an ES module in the Harness deployment's plugin directory, so it can be imported and called directly against a live router:
+
+```js
+import { validateRouterMetadata, residentStatus, isBlockingStatus }
+  from '/home/astigmatism/deployments/deepseek-harness/data/dsh/.dsh-plugins/dsh-router-model-discovery.js';
+const document = await (await fetch('http://192.168.1.23:11434/v1/router/capabilities')).json();
+for (const model of document.models) {
+  validateRouterMetadata(model.metadata);                 // throws: the client refuses this model
+  const status = residentStatus(document, model.service); // the state the client would show
+  console.log(model.service, status.status, isBlockingStatus(status.status));
+  // `isBlockingStatus` takes the status string, not the record: handed the record it answers "not
+  // blocking" for a resident the client will refuse, which is the one mistake worth naming here.
+}
+```
+
+Run against both routers on 2026-10-21: the legacy router's document is accepted (`daytime` available), and the new router's is accepted too, with `daytime` reading *unavailable* and not blocking — which is the honest answer while its backend is a loopback claim, and what stage 2 turns off. A resident that reads `unavailable` is a resident the client will not route to, so this check passing is necessary and not sufficient; the sufficient check is after stage 2, and again after each client moves.
 
 **Stage 4 — one client, then the next.** Because every client resolves `ai-router` through an `extra_hosts` line, the repoint does not touch a client's configuration at all: same URL, same API key, same retry policy, same service IDs. Change one line, recreate that one container, and check the client's own view of the router before declaring the client moved. Do the voice box first — a session lost there costs a conversation, and the harness on Pauline is the one holding live agent sessions. **Restarting the harness container interrupts every session inside it, including the agent doing the move**, so stage 4 is done at a moment when this session can be spared, and the check afterwards is that the discovery plugin reports both residents `available`, not that a request happened to succeed.
 
