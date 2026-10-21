@@ -13,7 +13,7 @@ This is the model lifecycle controller. Inference requests go through [LLM Route
 
 ## Current configurations
 
-Choosing a configuration sets the coding resident and whether an everyday resident runs beside it. The status page lists both for every configuration.
+Choosing a configuration sets the coding resident and whether an everyday resident runs beside it. The status page lists both for every configuration. A machine is offered only the configurations whose `"hosts"` list names it, so the last row below is what Daisy's page shows and the seven above it are what Rosalina's shows; a host whose private settings name no machine is still shown all eight. [More than one machine](docs/deployment.md#more-than-one-machine) is the rules around that.
 
 | Configuration | Residents | Coding resident | Everyday resident | GPUs |
 | --- | --- | --- | --- | --- |
@@ -23,6 +23,7 @@ Choosing a configuration sets the coding resident and whether an everyday reside
 | `flash-next-strata-solo-thinking-recovery-cache-yarn` | 1 | The row above at 512K: the pack's trained window is 256K, so the wider promise is YaRN 2.0 interpolation, stated with it | None, as above | All four text GPUs, plus the RTX 3080 for the image encoder |
 | `flash-next-strata-two-card-iq4-xs` | 2 | The configuration in service on two cards instead of four — same pack, window, sampling preset, parked conversations, recovery and speculation, carrying the resident's memory settings verbatim after 512 MiB of reserve and a 32 GiB resident budget OOM-killed it on its first request, with the reserve, the control vector and the engine log declared in source instead of edited into the workspace. A trial: it exists to measure what two cards cost | Qwen3.8 27B Abliterated Q6_K, 96K, exactly as the 27B pair runs it | Coding: RTX 3090 + RTX 4080 SUPER; Everyday: RTX 4080 + RTX 3080 Ti; RTX 3080 shared for vision |
 | `flash-next-strata-two-card-iq3-s` | 2 | The row above with one variable changed: ISTA-DASLab's GSQ-RCO `IQ3_S` pack (3.5-bit, 78 GiB in two shards) in place of Unsloth's UD-IQ4_XS, at the same cards, reserve, budget, window and every tuning switch. The second arm of the same measurement | Same | Same |
+| `flash-next-strata-iq3-xxs-daisy` | 1 | **A different machine.** Qwen3.8 Flash-Next GSQ-RCO `IQ3_XXS` (3.25-bit, 70.6 GiB in two shards) at 64K on two RTX 2080 Ti: no VRAM reserve, no parked conversations, no image encoder, and answering `daisy` rather than `daytime` | None: it has one pair of cards, so every configuration of it runs alone | 2× RTX 2080 Ti, and no card to lend for vision |
 The everyday resident has run MTP3 since 2026-10-07, using the base 27B MTP head on the shared RTX 3080.
 - **Speed:** a 16K planning prompt decoded at 65.7 tokens per second, against 37.8 without a draft.
 - **Context:** 96K, because at 128K the speculative buffers did not fit on the RTX 4080.

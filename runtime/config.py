@@ -45,7 +45,12 @@ from pathlib import Path
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
     'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
     'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-    'flash-next-strata-two-card-iq3-s')
+    'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy')
+# The last entry is the first configuration of a second machine, and it is in this list rather than
+# in a list of its own because the updater reads this list out of a *target* revision that has no
+# host to ask. What separates it is its own "hosts" line: a machine that does not name itself is
+# still shown the whole registry, and a machine that does is shown only its share. See
+# docs/deployment.md, "More than one machine".
 # Reduced from five Strata configurations to two on 2026-10-18, after both new levers had been
 # measured on this box: the greedy step and the card-sampling step are settled policy rather than a
 # live question, and the route-tail skip came back a wash on the only axis this machine can read.

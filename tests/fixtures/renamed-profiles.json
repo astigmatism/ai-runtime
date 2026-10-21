@@ -38,5 +38,11 @@
     "compose_sha256": "b69e5653394957ba7cab0466068b87a9ef69becbb41a2fd4510c07bc39c7529f",
     "coding_service_sha256": "2e3907dc2270f7ac014b3ddc24328be1d4e52184369dfdb4cfc6287abfcbf0c7",
     "note": "New on 2026-10-20, not a rename: the second arm of the two-card trial. It is the two-card probe with one variable changed -- the pack, from Unsloth's UD-IQ4_XS to ISTA-DASLab's GSQ-RCO IQ3_S at revision ed59f92082b1e93c0e96d60a8b11aab089b52f09, two shards and 83,617,662,656 bytes -- which makes it the first configuration on this host whose artifact set differs from the resident's while its launch does not. Pinned at creation for the reason the probe is: the compose digest is the only thing that notices a later edit moving the night-side resident this arm loads beside itself."
+  },
+  "flash-next-strata-iq3-xxs-daisy": {
+    "previous_id": null,
+    "compose_sha256": "9b5facfe7a9b8f188291bf33f9c5ff09ac57d6ff1f3b002980f4900a8f769342",
+    "coding_service_sha256": "acf268c83eeb509b884c59e2983366dd991f6515e9456f714beef6d3db4b53c3",
+    "note": "New on 2026-10-20, not a rename: the first configuration of the second machine, and the first entry in this file pinned on a host that is not Rosalina. Its compose digest matters for the same reason the two-card probe's does -- it is the cheapest thing that notices an edit moving a launch flag, a mount or a variable along with it -- with one difference worth naming: this configuration has no second resident to protect, because the machine it runs on has one pair of cards and every configuration of it runs alone. The digest is therefore this launch entire, and the host it was computed on is two RTX 2080 Ti and no vision GPU, which is why `fixture_host` exists."
   }
 }

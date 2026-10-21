@@ -239,6 +239,79 @@
           "start_period": "3600s"
         }
       }
+    },
+    "strata-sm75-296b59d2f73c": {
+      "image_id": "sha256:a31639a41cff2e569d9ebf7407c4ddb61ba054d2782d0c81762b309cf8d87e03",
+      "tag": "local/strata:296b59d2f73c-sm75",
+      "revision": "296b59d2f73c8f04a805df29c2fa97655adace78",
+      "release": "v0.1.44.1",
+      "repository": "https://github.com/Niko1221/Strata",
+      "cuda_architectures": ["75"],
+      "build_base_digest": "sha256:a3d4bd72f76035f929a8ba86a6bf4b87ab858ba4b8e45bb46cc1fe06bd8f9ef6",
+      "runtime_base_digest": "sha256:a3d4bd72f76035f929a8ba86a6bf4b87ab858ba4b8e45bb46cc1fe06bd8f9ef6",
+      "architecture": "The same source revision as strata-296b59d2f73c, compiled for a different card. The image in service on the four-GPU host carries `archs [86, 89]` — no sm_75 SASS — so on a Turing card it starts, answers its own health check, and dies at its first kernel launch; `engine/BUILD.json` in this one reads `{\"archs\": [75], \"vision\": \"none\"}`. `require_engine_architecture` is what refuses the other direction, and it is the reason this entry exists at all rather than the tag being edited in place.",
+      "build": "Built **on the machine it serves**, and that is not a preference. Strata compiles the engine during `docker build`, and its own entry point warns about `illegal instruction (exit 132)` and says to build on the target: the build host that made the Ampere/Ada images has AVX-512 and this machine's Ryzen 3900X has AVX2 at best. A rosalina-built sm_75 image (`sha256:6afd7569…`, 12,637,890,125 bytes) was made and kept for reference and was never shipped. `CUDA_ARCHITECTURES=75 BUILD_VISION=0`, upstream Dockerfile, then this house's overlay layer — labels, `chmod a+w /opt/strata`, and the entry point swap, all three from runtime/overlay/Dockerfile, which is what makes the facts below declarable on this tag at all. The first build of the tag carried only the labels and the chmod, and ran upstream's 6,346-byte entry point; a profile stating `CONTEXT` against it would have been rendered into a variable nothing read, so the tag was rebuilt on 2026-10-20 from the upstream intermediary that is still on the host. Receipt ops/reports/20261020-daisy-strata-feasibility/.",
+      "base": "The two digests above name `strata-upstream:296b59d2f73c-sm75` on that host — the image this house layer was built on, and the layer stack that is actually still there to rebuild from — and not the NVIDIA base the Ampere/Ada entries record, because the base was removed once the tag was cut and nothing on the machine still carries its digest. An honest digest beats a remembered one.",
+      "interface": "environment",
+      "runs_as_image_user": true,
+      "readiness_wait_seconds": 1800,
+      "readiness": "Thirty minutes, against the hour the Ampere/Ada entries carry, and for a different reason. The model library on this machine is one SMR spindle that reads 109 MB/s, and the engine pins a ~40 GiB expert complement into RAM before it answers anything: 579 s measured at 0.08 GiB/s over a warm page cache, 13.5 minutes for a first boot that also builds the pack. The same disk busy with a 40 GB staging pass is what turned a 13-minute boot into a stall long enough to look like a hung deploy, so the window is not padding — it is the measured floor of the slowest thing this host does at start, plus room for a cold cache. The tier table in the report is the reason `--gpus 0,1` and not one card.",
+      "provisioning": {
+        "workspace_target": "/data",
+        "ready_files": ["config/strata-*.json"],
+        "why": "Same engine, same marker: the run config this house's entry point writes is the proof the workspace was set up, and it is written by the same code path the Ampere/Ada entry waits on. It is not named after the quant, for the reason recorded on that entry — provisioning is read off the engine, and a marker that names a quant breaks the first time one engine serves two of them."
+      },
+      "environment": {
+        "--family": "FAMILY",
+        "--quant": "MODEL",
+        "--kv": "KV",
+        "--kv-streaming": "KV_STREAMING",
+        "--vision": "VISION",
+        "--gpus": "GPUS",
+        "--layer-split": "LAYER_SPLIT",
+        "--low-ram": "LOW_RAM",
+        "--host": "HOST",
+        "--port": "PORT",
+        "--sampling": "SAMPLING",
+        "--tool-call-recovery": "TOOL_CALL_RECOVERY",
+        "--conversation-cache-mib": "CONVERSATION_CACHE_MIB",
+        "--conversation-cache-min-free-mib": "CONVERSATION_CACHE_MIN_FREE_MIB",
+        "--conversation-cache-slots": "CONVERSATION_CACHE_SLOTS",
+        "--conversation-cache-min-tokens": "CONVERSATION_CACHE_MIN_TOKENS",
+        "--ple-gguf": "PLE_GGUF"
+      },
+      "session_window": {
+        "why": "Same entry point, same fact: `context_tokens` travels as `CONTEXT` and is written into the args list the engine reads on every boot, so the window a profile states is the window the machine serves. On this host it is not cosmetic. IQ3_XXS with the full 131,072 window and no VRAM reserve aborts with SIGABRT during the prefill of a ~127 k prompt — reproduced twice, then ~10 minutes of arena reload — because the smaller quant fills more of each card with cached experts and leaves less for the KV cache and activations. The configuration this entry serves caps the window at 65,536 instead of reserving VRAM away from the cache: the capped arm keeps 96.8–97.3 % expert-cache hits and 78–97 tok/s warm, where the reserve arm gives up 13–18 % of decode and 26 % of its resident experts to keep 128 k alive.",
+        "cost": "Page-locked host RAM, and on this machine RAM is the whole argument: 60.7 GiB total, ~14.7 GiB available with the model loaded and the ComfyUI stack stopped. `--kv k8v4` with streaming is about 10.6 KB per token of window, so halving the window is ~0.7 GiB — the cost is not why it is capped. It is capped because the abort happens on the cards.",
+        "image": "Mapped on this engine because this tag carries this house's entry point; it was rebuilt on 2026-10-20 to carry it and the new id is pinned above."
+      },
+      "sampling": {
+        "why": "One sampling policy for the house: a request that sends none gets the Flash-Next card's thinking-mode set rather than the engine's greedy default. The measurement and the presets are recorded on strata-vision-296b59d2f73c; nothing about the card changes the numbers.",
+        "image": "Mapped because this tag carries this house's entry point, which is the only thing that can write the block. A profile stating a preset on an image without it is refused when it renders rather than rendered into a variable nothing reads."
+      },
+      "tool_call_recovery": {
+        "why": "The same parser fix, for the same reason: a call written in a form beside the template's is prose without it. Measured upstream at 92.9 % against 98.3 % of agent turns' tool calls read as intended; recorded in full on strata-vision-296b59d2f73c.",
+        "image": "Mapped because this tag carries this house's entry point, and the engine has understood the key since the release this image is built from."
+      },
+      "conversation_cache": {
+        "why": "The engine's default budget is 0, so every conversation that comes back is re-prefilled from the start. On this machine the budget competes with the arena for the same RAM — the pack pins ~40 GiB of the 60.7 this host has, and the trial left 14.7 GiB available with ComfyUI stopped — so no configuration of this engine states a budget yet, and every one states `off` explicitly rather than leaving the workspace to remember a number a future host might not afford.",
+        "values": "As on the other entry: `off` takes the flags out, a number is MiB of host RAM, `--conversation-cache-min-free-mib` is required with a number, and the slots/min-tokens refinements are refused on a cache that is off.",
+        "image": "Mapped because this tag carries this house's entry point. Stating a budget here is a measured decision about RAM this host does not have to spare, not a switch to flip."
+      },
+      "model_directory": "GGUF_DIR",
+      "context_environment": "CONTEXT",
+      "container_defaults": {
+        "entrypoint": ["./docker-entrypoint.sh"],
+        "read_only": false,
+        "ulimits": {"core": 0},
+        "healthcheck": {
+          "test": ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"],
+          "interval": "30s",
+          "timeout": "5s",
+          "retries": 8,
+          "start_period": "3600s"
+        }
+      }
     }
   },
   "container_defaults": {

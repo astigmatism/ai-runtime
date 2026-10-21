@@ -31,6 +31,12 @@ COMPATIBILITY_ALIAS = 'local-active'
 # configuration answers `nighttime` from its own model, which is what keeps a client that only ever
 # sends one of them working whichever configuration is selected.
 RESIDENT_SERVICES = ('daytime', COMPATIBILITY_ALIAS, 'nighttime')
+# The machine the shipped private settings name, and the machine every fixture host that does not name
+# itself stands for: absent `host_id` says nothing, which is the whole registry with no guard.
+ROSALINA = 'rosalina'
+# The second machine, now that it has a configuration of its own: its id is the one its private
+# settings state and the one its definitions name.
+DAISY = 'daisy'
 
 
 def interface_of(profile):
@@ -44,7 +50,26 @@ def vision_host(host=None):
     return host
 
 
+def fixture_host(profile):
+    """The host a pinned digest was recorded on, which for the second machine's configuration is not
+    the four-card host the rest of these pins were."""
+    definition = read(ROOT / 'config/profiles' / (profile + '.json'))
+    if definition.get('hosts') and ROSALINA not in definition['hosts']:
+        return second_machine(gpu_architectures=['75'])
+    return vision_host()
+
+
 def host_for(profile):
+    """The machine a definition was written for, because it cannot be rendered on any other.
+
+    Before a second machine existed this chose between four cards and four cards-minus-a-pair; with
+    `hosts` on every definition it has to keep choosing that, and additionally give a configuration of
+    another machine the host it was measured on, since `--gpus 0,1` on four cards is a refusal and not
+    a rendering.
+    """
+    definition = read(ROOT / 'config/profiles' / (profile + '.json'))
+    if definition.get('hosts') and ROSALINA not in definition['hosts']:
+        return second_machine(gpu_architectures=['75'])
     # The exclusive profiles place their projector and MTP draft on the vision GPU.
     return vision_host() if profile in EXCLUSIVE else BASELINE['host']
 
@@ -80,7 +105,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(set(recorded), set(CONFIGURATIONS))
         for name, expected in recorded.items():
             with self.subTest(profile=name, previous=expected['previous_id']):
-                compose = render(ROOT / 'config', vision_host(), name)['compose']
+                compose = render(ROOT / 'config', fixture_host(name), name)['compose']
                 self.assertEqual(digest(compose['services']['coding']), expected['coding_service_sha256'])
                 if name in EXCLUSIVE:
                     self.assertEqual(digest(compose), expected['compose_sha256'])
@@ -97,7 +122,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(set(pinned['bundles']), set(CONFIGURATIONS))
         for name, expected in sorted(pinned['bundles'].items()):
             with self.subTest(profile=name):
-                self.assertEqual(render(ROOT / 'config', vision_host(), name)['config_sha256'], expected)
+                self.assertEqual(render(ROOT / 'config', fixture_host(name),
+                    name)['config_sha256'], expected)
 
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -323,9 +349,15 @@ class ConfigurationTests(unittest.TestCase):
         # build-time decision (BUILD_VISION) and not a runtime switch, so giving the resident its
         # picture encoder means a second image. The text-only entry stays registered for exactly the
         # same reason the 0.1.43 one does -- undoing the vision step is a repoint, not a rebuild.
+        #
+        # A fifth, dated 2026-10-20: the same revision compiled for sm_75, built on the machine that has
+        # the cards for it. A separate entry rather than a widened `cuda_architectures` on the one in
+        # service, because an engine pins one image id -- and because that image carries no SASS a
+        # Turing card can execute: it starts, passes its own health check, and dies at its first kernel
+        # launch, which is what require_engine_architecture refuses at render now.
         self.assertEqual(set(engines), {'qwen38-dual-836d571',
                                         'strata-7695859aa13a', 'strata-296b59d2f73c',
-                                        'strata-vision-296b59d2f73c'})
+                                        'strata-vision-296b59d2f73c', 'strata-sm75-296b59d2f73c'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
@@ -336,6 +368,7 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache-yarn': 'strata-vision-296b59d2f73c',
             'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
             'flash-next-strata-two-card-iq3-s': 'strata-vision-296b59d2f73c',
+            'flash-next-strata-iq3-xxs-daisy': 'strata-sm75-296b59d2f73c',
             EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
         self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
         for name, engine_name in expected.items():
@@ -419,7 +452,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
             'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
             'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-            'flash-next-strata-two-card-iq3-s'))
+            'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy'))
         # Paired is a statement about residents and GPUs -- one text pair plus the Everyday resident on
         # the other -- and not about which engine the coding side runs, which is why a Strata
         # configuration joined this tuple on 2026-10-20 without either 27B pair changing.
@@ -1060,10 +1093,10 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 5, 'the environment-interface configurations are the '
-            'call-recovery, conversation-cache and rope-rung ones plus the two two-card arms; the greedy '
-            'preset and the route-tail skip left with their configurations on 2026-10-18, and their '
-            'measurements are in docs/deployment.md')
+        self.assertEqual(len(environment), 6, 'the environment-interface configurations are the '
+            'call-recovery, conversation-cache and rope-rung ones, the two two-card arms, and the second '
+            'machine; the greedy preset and the route-tail skip left with their configurations on '
+            '2026-10-18, and their measurements are in docs/deployment.md')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -1126,8 +1159,8 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
             self.assertEqual(sorted(names), sorted(declared),
                 '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
                 'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
-        self.assertEqual(sorted(seen), ['strata-pair-iq3s/data', 'strata-pair-iq4xs/data',
-            'strata-trial/data'])
+        self.assertEqual(sorted(seen), ['strata-daisy-iq3xxs/data', 'strata-pair-iq3s/data',
+            'strata-pair-iq4xs/data', 'strata-trial/data'])
 
 
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
@@ -1163,7 +1196,9 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'CONTEXT')))
 
     def rendered(self, name, variables):
-        bundle = render(ROOT / 'config', BASELINE['host'], name)
+        # host_for, not the baseline host: a configuration of the second machine cannot be rendered on
+        # four cards, and this class asks what a configuration differs *in*, which presupposes it renders.
+        bundle = render(ROOT / 'config', host_for(name), name)
         variables = (variables,) if isinstance(variables, str) else variables
         for variable in variables:
             bundle['compose']['services']['coding']['environment'].pop(variable, None)
@@ -1206,10 +1241,12 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on'),
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on'),
             'flash-next-strata-two-card-iq4-xs': ('thinking', 'on'),
-            'flash-next-strata-two-card-iq3-s': ('thinking', 'on')}
+            'flash-next-strata-two-card-iq3-s': ('thinking', 'on'),
+            'flash-next-strata-iq3-xxs-daisy': ('thinking', 'on')}
         # Every configuration this engine serves, derived rather than remembered: the two-card probe is
         # a different topology, and a topology is not an exemption from stating a switch the run config
-        # will otherwise inherit from whoever booted into this workspace last.
+        # will otherwise inherit from whoever booted into this workspace last -- nor is being a
+        # different machine, whose workspace is a different disk.
         self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, expectations in stated.items():
             with self.subTest(profile=name):
@@ -1228,7 +1265,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
             'flash-next-strata-two-card-iq4-xs': ('16384', 'off'),
-            'flash-next-strata-two-card-iq3-s': ('16384', 'off')}
+            'flash-next-strata-two-card-iq3-s': ('16384', 'off'),
+            'flash-next-strata-iq3-xxs-daisy': ('off', 'off')}
         self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):
@@ -1237,10 +1275,15 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                 self.assertEqual((arguments['--conversation-cache-mib'], arguments['--ple-gguf']),
                     (budget, table))
                 # A floor is not optional next to a budget: it is the ceiling that stops a park
-                # displacing the page-locked expert complement this box measures at 32.93 GiB.
+                # displacing the page-locked expert complement this box measures at 32.93 GiB. Beside
+                # `off` it is nothing to bound, and it is still stated: what the entry point writes
+                # sits in the workspace until a configuration says otherwise, so a configuration that
+                # switched the cache back on has to find a floor here that means something on *its*
+                # machine -- on the second one, 12,288 MiB of the 14.7 GiB it leaves free is what
+                # stops a parked conversation bidding against the page-locked arena.
+                self.assertIn('--conversation-cache-min-free-mib', definition['argument_order'])
                 positive = str(arguments['--conversation-cache-min-free-mib'])
                 self.assertTrue(positive.isdigit() and int(positive) > 0)
-                self.assertIn('--conversation-cache-min-free-mib', definition['argument_order'])
                 for refinement in ('--conversation-cache-slots', '--conversation-cache-min-tokens'):
                     if budget == 'off':
                         self.assertNotIn(refinement, arguments,
@@ -1550,10 +1593,20 @@ class ServiceIdentityTests(unittest.TestCase):
         model it does load, which is the whole reason it is a configuration and not an experiment.
         """
         for name in CONFIGURATIONS:
+            definition = read(ROOT / 'config/profiles' / (name + '.json'))
             catalog = render(ROOT / 'config', host_for(name), name)['catalog']
             published = {alias for model in catalog['models'] for alias in model['aliases']}
             offline = {alias for service in catalog['offline_services'] for alias in service['aliases']}
             with self.subTest(profile=name):
+                # The resident IDs are one machine's namespace. A configuration built for a second
+                # machine answers its own name -- which is what lets two machines reach one router
+                # without either relaunching -- so it is held to publishing something a client can
+                # send, which ServiceIdentityTests does, and not to publishing `daytime`, a name this
+                # house has given the first machine until the federation decides who owns what.
+                if ROSALINA not in definition['hosts']:
+                    self.assertTrue(published - {COMPATIBILITY_ALIAS},
+                        'Configuration ' + name + ' publishes no service ID of its own')
+                    continue
                 for service_id in RESIDENT_SERVICES:
                     self.assertIn(service_id, published | offline,
                         'Configuration ' + name + ' neither answers ' + service_id +
@@ -1685,6 +1738,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
     launch that was measured where the card did exist.
     """
 
+    DAISY_CONFIGURATION = 'flash-next-strata-iq3-xxs-daisy'
     TWO_CARD_SOLO = 'flash-next-strata-two-card-iq3-s'
 
     def config_with(self, name, **changes):
@@ -1702,13 +1756,23 @@ class MoreThanOneMachineTests(unittest.TestCase):
         return config
 
     def test_every_shipped_definition_names_the_machine_it_runs_on(self):
+        # Nothing ships unscoped, and the split is now a real one: this is where the shipped set says
+        # which machine each launch was measured on, so a definition that grows a second host has to
+        # be changed here as well as there.
         for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             with self.subTest(profile=name):
-                self.assertEqual(belongs_to_host(definition, second_machine(host_id='rosalina')), True)
-                self.assertEqual(belongs_to_host(definition, second_machine()), False,
-                    name + ' is a launch measured on Rosalina; a new machine names itself on the '
-                    'definitions that are built for it')
+                self.assertTrue(definition['hosts'], name + ' names no machine at all')
+                self.assertEqual(belongs_to_host(definition, second_machine(host_id=ROSALINA)),
+                    ROSALINA in definition['hosts'])
+                self.assertEqual(belongs_to_host(definition, second_machine(host_id=DAISY)),
+                    DAISY in definition['hosts'],
+                    name + ' belongs to the machine it was measured on and to no other')
+        self.assertEqual([name for name in CONFIGURATIONS if DAISY in
+                read(ROOT / 'config/profiles' / (name + '.json'))['hosts']],
+            ['flash-next-strata-iq3-xxs-daisy'],
+            'The second machine has the one configuration it has been measured for; a launch nobody '
+            'has run there is not something it is offered')
 
     def test_a_definition_that_names_no_machine_is_refused(self):
         # A default of "every machine" is how a configuration ends up rendered on hardware it was
@@ -1728,16 +1792,19 @@ class MoreThanOneMachineTests(unittest.TestCase):
 
     def test_a_named_host_sees_only_the_configurations_that_name_it_back(self):
         registry = available_profiles(ROOT / 'config', second_machine())
-        self.assertEqual(registry['selectable'], [],
-            'no shipped configuration is built for a second machine yet')
+        self.assertEqual([x['profile'] for x in registry['selectable']],
+            ['flash-next-strata-iq3-xxs-daisy'],
+            'a machine is offered the launches it was measured on, which is now one and not none')
         self.assertEqual(registry['always_included'], [],
             'the Everyday resident is a launch of the machine that has the pair for it')
+        # Scoping one of Rosalina's launches to this machine *adds* it: the machine's own configuration
+        # does not make way for it, and the order is the registry's, which is the order the page shows.
         self.assertEqual(configurations_for(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']),
-            second_machine()), (self.TWO_CARD_SOLO,))
+            second_machine()), (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy'))
 
     def test_a_host_whose_registry_is_empty_says_so(self):
         with self.assertRaisesRegex(RuntimeError, 'No configuration of this revision names this host'):
-            default_profile(ROOT / 'config', second_machine())
+            default_profile(ROOT / 'config', second_machine(host_id='no-machine-claims-this-one'))
 
     def test_another_machines_configuration_refuses_to_render_and_names_both(self):
         with self.assertRaisesRegex(RuntimeError,
@@ -1807,27 +1874,64 @@ class MoreThanOneMachineTests(unittest.TestCase):
             with self.subTest(architectures=bad), self.assertRaisesRegex(RuntimeError, 'gpu_architectures'):
                 render(config, second_machine(gpu_architectures=bad), self.TWO_CARD_SOLO)
 
+    def test_the_second_machine_runs_the_shape_that_was_measured_on_it(self):
+        # Each of these is a measurement and not a preference, and the suite above would stay green if
+        # somebody widened one after reading its sibling on the other machine. The window is the abort
+        # reproduced twice; the absent reserve is the cost that was declined in favour of that window;
+        # the cache budget is off because the pack pins 40 GiB of this machine's 60.7; the projector is
+        # not mounted because this image was built with no encoder in it; and the service ID is this
+        # machine's own name because two machines cannot both answer `daytime` to one router.
+        bundle = render(ROOT / 'config', second_machine(gpu_architectures=['75']),
+            self.DAISY_CONFIGURATION)
+        service = bundle['compose']['services']['coding']
+        environment = service['environment']
+        self.assertEqual([x['role'] for x in bundle['manifest']['services']], ['coding'])
+        self.assertEqual((environment['CONTEXT'], environment['GPUS'],
+            environment['CUDA_VISIBLE_DEVICES']), ('65536', '0,1', '0,1'))
+        self.assertNotIn('VRAM_RESERVE_MIB', environment,
+            'the window is what was chosen to keep these cards clear, not the reserve')
+        self.assertEqual(environment['CONVERSATION_CACHE_MIB'], 'off')
+        self.assertEqual(service['ulimits']['memlock'], -1,
+            'the arena the engine pins is page-locked, and dockerd holds CAP_SYS_RESOURCE')
+        self.assertNotIn('VISION_DEVICE', environment)
+        self.assertNotIn('/weights/mmproj-Qwen3.8-Flash-Next-BF16.gguf',
+            [volume['target'] for volume in service['volumes']])
+        self.assertFalse(bundle['catalog']['capability_profile']['vision'])
+        self.assertEqual([entry['aliases'] for entry in bundle['catalog']['models']],
+            [['local-active', 'daisy']])
+        # And the image it runs is the one with SASS this machine can execute: the tag in service on the
+        # four-GPU host is refused here by name, which is the guard a second machine needs and the one
+        # nothing in the launch itself would ever have noticed.
+        config = self.config_with(self.DAISY_CONFIGURATION, engine='strata-vision-296b59d2f73c')
+        with self.assertRaisesRegex(RuntimeError, 'carries SASS for'):
+            render(config, second_machine(gpu_architectures=['75']), self.DAISY_CONFIGURATION)
+
     def test_a_host_where_nothing_pairs_names_no_second_resident(self):
         # `always_included` is the second resident a configuration on this host loads, not a resident
         # that happens to be in the registry. On a host whose every configuration runs alone, the CLI
         # header and the page both read it as "selecting any of these loads this too", and nothing does
         # -- and the Everyday resident being scoped to this machine is not what makes it load.
         from runtime.__main__ import listed
+        machine = 'a-machine-of-its-own'
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            for name, changes in ((self.TWO_CARD_SOLO, {'hosts': ['daisy'], 'exclusive': True,
-                    'gpu_group': 'all'}), (EVERYDAY_PROFILE, {'hosts': ['daisy']})):
+            for name, changes in ((self.TWO_CARD_SOLO, {'hosts': [machine], 'exclusive': True,
+                    'gpu_group': 'all'}), (EVERYDAY_PROFILE, {'hosts': [machine]})):
                 path = config / 'profiles' / (name + '.json')
                 definition = read(path); definition.update(changes)
                 path.write_text(json.dumps(definition))
-            registry = available_profiles(config, second_machine())
+            registry = available_profiles(config, second_machine(host_id=machine))
             self.assertEqual([x['profile'] for x in registry['selectable']], [self.TWO_CARD_SOLO])
             self.assertEqual(registry['always_included'], [])
-            self.assertIn('(no second resident in any configuration)', listed(config, second_machine()))
+            self.assertIn('(no second resident in any configuration)',
+                listed(config, second_machine(host_id=machine)))
 
     def test_the_cli_listing_is_the_host_s_own(self):
         from runtime.__main__ import listed
         self.assertEqual([line.split(':')[0] for line in
-                listed(ROOT / 'config', second_machine()).splitlines()], ['primary'])
+                listed(ROOT / 'config', second_machine()).splitlines()],
+            ['primary', 'flash-next-strata-iq3-xxs-daisy'])
+        self.assertEqual([line.split(':')[0] for line in listed(ROOT / 'config',
+                second_machine(host_id='no-machine-claims-this-one')).splitlines()], ['primary'])
         listed_rows = [line.split(':')[0] for line in listed(ROOT / 'config').splitlines()]
         self.assertEqual(listed_rows, ['primary', *CONFIGURATIONS, *EVERYDAY_PROFILES])

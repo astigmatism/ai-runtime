@@ -109,6 +109,12 @@ class RecoveryTests(unittest.TestCase):
         # inventory items at all; a pack no configuration runs is a disk problem, not an artifact.
         # and ISTA-DASLab's mmproj (907,543,008 bytes) since the encoder on the shared card has read
         # pictures for it, from 2026-10-16.
+        # The second machine's IQ3_XXS tier adds two paths of its own, 75,839,998,528 bytes. It is the
+        # first inventory entry that is not on the machine the rest of them are: the inventory says what
+        # a configuration mounts wherever that configuration runs, and its shard 2 is byte-for-byte the
+        # IQ3_S shard this host already carries — a second path, the same 28,800,138,432 bytes, held
+        # once on the disk by hardlinks and twice here because an inventory that described filesystem
+        # plumbing could not say which configuration would lose its model when a path went away.
         # The XL trial's UD-Q4_K_XL -- four shards, 111,334,654,784 bytes, four rather than three, which
         # is the difference between that quant and this one -- left with the profile on 2026-10-15. It
         # lost to UD-IQ4_XS on every measured cell, so its shards are not an inventory item.
@@ -117,8 +123,8 @@ class RecoveryTests(unittest.TestCase):
         # -- and it goes with them on 2026-10-15. An artifact no configuration mounts is still verified
         # on every validation pass and still occupies the model root, so it belongs to the inventory
         # only while something can run it.
-        self.assertEqual(len(artifacts), 13)
-        self.assertEqual(sum(a['bytes'] for a in artifacts), 258210227040)
+        self.assertEqual(len(artifacts), 15)
+        self.assertEqual(sum(a['bytes'] for a in artifacts), 334050225568)
         # Download documentation is not included in the production image.
         sources = ROOT / 'docs/model-downloads.json'
         if sources.exists():

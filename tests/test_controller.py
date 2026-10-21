@@ -13,6 +13,9 @@ from runtime.system import atomic_json, lock, System
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
+# A name no configuration of this revision is built for: a host that states it is healthy and offered
+# nothing, which is a state an operator has to be able to see on the page and then go and fix.
+UNCLAIMED = 'no-machine-claims-this-one'
 VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 
 
@@ -316,11 +319,15 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
             ['flash-next-strata-solo-thinking-recovery',
              'flash-next-strata-solo-thinking-recovery-cache',
-             'flash-next-strata-solo-thinking-recovery-cache-yarn'])
+             'flash-next-strata-solo-thinking-recovery-cache-yarn',
+             # The second machine's configuration is listed on a host that does not name itself, which
+             # is what an unscoped host means: the whole registry, with a reason on the rows it cannot
+             # run. It is a configuration, not a candidate, and the page says which one it is.
+             'flash-next-strata-iq3-xxs-daisy'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
             'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
             'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)',
-            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)'])
+            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one
@@ -334,7 +341,7 @@ class ControllerTests(unittest.TestCase):
         # the first configuration whose display name says something about the hardware. Two rows both
         # reading "Flash-Next (256K)" would be a page where the operator's choice is a coin flip.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144, 524288, 262144, 262144])
+            [163840, 163840, 262144, 262144, 524288, 262144, 262144, 65536])
         # The Flash-Next configurations, named by prefix rather than by a trailing slice: what tells an
         # operator which of them is which is the variant label, and it also says what each one turns
         # on, because that is the only choice left to make here.
@@ -344,7 +351,8 @@ class ControllerTests(unittest.TestCase):
              'card sampling + call recovery + parked conversations',
              'card sampling + call recovery + parked conversations + YaRN 2.0 window',
              'two cards, nothing else changed',
-             'two cards, the 3.5-bit pack'])
+             'two cards, the 3.5-bit pack',
+             'two Turing cards, the 64K window'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
@@ -376,9 +384,9 @@ class ControllerTests(unittest.TestCase):
         # can be told apart from a four-card host that lost two cards.
         self.assertEqual(self.c.status()['host'], {'id': None, 'gpu_architectures': None,
             'text_gpu_groups': ['daytime', 'nighttime'], 'text_gpus': 4, 'vision_gpu_id': None})
-        self.c.host = {**self.c.host, 'host_id': 'daisy', 'gpu_architectures': ['75']}
+        self.c.host = {**self.c.host, 'host_id': UNCLAIMED, 'gpu_architectures': ['75']}
         status = self.c.status()
-        self.assertEqual(status['host'], {'id': 'daisy', 'gpu_architectures': ['75'],
+        self.assertEqual(status['host'], {'id': UNCLAIMED, 'gpu_architectures': ['75'],
             'text_gpu_groups': ['daytime', 'nighttime'], 'text_gpus': 4, 'vision_gpu_id': None})
         # A host that names a machine no configuration is built for still reports its health -- and
         # offers nothing, which is the state an operator has to be able to see and then fix.
@@ -396,7 +404,7 @@ class ControllerTests(unittest.TestCase):
         config = self.state / 'config'
         shutil.copytree(ROOT / 'config', config)
         for name in ('flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'):
-            path = config / 'profiles' / (name + '.json')
+            path = config / 'profiles' / (name + '.json')  # Scoped to this machine as well as Rosalina's.
             definition = read(path)
             definition.update(hosts=['rosalina', 'daisy'], exclusive=True, gpu_group='all')
             path.write_text(json.dumps(definition))
@@ -409,7 +417,10 @@ class ControllerTests(unittest.TestCase):
         controller = Controller(config, self.state, 'a' * 40, self.system)
         status = controller.status()
         self.assertEqual([x['profile'] for x in status['configurations']['selectable']],
-            ['flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'])
+            ['flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s',
+                'flash-next-strata-iq3-xxs-daisy'],
+            'the two configurations just scoped to this machine join the one that was written for it, '
+            'in registry order; what a host is offered is its share and nothing else')
         self.assertEqual(status['configurations']['active'], 'flash-next-strata-two-card-iq4-xs')
         self.assertEqual(status['host']['text_gpus'], 2)
         self.assertEqual(status['offline_roles'], ['everyday'])

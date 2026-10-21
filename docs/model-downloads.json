@@ -1,5 +1,5 @@
 {
-  "provenance": "Imported from the historical artifact and launch manifests on Rosalina, 2026-09-16. URLs are recovery hints; validate bytes and SHA-256 after download. Availability is not guaranteed. Every entry is an artifact a registered configuration loads, and tests/test_recovery.py pins that against the profiles. Retired on 2026-10-15 with the llama.cpp Flash-Next configurations: the AtomicChat AD-4.27bpw-Q4_K_M shards and their projector, the shared and ggml-org Flash-Next MTP heads, and the MTP head that had no profile left to load it -- 36 entries, 99536203392 bytes.",
+  "provenance": "Imported from the historical artifact and launch manifests on Rosalina, 2026-09-16. URLs are recovery hints; validate bytes and SHA-256 after download. Availability is not guaranteed. This tier's repo answers a plain full GET with 404 EntryNotFound while ranged requests return 206 (Hugging Face Xet): fetch it in ranged chunks and concatenate, then check the sha256 below. Shard 2 is byte-for-byte the IQ3_S shard two paths above, and the second machine holds one file hardlinked under both paths. Every entry is an artifact a registered configuration loads, and tests/test_recovery.py pins that against the profiles. Retired on 2026-10-15 with the llama.cpp Flash-Next configurations: the AtomicChat AD-4.27bpw-Q4_K_M shards and their projector, the shared and ggml-org Flash-Next MTP heads, and the MTP head that had no profile left to load it -- 36 entries, 99536203392 bytes.",
   "artifacts": [
     {
       "path": "llm/Qwen3.8-27B-GGUF/revisions/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-Q8_0.gguf",
@@ -88,6 +88,18 @@
       "bytes": 28800138432,
       "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
       "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "bytes": 47039860096,
+      "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+      "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+    },
+    {
+      "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "download_url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
     }
   ]
 }

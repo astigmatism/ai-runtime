@@ -159,7 +159,12 @@ class OperationTests(OperationFixture, unittest.TestCase):
         self.assertIsNone(self.ops.latest())
         self.assertEqual(self.system.events, [])
         self.assertFalse(self.system.draining)
-        self.assertEqual(self.c.status()['configurations']['selectable'], [])
+        # What the API refused is exactly what this machine's page does not show, and what it does show
+        # is that machine's own share of the registry -- not an empty list, which a host that names
+        # itself a machine with nothing built for it is entitled to and this one is not.
+        offered = [x['profile'] for x in self.c.status()['configurations']['selectable']]
+        self.assertNotIn(self.request()['profile'], offered)
+        self.assertEqual(offered, ['flash-next-strata-iq3-xxs-daisy'])
 
     def test_startup_maintenance_recovery_and_unhealthy_runtime_block_switches(self):
         for filename, record in [('router-maintenance.json', {'reserved': True}),
