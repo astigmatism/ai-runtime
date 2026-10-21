@@ -121,6 +121,20 @@ class RemoteRouterRestorationTests(unittest.TestCase):
         self.assertFalse(operations.worker.is_alive())
         self.assert_serving()
 
+    def test_orphan_on_one_router_does_not_release_operator_drain_on_the_other(self):
+        self.c.set_drain(True, {'id': 'orphan'})
+        self.router.drain['rosalina'] = 'operator: maintenance'
+        self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+        self.assertEqual(self.router.drain['rosalina'], 'operator: maintenance')
+
+    def test_orphan_recovery_cannot_race_a_runtime_operation(self):
+        self.c.set_drain(True, {'id': 'orphan'})
+        with fixture.lock(self.c.state / 'runtime.lock'):
+            self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+        self.assertIn('rosalina', self.router.drain)
+
 
 class StubbornSystem(fixture.FakeSystem):
     """A fake that fails the ways the trial actually failed.
@@ -383,6 +397,7 @@ class RestorationTests(unittest.TestCase):
         self.assertTrue(self.c.draining_for_me(healing=False), 'parked behind a drain nobody owns')
         self.assertTrue(self.c.release_orphan_drain())
         self.assertFalse(self.system.draining)
+        self.assertTrue(self.c.serving(), 'reopening a drain must restore its stopped backend first')
         # Released once, and the same pass is not asked again for a minute: an announcement loop that
         # polled every router it has would be a new kind of noise in a house that has one page.
         self.assertFalse(self.c.release_orphan_drain())
@@ -393,6 +408,25 @@ class RestorationTests(unittest.TestCase):
         self.strand_the_backend()
         (self.state / 'transaction.json').unlink(missing_ok=True)
         self.system.reason = 'operator: swap the card'
+        self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+
+    def test_orphan_recovery_failure_keeps_admission_closed_and_schedules_retry(self):
+        self.strand_the_backend()
+        self.system.fail_reconcile = True
+        self.assertFalse(self.c.release_orphan_drain())
+        self.assertTrue(self.system.draining)
+        self.assertTrue(self.c.restoration_pending())
+        self.system.fail_reconcile = False
+        self.make_restoration_due()
+        self.assertTrue(self.ops.restore_if_due())
+        self.wait_for_worker()
+        self.assertTrue(self.c.serving())
+        self.assertFalse(self.c.restoration_pending())
+
+    def test_router_maintenance_reservation_blocks_orphan_recovery(self):
+        self.strand_the_backend()
+        self.c.save('router-maintenance.json', {'reserved': True})
         self.assertFalse(self.c.release_orphan_drain())
         self.assertTrue(self.system.draining)
 

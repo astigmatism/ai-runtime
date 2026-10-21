@@ -241,6 +241,17 @@ class Controller:
         return any(report['draining'] for _, report in self.drain_reports(healing))
 
     def release_orphan_drain(self):
+        if self.system.readonly:
+            return False
+        try:
+            with lock(self.state / 'runtime.lock'):
+                return self._release_orphan_drain_locked()
+        except Exception:
+            # A busy runtime is left alone. Restoration records its own failed attempts
+            # and schedules the next one before propagating an error here.
+            return False
+
+    def _release_orphan_drain_locked(self):
         """Reopen a router that is holding traffic for a machine that is not switching.
 
         A drain belongs to a transaction, and it is released when the transaction ends. That pairing
@@ -257,6 +268,8 @@ class Controller:
         """
         if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
             return False  # Something of ours is in flight, and it owns its drain.
+        if self.load('router-maintenance.json', {}).get('reserved'):
+            return False
         # The announcement pass runs whenever a page is looked at, and a machine with nothing to say
         # should still be quiet: this asks at most once a minute, which is far quicker than any person
         # notices a stall and far slower than any router minds being asked.
@@ -264,21 +277,20 @@ class Controller:
         if last.get('checked_at', '') > future(-DRAIN_HEAL_SECONDS):
             return False
         try:
-            held = [report for _, report in self.drain_reports(healing=False)
-                if report['draining'] and str(report.get('reason') or '').startswith('local-ai-runtime:')]
+            reports = [report for _, report in self.drain_reports(healing=False)]
+            held = [report for report in reports if report['draining']]
         except Exception:
             self.save('drain.json', {'checked_at': now(), 'error': 'the router would not answer'})
             return False  # A router that will not answer is a question, not an answer.
         self.save('drain.json', {'checked_at': now(), 'held': len(held),
             'reasons': sorted({str(r.get('reason')) for r in held})})
-        if not held:
+        if not held or any(report.get('unreachable') for report in reports) or any(
+                not str(report.get('reason') or '').startswith('local-ai-runtime:') for report in held):
             return False
-        try:
-            self.set_drain(False, {'id': 'orphan-drain'})
-        except Exception:
-            # Left for the next minute, which is the same answer the announcement loop gives a router
-            # that is down for the afternoon: the door is still shut, and asking again is cheap.
-            return False
+        # An abandoned drain can hide a stopped backend or a refused catalog. The normal
+        # restoration verifies and republishes the recorded release before opening admission;
+        # if that fails it leaves a durable, scheduled retry, never an open but empty router.
+        self._restore_locked()
         self.save('drain.json', {'checked_at': now(), 'released_at': now(), 'held': len(held)})
         return True
 
