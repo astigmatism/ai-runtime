@@ -162,6 +162,13 @@ class PublisherTests(unittest.TestCase):
     def published_document(self):
         return self.router.catalogs['rosalina']
 
+    def adopt(self):
+        controller = self.build()
+        controller.publish(self.bundle)
+        controller.save('active.json', {'revision': controller.revision, 'profile': self.bundle['profile'],
+            'bundle': self.bundle})
+        return controller
+
     # --- obligation 1: the definition, or a loud refusal -----------------------------------------
 
     def test_a_machine_that_states_nowhere_to_publish_refuses_to_start(self):
@@ -370,13 +377,6 @@ class AnnouncementTests(PublisherTests):
     from an empty directory is serving no models, and every metric on this machine is green.
     """
 
-    def adopt(self):
-        controller = self.build()
-        controller.publish(self.bundle)
-        controller.save('active.json', {'revision': controller.revision, 'profile': self.bundle['profile'],
-            'bundle': self.bundle})
-        return controller
-
     def test_a_machine_that_is_serving_and_has_never_been_heard_from_is_heard_from(self):
         controller = self.adopt()
         self.router.catalogs = {}      # the router came back with nothing for this machine
@@ -420,3 +420,71 @@ class AnnouncementTests(PublisherTests):
         self.router.catalogs = {}
         controller.announce({'publication': {}})
         self.assertEqual(self.router.catalogs, {})
+
+
+class MirrorTests(PublisherTests):
+    """A second router being down is news about the second router.
+
+    During the migration a machine writes its catalog into a directory the house is standing on and
+    pushes a copy to a router that is still being proven. Those are not equals, and treating them as
+    equals produces the worst of both: a switch stopped dead by a machine nobody is serving traffic
+    from, and a copy quietly a fortnight behind. So unreachability on the copy is recorded and retried
+    by the loop that already keeps the machine honest, while a refusal — an answer, and a
+    disapproving one — fails exactly as it does on the primary, because a wrong document is wrong
+    twice.
+    """
+
+    def down(self, error=None):
+        real = self.system.http
+        def fail(url, *args, **kwargs):
+            if url.startswith(self.router.base):
+                raise error or urllib.error.URLError(ConnectionRefusedError(111, 'connection refused'))
+            return real(url, *args, **kwargs)
+        self.system.http = fail
+
+    def test_a_copy_that_is_down_does_not_stop_a_switch_the_primary_answers_for(self):
+        # Serving and adopted first: the machine has a catalog to deliver, and it is the delivery
+        # under test, not the choice of what to serve.
+        controller = self.adopt()
+        self.down()
+        seen = len(self.router.calls)
+
+        # Drained once, drained for real, and not released: the copy's absence is no reason to let
+        # traffic back at a backend being replaced, and no reason to stop the switch either.
+        controller.set_drain(True, {'id': 'tx-1'})
+        self.assertEqual([event for event in self.system.events if event[0] == 'drain'], [('drain', True)])
+
+        controller.publish(self.bundle)
+        remote = [s for s in controller.load('publication.json')['sinks'] if s['kind'] == 'http'][0]
+        self.assertIn('error', remote)
+        self.assertIn('refused', remote['error'])
+        # And nothing reached the router while it was down: tolerating a neighbour is not the same as
+        # asking it twice and hoping, and a switch that stopped for a machine serving nobody would be
+        # the same outage with better documentation.
+        self.assertEqual(len(self.router.calls), seen, 'a switch talked to a router that was down')
+
+        # The catalog is not abandoned there, either. The record says a sink has not caught up, the
+        # supervising pass reads that, and the copy is handed the document the moment it is back.
+        del self.system.http
+        controller.announce({'publication': controller.load('publication.json')})
+        self.assertIn('rosalina', self.router.catalogs)
+        self.assertFalse([s for s in controller.load('publication.json')['sinks']
+            if s['kind'] == 'http'][0].get('error'))
+
+    def test_the_only_router_being_down_is_not_something_to_switch_through(self):
+        # With no directory left, the push stops being a copy and becomes the router. Nothing here
+        # needs to remember that: the same call that was tolerant a setting ago is fatal now, and a
+        # machine cannot drain, publish, or retire its way into a switch it cannot verify.
+        controller = self.build(host_changes={'router_state_dir': None})
+        self.down()
+        with self.assertRaises(urllib.error.URLError): controller.set_drain(True, {'id': 'tx-1'})
+        with self.assertRaises(urllib.error.URLError): controller.publish(self.bundle)
+        with self.assertRaises(urllib.error.URLError): controller.retire()
+
+    def test_a_copy_that_answers_and_refuses_still_fails_the_switch(self):
+        # The distinction the tolerance hangs on: not answering is a router's schedule, refusing is
+        # this machine's document, and only one of those improves by waiting.
+        controller = self.build()
+        self.router.clashes = tuple(m['model'] for m in self.bundle['catalog']['models'])
+        with self.assertRaisesRegex(RuntimeError, 'CATALOG_ID_CONFLICT'):
+            controller.publish(self.bundle)

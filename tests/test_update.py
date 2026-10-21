@@ -177,3 +177,41 @@ class UpdateTests(unittest.TestCase):
         recovery = next(x for x in self.h.calls if x[:2] == ('docker', 'compose') and 'up' in x)
         self.assertIn('--force-recreate', recovery)
         self.assertEqual(recovery[-1], 'controller')
+
+    def test_the_deployment_environment_reaches_a_one_off_action(self):
+        # The credential a push to another machine's router needs is a secret, so it lives in the
+        # deployment's env file and nowhere that is tracked. An action started by the updater — a
+        # switch, a republish after a router release — therefore has to be started with that file, or
+        # it can verify a catalog and then be unable to deliver it, which is a failure with nothing
+        # wrong in it. A checkout that has no env file yet is still a checkout that can run.
+        atomic_json(self.state / 'host.json', {'uid': 1000, 'gid': 1000, 'model_root': '/models'})
+        real = Updater(self.root, execute=self.h)
+        self.h.calls.clear()
+        real.candidate('new-image', 'apply')
+        run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
+        self.assertEqual(run[run.index('--env-file') + 1], str(self.root / '.env'))
+        # The settings the action is about still win over anything the file happens to carry.
+        self.assertEqual(run[run.index('--env') + 1], 'RUNTIME_STATE_DIR=' + str(self.state))
+        (self.root / '.env').unlink(); self.h.calls.clear()
+        real.candidate('new-image', 'status')
+        self.assertNotIn('--env-file', [call for call in self.h.calls if call[:2] == ('docker', 'run')][0])
+
+    def test_the_router_directory_is_mounted_only_for_a_machine_that_writes_one(self):
+        # The directory is the router on this machine. A machine that publishes to a router elsewhere
+        # has no such path, and Docker refuses a container whose bind source does not exist — so the
+        # mount travels with the setting that says this machine writes a file, and a machine that only
+        # pushes starts with a container that asks for nothing it does not have.
+        real = Updater(self.root, execute=self.h)
+        atomic_json(self.state / 'host.json',
+            {'uid': 1000, 'gid': 1000, 'model_root': '/models', 'router_target':
+                {'url': 'http://192.168.1.23:11435', 'token_env': 'CATALOG_PUSH_TOKEN'}})
+        self.h.calls.clear()
+        real.candidate('new-image', 'apply')
+        run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
+        self.assertEqual([item for item in run if '/router' in str(item)], [])
+        atomic_json(self.state / 'host.json', {'uid': 1000, 'gid': 1000, 'model_root': '/models',
+            'router_state_dir': '/router'})
+        self.h.calls.clear()
+        real.candidate('new-image', 'apply')
+        run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
+        self.assertIn('type=bind,source=/router,target=/router', run)

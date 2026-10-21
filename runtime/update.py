@@ -139,8 +139,16 @@ class Updater:
             '--security-opt', 'no-new-privileges', '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m',
             '--label', 'io.service-portal.hidden=true',
             '--user', f"{host['uid']}:{host['gid']}", '--group-add', gid,
-            '--network', 'local-ai-ollama_default',
-            '--env', 'RUNTIME_STATE_DIR=' + str(self.state), '--env', 'RUNTIME_IMAGE=' + image,
+            '--network', 'local-ai-ollama_default']
+        if (self.root / '.env').exists():
+            # The deployment's own environment, which is the same file `compose` is handed for the
+            # long-lived service. A one-off action started without it can render, verify and check
+            # health, but it cannot publish to a router elsewhere: the credential a push needs is a
+            # secret, so it lives here and not in the image or the repository, and an action run by
+            # the updater or by hand would otherwise fail with "the token is not in this container
+            # environment" — true, and useless when the cause is only how the container was started.
+            args += ['--env-file', str(self.root / '.env')]
+        args += ['--env', 'RUNTIME_STATE_DIR=' + str(self.state), '--env', 'RUNTIME_IMAGE=' + image,
             '--mount', 'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock',
             '--mount', f'type=bind,source={self.state},target={self.state}' + suffix,
             '--mount', f"type=bind,source={host['model_root']},target={host['model_root']},readonly",

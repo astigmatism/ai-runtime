@@ -22,6 +22,18 @@ from .config import (CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS, available_pr
     resolve_profile, router_target, service_engine)
 from .system import System, atomic_json, future, lock, now
 
+class RouterRefused(RuntimeError):
+    """A router answered and said no."""
+    # Worth its own type because the two ways a router can fail a publication are opposite news: a
+    # refusal is this machine's document being wrong, which no retry will fix, and a router that never
+    # answered is a router that may be restarting, which the supervising loop is entitled to ride out.
+
+
+def unreachable(error):
+    """Whether an error means the router did not answer, as distinct from answering badly."""
+    return isinstance(error, OSError) and not isinstance(error, urllib.error.HTTPError)
+
+
 # A transaction that has not reached a terminal phase. While one exists the runtime holds its
 # drain or its outcome is unknown, so nothing else may change backends.
 PENDING_PHASES = ('prepared', 'draining', 'applying', 'verifying', 'restoring', 'needs-attention')
@@ -162,6 +174,23 @@ class Controller:
             'active': int(state.get('active_count', 0) or 0),
             'queued': int(state.get('queued_count', 0) or 0)}
 
+    def mirror(self, sink):
+        """Whether a sink is a copy being proven rather than the router the house is standing on.
+
+        A machine feeding its own router and a new one over the road is in the migration, and the two
+        are not equals: the directory is what clients are being served from and what a switch has to
+        satisfy, while the push is a copy whose reachability is still being established. So a router
+        over there that is unreachable is recorded as a sink that has not caught up — the supervising
+        loop keeps offering it the catalog until it accepts — instead of stopping a switch that has
+        nothing to do with it. A refusal is not this: an refused catalog is this machine's document
+        being wrong, and it fails the switch on a mirror exactly as it would on a primary.
+
+        The distinction is a property of the migration and not of the code: when `router_state_dir`
+        leaves the host settings the push stops being a mirror, and every call below that is now
+        tolerant becomes fatal without anything else having to remember to change.
+        """
+        return sink['kind'] == 'http' and bool(self.host.get('router_state_dir'))
+
     def drain_reports(self, healing=True):
         """Every sink's drain report, as (sink, report) pairs.
 
@@ -173,7 +202,16 @@ class Controller:
         — an unreachable *backend* is serving nothing and must not hold a drain open forever, while
         an unreachable *router* is a question that has not been answered.
         """
-        return [(sink, self.sink_drain(sink, healing)) for sink in self.sinks()]
+        out = []
+        for sink in self.sinks():
+            try:
+                out.append((sink, self.sink_drain(sink, healing)))
+            except Exception as error:
+                if not self.mirror(sink) or not unreachable(error):
+                    raise
+                out.append((sink, {'draining': False, 'reason': None, 'scoped': False, 'active': 0,
+                    'queued': 0, 'unreachable': str(error)[:200]}))
+        return out
 
     def draining_for_me(self, healing=True):
         """Whether a router this machine publishes to is holding traffic for this machine.
@@ -953,7 +991,13 @@ class Controller:
         reports = []
         try:
             for sink in self.sinks():
-                reports.append(self.publish_sink(sink, catalog))
+                try:
+                    reports.append(self.publish_sink(sink, catalog))
+                except Exception as error:
+                    if not self.mirror(sink) or not unreachable(error):
+                        raise
+                    reports.append({'kind': sink['kind'], 'name': sink['name'],
+                        'error': str(error)[:400], 'unreachable_at': now()})
         except BaseException:
             # Whatever a sink wrote stays written: a catalog the router refused, or a catalog of a
             # release that is not live. The local sink is the one this runtime can put back exactly,
@@ -1048,7 +1092,7 @@ class Controller:
                 detail = error.read().decode('utf-8', 'replace')
             except Exception:
                 pass
-            raise RuntimeError('The router at ' + self.target['url'] + ' refused this machine\'s catalog ('
+            raise RouterRefused('The router at ' + self.target['url'] + ' refused this machine\'s catalog ('
                 + str(error.code) + '): ' + detail[:600]) from error
         require(isinstance(receipt, dict) and receipt.get('revision'),
             'The router at ' + self.target['url'] + ' answered a catalog push without a revision: ' +
@@ -1146,7 +1190,12 @@ class Controller:
             body = {'enabled': enabled, 'reason': reason}
             if sink['kind'] == 'http':
                 body['host'] = self.target['host']
-            results.append((sink['name'], self.admin_healing_for(sink, 'runtime-drain', body)))
+            try:
+                results.append((sink['name'], self.admin_healing_for(sink, 'runtime-drain', body)))
+            except Exception as error:
+                if not self.mirror(sink) or not unreachable(error):
+                    raise
+                results.append((sink['name'], {'ok': False, 'unreachable': str(error)[:200]}))
         return results
 
     def owns_drain(self, transaction):
@@ -1536,7 +1585,8 @@ class Controller:
         if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
             return None  # A switch is in flight and will publish with its own verification.
         record = (status or {}).get('publication') if status is not None else self.load('publication.json', {})
-        if record and not record.get('error') and not record.get('retired_at'):
+        if record and not record.get('error') and not record.get('retired_at') \
+                and not any(sink.get('error') for sink in record.get('sinks', [])):
             return None
         try:
             return self.publish(active['bundle'])
