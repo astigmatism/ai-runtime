@@ -15,6 +15,14 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=128m
+    # The deployment's `.env` reaches the long-running controller as well as the one-off actions the
+    # updater runs, because `router_target.token_env` names a variable in this file and the process that
+    # publishes — at startup, on every switch, and on its five-minute catch-up loop — is this one. A
+    # credential that arrives for the validation and not for the publisher is a machine that publishes
+    # once, by hand, and then quietly stops. Keys under `environment:` below win over this file, as
+    # Compose defines, so the paths and the image stay whatever the interpolation chose.
+    env_file:
+      - .env
     environment:
       RUNTIME_STATE_DIR: "${RUNTIME_STATE_DIR:?Set the absolute state directory}"
       RUNTIME_IMAGE: "${RUNTIME_IMAGE}"

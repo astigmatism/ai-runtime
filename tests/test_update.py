@@ -226,3 +226,14 @@ class UpdateTests(unittest.TestCase):
         compose = (Path(__file__).resolve().parents[1] / 'compose.yaml').read_text()
         self.assertIn('${ROUTER_STATE_DIR:-', compose)
         self.assertNotIn('${ROUTER_STATE_DIR:?', compose)
+
+    def test_the_push_credential_reaches_the_process_that_publishes(self):
+        # `.env` is where a push token lives, and the updater's one-off actions were given it while the
+        # controller service was not: the credential arrived for the validation and not for the
+        # publisher, which is a machine that publishes once, by hand, and then stops on the five-minute
+        # loop with nothing in the environment to send. `env_file` on the service is the fix, and it is
+        # this line that notices when it goes away.
+        compose = (Path(__file__).resolve().parents[1] / 'compose.yaml').read_text()
+        service = compose.split('services:')[1]
+        self.assertIn('env_file:', service)
+        self.assertLess(service.index('env_file:'), service.index('\n    environment:'))
