@@ -1,12 +1,13 @@
 import argparse
 import json
 import os
+from pathlib import Path
 import signal
 import sys
 
 from .controller import Controller
 from .system import System
-from .config import (CONFIGURATIONS, PROFILE_ALIASES, available_profiles, require,
+from .config import (CONFIGURATIONS, PROFILE_ALIASES, available_profiles, read, require,
     resolve_profile, unknown_profile)
 
 
@@ -14,17 +15,32 @@ def describe(entry, note=''):
     return f"{entry['profile']}: {entry['display_name']} - {entry['model']}{note}"
 
 
-def listed(config_dir):
+def host_settings():
+    """This machine's settings, for the surfaces that show only this machine's share of the registry.
+
+    `list` is also run against a bare source tree, where there is no host to ask, and then it lists
+    every configuration the revision has. With a state directory it must read: a deployment whose
+    host.json is missing or unreadable gets that said out loud rather than a listing of another
+    machine's configurations, which is what a silent fallback would hand back.
+    """
+    state = os.environ.get('RUNTIME_STATE_DIR')
+    if not state:
+        return None
+    return read(Path(state) / 'host.json')
+
+
+def listed(config_dir, host=None):
     """The supported configurations straight from the profile registry, so the CLI, the
-    container CLI consumers, and the status page can never disagree."""
-    registry = available_profiles(config_dir)
+    container CLI consumers, and the status page can never disagree. With a host, the registry is
+    that host's: a configuration of another machine is not a thing this host supports."""
+    registry = available_profiles(config_dir, host)
     second = registry['always_included']
     # `always_included` is empty on a host whose every configuration runs alone; the listing has to
     # say that rather than reach for a second resident that no configuration loads.
     rows = ['primary: the selected configuration' +
         (f" + {second[0]['display_name']}" if second else ' (no second resident in any configuration)')]
-    rows += [describe(entry, ' (all four text GPUs; runs without a second resident)' if entry['exclusive'] else '')
-        for entry in registry['selectable']]
+    rows += [describe(entry, ' (owns every text GPU of this host; runs without a second resident)'
+        if entry['exclusive'] else '') for entry in registry['selectable']]
     rows += [describe(entry, ' (the second resident a paired configuration loads beside it)') for entry in second]
     return '\n'.join(rows)
 
@@ -47,7 +63,7 @@ def main():
             unknown_profile(args.profile))
         args.profile = resolve_profile(args.profile)
     if args.action == 'list':
-        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')))
+        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config'), host_settings()))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')
     controller = Controller(system=System(readonly=readonly))

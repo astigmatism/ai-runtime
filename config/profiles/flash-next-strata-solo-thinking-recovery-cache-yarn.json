@@ -1,5 +1,6 @@
 {
   "id": "flash-next-strata-solo-thinking-recovery-cache-yarn",
+  "hosts": ["rosalina"],
   "role": "coding",
   "display_name": "Qwen3.8 Flash-Next",
   "variant_label": "card sampling + call recovery + parked conversations + YaRN 2.0 window",

@@ -146,6 +146,21 @@ class OperationTests(OperationFixture, unittest.TestCase):
             self.assertEqual(error.exception.code, 'stale-selection')
         self.assertIsNone(self.ops.latest())
 
+    def test_a_configuration_of_another_machine_is_refused_before_anything_moves(self):
+        # The page shows a person only what this machine can run, and the API is the same promise: a
+        # request for another machine's configuration is a bad request, not a drain that closes the
+        # router and refuses afterwards. `expected_profile` is checked the other way round on purpose
+        # -- it reports what is already running, and a host that was given the wrong host_id has to be
+        # able to switch itself back to a configuration this revision knows.
+        self.c.host = {**self.c.host, 'host_id': 'daisy'}
+        with self.assertRaises(OperationError) as error:
+            self.ops.start(self.request())
+        self.assertEqual((error.exception.status, error.exception.code), (400, 'invalid-request'))
+        self.assertIsNone(self.ops.latest())
+        self.assertEqual(self.system.events, [])
+        self.assertFalse(self.system.draining)
+        self.assertEqual(self.c.status()['configurations']['selectable'], [])
+
     def test_startup_maintenance_recovery_and_unhealthy_runtime_block_switches(self):
         for filename, record in [('router-maintenance.json', {'reserved': True}),
                 ('transaction.json', {'phase': 'needs-attention'}), ('update-job.json', {'phase': 'controller-replacement'})]:

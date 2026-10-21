@@ -1,8 +1,10 @@
 """Serialized, recoverable reconciliation of the existing backend containers.
 
 A configuration loads one resident, or two side by side on the two text GPU pairs. A solo
-configuration owns all four text GPUs, so selecting it stops and removes the second resident,
-and selecting a paired configuration again recreates it.
+configuration owns every text GPU this host declares, so selecting it stops and removes the second
+resident, and selecting a paired configuration again recreates it. On a host that declares one GPU
+group the configurations that run alone are the only ones it has, and this is the same reconciliation
+over one backend instead of two.
 """
 import copy
 import datetime
@@ -15,8 +17,9 @@ import urllib.error
 import uuid
 
 from . import provision as provision_tool
-from .config import (CONFIGURATIONS, DEFAULT_PROFILE, EVERYDAY_PROFILE, available_profiles, digest, read, render,
-    require, resolve_profile, service_engine)
+from .config import (CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS, available_profiles,
+    configurations_for, default_profile, digest, gpu_architectures, host_id, read, render, require,
+    resolve_profile, service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # A transaction that has not reached a terminal phase. While one exists the runtime holds its
@@ -121,10 +124,14 @@ class Controller:
     def desired(self, profile=None):
         current = self.load('active.json', {})
         initial = resolve_profile(self.host.get('initial_profile'))
-        # A host's initial_profile may name a configuration later retired; start the default instead.
-        # A renamed one still resolves, so a rename never strands a host on its recorded release.
+        selectable = configurations_for(self.config_dir, self.host)
+        # A host's initial_profile may name a configuration later retired, or one that belongs to
+        # another machine; start this host's own default instead. A renamed one still resolves, so a
+        # rename never strands a host on its recorded release. The default is host-scoped for the
+        # same reason the registry is: a host is never started on a configuration that would refuse
+        # its own selection.
         selected = profile or current.get('bundle', {}).get('profile') or (
-            initial if initial in CONFIGURATIONS else DEFAULT_PROFILE)
+            initial if initial in selectable else default_profile(self.config_dir, self.host))
         return render(self.config_dir, self.host, selected)
 
     def backend_url(self, cfg):
@@ -1212,8 +1219,28 @@ class Controller:
     def status(self):
         active = self.load('active.json')
         bundle = active['bundle'] if active else self.desired()
+        # Which machine is answering, and what it has to place a model on. The page shows a GPU rail
+        # and has to say how many cards this host has instead of assuming the number the source was
+        # written against, and a person reading a screenshot cannot otherwise tell a host with two
+        # cards from a host with four that lost two.
+        declared = self.host.get('gpu_ids') or {}
+        groups = [group for group in PAIR_GROUPS if group in declared]
+        # A private setting with a typo in it is reported as one, not raised: this is what the health
+        # poll calls every few seconds and what an operator reads to find out what to fix, and a
+        # machine that is serving fine would otherwise be reported as a page that does not load.
+        try:
+            architectures = gpu_architectures(self.host)
+            host_report = {'id': host_id(self.host),
+                'gpu_architectures': list(architectures) if architectures else None,
+                'text_gpu_groups': groups, 'text_gpus': sum(len(declared[g]) for g in groups),
+                'vision_gpu_id': self.host.get('vision_gpu_id')}
+        except Exception as error:
+            host_report = {'id': None, 'error': str(error), 'text_gpu_groups': groups,
+                'text_gpus': sum(len(declared[g]) for g in groups),
+                'vision_gpu_id': self.host.get('vision_gpu_id')}
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
+            'host': host_report,
             'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
             # Two different facts, and the page must not read one as the other: `offline_roles` is
             # placement (a resident this configuration does not load), `offline_services` is what a

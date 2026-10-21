@@ -7,8 +7,9 @@ import tempfile
 import unittest
 
 from runtime.config import (CONFIGURATIONS, CONTAINER_CONTRACT, DEFAULT_PROFILE, EVERYDAY_PROFILE,
-    EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES, available_profiles, digest, engine_interface,
-    merge_settings, read, render, resolve_profile, service_engine, text_gpus, unknown_profile)
+    EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES, available_profiles, belongs_to_host,
+    configurations_for, default_profile, digest, engine_interface, merge_settings, read, render,
+    resolve_profile, service_engine, text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -46,6 +47,23 @@ def vision_host(host=None):
 def host_for(profile):
     # The exclusive profiles place their projector and MTP draft on the vision GPU.
     return vision_host() if profile in EXCLUSIVE else BASELINE['host']
+
+
+def second_machine(**changes):
+    """A second machine reading the same source: two cards, one pair, no card to lend for vision.
+
+    Written out rather than derived from Rosalina's settings, because the point of the host is that it
+    is not a Rosalina with a key removed: different cards, one text pair, nothing to lend for vision,
+    and a name of its own -- which is what turns host scoping on. The architectures default to the
+    ones the shipped engines carry, so a test that means to exercise the architecture guard says so.
+    """
+    host = {'model_root': '/models', 'router_state_dir': '/router',
+        'router_admin_url': 'http://ai-router:11435', 'router_admin_header': 'X-Admin-Token',
+        'uid': 1000, 'gid': 1000, 'host_id': 'daisy', 'gpu_architectures': ['86', '89'],
+        'gpu_ids': {'daytime': ['GPU-daisy-1', 'GPU-daisy-2']},
+        'gpu_names': {'daytime': ['RTX 2080 Ti', 'RTX 2080 Ti']}}
+    host.update(changes)
+    return host
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -99,7 +117,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_gpu_groups_cannot_overlap(self):
         host = copy.deepcopy(BASELINE['host']); host['gpu_ids']['nighttime'][0] = host['gpu_ids']['daytime'][0]
-        with self.assertRaisesRegex(RuntimeError, 'four distinct'):
+        with self.assertRaisesRegex(RuntimeError, 'reserves a card twice'):
             render(ROOT / 'config', host, 'qwen27b-q8-pair')
 
     def test_unknown_retired_profile_and_output_cap_are_rejected(self):
@@ -256,7 +274,7 @@ class ConfigurationTests(unittest.TestCase):
         # Both text pairs are reserved, so a host that cannot name four distinct cards is refused
         # before a drain is taken rather than after a backend has been half-built on three of them.
         host = vision_host(); host['gpu_ids']['nighttime'][0] = host['gpu_ids']['daytime'][0]
-        with self.assertRaisesRegex(RuntimeError, 'four distinct'):
+        with self.assertRaisesRegex(RuntimeError, 'reserves a card twice'):
             render(ROOT / 'config', host, SOLO)
         host = vision_host(); host['gpu_ids']['nighttime'] = host['gpu_ids']['nighttime'][:1]
         with self.assertRaisesRegex(RuntimeError, 'two real GPU UUIDs'):
@@ -540,7 +558,7 @@ class RegistryTests(unittest.TestCase):
             row = next(line for line in lines if line.startswith(entry['profile'] + ':'))
             self.assertIn(entry['display_name'], row)
             self.assertIn(entry['model'], row)
-            self.assertEqual(row.endswith('(all four text GPUs; runs without a second resident)'),
+            self.assertEqual(row.endswith('(owns every text GPU of this host; runs without a second resident)'),
             entry['profile'] in EXCLUSIVE)
 
     def registry_with(self, name, mutate):
@@ -1656,3 +1674,160 @@ class ConfigurationNamingTests(unittest.TestCase):
             used.add(definition['engine'])
         self.assertEqual(set(engines) - used, rollback,
             'unreferenced engine: ' + str(set(engines) - used - rollback))
+
+
+class MoreThanOneMachineTests(unittest.TestCase):
+    """A second machine reading this source, and what a configuration of another machine is.
+
+    The host says which machine it is and what its cards can execute; every definition says which
+    machines it was built for. These tests are the boundary: a row the operator could select is a
+    configuration this machine can run, and a card this machine does not have cannot be reserved by a
+    launch that was measured where the card did exist.
+    """
+
+    TWO_CARD_SOLO = 'flash-next-strata-two-card-iq3-s'
+
+    def config_with(self, name, **changes):
+        """The shipped configuration with one definition changed, in a tree of its own."""
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp)
+        config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+        path = config / 'profiles' / (name + '.json')
+        definition = read(path)
+        for key, value in changes.items():
+            if value is None:
+                definition.pop(key, None)
+            else:
+                definition[key] = value
+        path.write_text(json.dumps(definition))
+        return config
+
+    def test_every_shipped_definition_names_the_machine_it_runs_on(self):
+        for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
+            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+            with self.subTest(profile=name):
+                self.assertEqual(belongs_to_host(definition, second_machine(host_id='rosalina')), True)
+                self.assertEqual(belongs_to_host(definition, second_machine()), False,
+                    name + ' is a launch measured on Rosalina; a new machine names itself on the '
+                    'definitions that are built for it')
+
+    def test_a_definition_that_names_no_machine_is_refused(self):
+        # A default of "every machine" is how a configuration ends up rendered on hardware it was
+        # never measured on, which is the failure this whole boundary exists to make impossible.
+        for change in ({'hosts': None}, {'hosts': 'rosalina'}, {'hosts': []}, {'hosts': ['Rosalina']}):
+            with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, 'hosts must state'):
+                render(self.config_with('qwen27b-q8-pair', **change), BASELINE['host'], 'qwen27b-q8-pair')
+
+    def test_a_host_that_names_no_machine_sees_the_whole_registry(self):
+        # The private settings of a host that is already serving are edited by an operator, not by a
+        # release: until they name the machine, the release does not filter anything away from them.
+        self.assertEqual([x['profile'] for x in available_profiles(ROOT / 'config')['selectable']],
+            list(CONFIGURATIONS))
+        self.assertEqual([x['profile'] for x in
+            available_profiles(ROOT / 'config', BASELINE['host'])['selectable']], list(CONFIGURATIONS))
+        self.assertEqual(default_profile(ROOT / 'config', BASELINE['host']), DEFAULT_PROFILE)
+
+    def test_a_named_host_sees_only_the_configurations_that_name_it_back(self):
+        registry = available_profiles(ROOT / 'config', second_machine())
+        self.assertEqual(registry['selectable'], [],
+            'no shipped configuration is built for a second machine yet')
+        self.assertEqual(registry['always_included'], [],
+            'the Everyday resident is a launch of the machine that has the pair for it')
+        self.assertEqual(configurations_for(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']),
+            second_machine()), (self.TWO_CARD_SOLO,))
+
+    def test_a_host_whose_registry_is_empty_says_so(self):
+        with self.assertRaisesRegex(RuntimeError, 'No configuration of this revision names this host'):
+            default_profile(ROOT / 'config', second_machine())
+
+    def test_another_machines_configuration_refuses_to_render_and_names_both(self):
+        with self.assertRaisesRegex(RuntimeError,
+                r"qwen27b-q8-pair is a configuration of 'rosalina', and this host is 'daisy'"):
+            render(ROOT / 'config', second_machine(), 'qwen27b-q8-pair')
+
+    def test_a_one_pair_host_runs_a_solo_configuration_across_its_two_cards(self):
+        # The whole point of the boundary: not a degraded Rosalina, a configuration of this machine.
+        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all')
+        bundle = render(config, second_machine(), self.TWO_CARD_SOLO)
+        self.assertEqual(list(bundle['compose']['services']), ['coding'])
+        self.assertEqual([s['role'] for s in bundle['manifest']['services']], ['coding'])
+        service = bundle['compose']['services']['coding']
+        pair = second_machine()['gpu_ids']['daytime']
+        self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'], pair)
+        self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1')
+        self.assertEqual(service['environment']['GPUS'], '0,1')
+        model = bundle['catalog']['models'][0]
+        self.assertEqual(model['gpu_uuids'], pair)
+        self.assertEqual(model['gpu_names'], ['RTX 2080 Ti', 'RTX 2080 Ti'])
+        self.assertEqual(model['exclusive'], True)
+        # The profile promises pictures and this machine has no card for the encoder, so the contract
+        # publishes what the host delivers -- the same rule the shared-vision host works by, read the
+        # other way round.
+        self.assertEqual(model['input_modalities'], ['text'])
+        self.assertEqual(model['capability_profile']['vision'], False)
+        self.assertNotIn('vision_gpu_uuid', model)
+        # The Everyday resident is not offline here: `nighttime` is a service this machine never
+        # offered, and 503-ing a service ID nobody publishes is a different claim from silence.
+        self.assertEqual(bundle['catalog']['offline_services'], [])
+
+    def test_a_configuration_that_wants_the_other_pair_refuses_a_one_pair_host(self):
+        # Same definition, `exclusive` left off: it is a paired configuration again, and a paired
+        # configuration needs the pair this machine does not have. It refuses twice over, and the
+        # first refusal is the one that names the machine: the second resident it loads is a launch
+        # of the other host.
+        with self.assertRaisesRegex(RuntimeError, 'cannot bring another machine'):
+            render(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']), second_machine(),
+                self.TWO_CARD_SOLO)
+        # And with a second resident that does belong here, the card shortage still refuses: a host
+        # states the GPU groups it has, and this one has one.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            for name in (self.TWO_CARD_SOLO, EVERYDAY_PROFILE):
+                path = config / 'profiles' / (name + '.json')
+                definition = read(path); definition['hosts'] = ['daisy']
+                path.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError, 'declares no "nighttime" GPU group'):
+                render(config, second_machine(), self.TWO_CARD_SOLO)
+
+    def test_a_four_card_launch_refuses_a_host_with_two_cards(self):
+        # The guard the two-card trial was the argument for: the container would have booted, been
+        # healthy on its own health check, and asked the engine for cards it cannot see.
+        config = self.config_with(SOLO, hosts=['daisy'])
+        with self.assertRaisesRegex(RuntimeError, r'--gpus must name the text cards in the order'):
+            render(config, second_machine(), SOLO)
+
+    def test_an_image_without_sass_for_these_cards_is_refused_where_it_is_rendered(self):
+        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all')
+        with self.assertRaisesRegex(RuntimeError, 'carries SASS for CUDA 86/89'):
+            render(config, second_machine(gpu_architectures=['75']), self.TWO_CARD_SOLO)
+        # A host that does not state its cards gets no check it cannot answer -- and states them in
+        # the form an engine states them when it does.
+        self.assertEqual(len(render(config, second_machine(gpu_architectures=None),
+            self.TWO_CARD_SOLO)['compose']['services']), 1)
+        for bad in ('75', [], ['Turing']):
+            with self.subTest(architectures=bad), self.assertRaisesRegex(RuntimeError, 'gpu_architectures'):
+                render(config, second_machine(gpu_architectures=bad), self.TWO_CARD_SOLO)
+
+    def test_a_host_where_nothing_pairs_names_no_second_resident(self):
+        # `always_included` is the second resident a configuration on this host loads, not a resident
+        # that happens to be in the registry. On a host whose every configuration runs alone, the CLI
+        # header and the page both read it as "selecting any of these loads this too", and nothing does
+        # -- and the Everyday resident being scoped to this machine is not what makes it load.
+        from runtime.__main__ import listed
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            for name, changes in ((self.TWO_CARD_SOLO, {'hosts': ['daisy'], 'exclusive': True,
+                    'gpu_group': 'all'}), (EVERYDAY_PROFILE, {'hosts': ['daisy']})):
+                path = config / 'profiles' / (name + '.json')
+                definition = read(path); definition.update(changes)
+                path.write_text(json.dumps(definition))
+            registry = available_profiles(config, second_machine())
+            self.assertEqual([x['profile'] for x in registry['selectable']], [self.TWO_CARD_SOLO])
+            self.assertEqual(registry['always_included'], [])
+            self.assertIn('(no second resident in any configuration)', listed(config, second_machine()))
+
+    def test_the_cli_listing_is_the_host_s_own(self):
+        from runtime.__main__ import listed
+        self.assertEqual([line.split(':')[0] for line in
+                listed(ROOT / 'config', second_machine()).splitlines()], ['primary'])
+        listed_rows = [line.split(':')[0] for line in listed(ROOT / 'config').splitlines()]
+        self.assertEqual(listed_rows, ['primary', *CONFIGURATIONS, *EVERYDAY_PROFILES])

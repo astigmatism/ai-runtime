@@ -14,6 +14,8 @@ import copy
 import json
 from io import BytesIO
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 import urllib.error
 import uuid
@@ -21,6 +23,7 @@ from unittest.mock import patch
 
 import test_controller as fixture
 from runtime.config import read, render
+from runtime.controller import Controller
 from runtime.operations import Operations, OperationError, public_operation
 from runtime.system import atomic_json
 from runtime.web import public_status
@@ -609,3 +612,96 @@ class RestorationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OnePairHostRestorationTests(unittest.TestCase):
+    """The same promise on a host with one text pair, where one backend is the whole service.
+
+    A second machine is not a Rosalina with two cards taken away. With a single resident running, the
+    drain check has no second backend to lean on and the restoration has one container to bring back,
+    so the 2026-10-12 failures have to be re-fought on that shape as well -- it is the shape a two-card
+    host actually has, and it is the shape the release that first runs there will be restored into.
+    """
+
+    PAIR = ('flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s')
+    HOST = {'model_root': '/models', 'router_state_dir': '/router',
+        'router_admin_url': 'http://ai-router:11435', 'router_admin_header': 'X-Admin-Token',
+        'uid': 1000, 'gid': 1000, 'host_id': 'daisy', 'gpu_architectures': ['86', '89'],
+        'gpu_ids': {'daytime': ['GPU-daisy-1', 'GPU-daisy-2']},
+        'gpu_names': {'daytime': ['RTX 2080 Ti', 'RTX 2080 Ti']}}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name)
+        self.config = self.state / 'config'
+        shutil.copytree(ROOT / 'config', self.config)
+        # Two configurations of this machine, each running alone across its two cards.
+        for name in self.PAIR:
+            path = self.config / 'profiles' / (name + '.json')
+            definition = read(path)
+            definition.update(hosts=['daisy'], exclusive=True, gpu_group='all')
+            path.write_text(json.dumps(definition))
+        host = copy.deepcopy(self.HOST)
+        host['router_state_dir'] = str(self.state / 'router')
+        atomic_json(self.state / 'host.json', host)
+        (self.state / 'router-token').write_text('synthetic-token')
+        self.bundle = render(self.config, host, self.PAIR[0])
+        self.name = self.bundle['compose']['services']['coding']['container_name']
+        self.assertEqual(list(self.bundle['compose']['services']), ['coding'],
+            'a host with one text pair runs one backend, which is what these tests are about')
+        self.system = fixture.FakeSystem(self.bundle)
+        self.c = Controller(self.config, self.state, 'a' * 40, self.system)
+        self.active = {'revision': 'a' * 40, 'image': 'old-image', 'bundle': self.bundle}
+        atomic_json(self.state / 'active.json', self.active)
+        patch.object(self.c, 'prepare',
+            side_effect=lambda b: self.system.events.append(('prepare',))).start()
+        # Both configurations launch an engine that provisions its own run workspace, and this fake has
+        # no model tree to provision one into. Filling it is another test's subject; here it would only
+        # say that /models does not exist before the drain this test is about is ever opened.
+        patch.object(self.c, 'ensure_provisioned', return_value=False).start()
+        patch('runtime.controller.time.sleep').start()
+        self.addCleanup(patch.stopall)
+        self.system.__class__ = StubbornSystem
+        for knob, value in (('never_healthy_alias', None), ('refuse_slots', ()), ('slots_shape', None),
+                ('busy_names', None), ('slot_polls', 0), ('router_wedged_kind', None),
+                ('router_supported_kinds', None), ('router_503', None)):
+            setattr(self.system, knob, value)
+        self.system.router_catalog_path = str(self.state / 'router' / 'active-model.json')
+        self.web_state = {'started': True, 'status': self.c.status()}
+        self.ops = Operations(self.c, self.web_state)
+
+    def test_the_one_action_restores_the_only_backend_this_host_has(self):
+        self.system.containers[self.name]['State']['Running'] = False
+        self.c.set_drain(True, {'id': 'stranded'})
+        self.assertFalse(self.c.serving())
+        result = self.c.restore_last_known_good()
+        self.assertTrue(result['restored'])
+        self.assertEqual(result['profile'], self.PAIR[0])
+        self.assertTrue(self.c.serving())
+        self.assertFalse(self.system.draining, 'the router was left drained with nothing serving')
+        self.assertFalse(self.c.restoration_pending())
+        # What the page can honestly say about a host that has no second resident: the role is not
+        # placed, and no service ID is offline, because `nighttime` is not a service of this machine.
+        status = self.c.status()
+        self.assertTrue(status['service']['serving'])
+        self.assertEqual(status['offline_roles'], ['everyday'])
+        self.assertEqual(status['offline_services'], [])
+        self.assertEqual(status['host']['text_gpus'], 2)
+
+    def test_a_switch_that_never_becomes_healthy_leaves_this_host_serving(self):
+        # The incident, on one pair: the target starts, never answers, and the drain it opened has to
+        # be closed by putting the previous release back -- with no second backend to serve meanwhile.
+        target = render(self.config, self.c.host, self.PAIR[1])
+        # The pre-drain gate, not the failure under test: this fake router has to report the kind these
+        # configurations launch, or the switch is refused before it ever reaches the drain.
+        self.system.router_supported_kinds = ['ollama', 'llama_cpp', 'strata']
+        self.c._kinds_cache = None
+        self.system.never_healthy_alias = target['manifest']['services'][0]['model_alias']
+        with self.assertRaisesRegex(RuntimeError, 'Deployment failed'):
+            self.c.transition(self.PAIR[1])
+        self.assertFalse(self.system.draining, 'the router was left drained with nothing serving')
+        self.assertTrue(self.c.serving(), 'no healthy backend is serving after the failure')
+        self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
+        self.assertEqual(self.c.load('active.json')['bundle']['profile'], self.PAIR[0])
+        self.assertFalse(self.c.restoration_pending())
+        self.assertEqual(set(self.system.containers), {self.name})

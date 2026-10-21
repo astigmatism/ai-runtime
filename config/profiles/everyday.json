@@ -1,5 +1,6 @@
 {
   "id": "everyday",
+  "hosts": ["rosalina"],
   "role": "everyday",
   "display_name": "Qwen3.8 27B Abliterated Q6_K",
   "draft_on_vision_gpu": true,

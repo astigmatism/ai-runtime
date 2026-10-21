@@ -1,5 +1,6 @@
 {
   "id": "qwen27b-q8-pair",
+  "hosts": ["rosalina"],
   "role": "coding",
   "display_name": "Qwen3.8 27B Q8",
   "engine": "qwen38-dual-836d571",

@@ -1,5 +1,6 @@
 {
   "id": "flash-next-strata-two-card-iq4-xs",
+  "hosts": ["rosalina"],
   "role": "coding",
   "display_name": "Qwen3.8 Flash-Next Two-Card",
   "variant_label": "two cards, nothing else changed",

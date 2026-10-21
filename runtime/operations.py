@@ -4,7 +4,8 @@ import re
 import threading
 import uuid
 
-from .config import CONFIGURATIONS, everyday_for, is_exclusive, read, resolve_profile
+from .config import (CONFIGURATIONS, configurations_for, everyday_for, is_exclusive, read,
+    resolve_profile)
 from .controller import PENDING_PHASES
 from .system import lock, now
 
@@ -15,8 +16,8 @@ MESSAGES = {
     'checking': 'Checking the configuration, model files, and runtime.',
     'draining': 'Waiting for existing requests to finish. New requests are paused.',
     'loading': 'Loading the selected model. The Everyday resident stays loaded; new requests remain paused.',
-    'loading-stops-everyday': ('Stopping the Everyday resident, then loading the selected model on all four '
-        'text GPUs; new requests remain paused.'),
+    'loading-stops-everyday': ('Stopping the Everyday resident, then loading the selected model across '
+        "every text GPU this host has; new requests remain paused."),
     'loading-starts-everyday': ('Loading the selected model, then starting the Everyday resident again; new '
         'requests remain paused.'),
     'loading-everyday-off': 'Loading the selected model. The Everyday resident stays off; new requests remain paused.',
@@ -116,13 +117,21 @@ class Operations:
 
     def start(self, request):
         fields = {'profile', 'request_id', 'expected_revision', 'expected_profile'}
+        # The target must be a configuration of *this* host, and the pair is checked asymmetrically
+        # on purpose: `profile` is what this machine is about to load, so the host's own registry
+        # gates it, while `expected_profile` is a report of what is already running -- refusing it
+        # for belonging to another machine would strand a host that was given the wrong host_id with
+        # no way to switch itself back.
+        selectable = configurations_for(self.controller.config_dir, self.controller.host)
         if (not isinstance(request, dict) or set(request) != fields
                 or any(not isinstance(request[k], str) for k in fields)
-                or resolve_profile(request['profile']) not in CONFIGURATIONS
+                or resolve_profile(request['profile']) not in selectable
                 or resolve_profile(request['expected_profile']) not in CONFIGURATIONS
                 or not OPERATION_ID.fullmatch(request['request_id'])
                 or not re.fullmatch(r'[0-9a-f]{40}', request['expected_revision'])):
-            raise OperationError(400, 'invalid-request', 'Provide a registered profile, request UUID, and observed profile/revision.')
+            raise OperationError(400, 'invalid-request',
+                'Provide a configuration this host offers, a request UUID, and the observed '
+                'configuration/revision.')
         # A renamed configuration is still the configuration the page showed a moment ago, so the old
         # id resolves rather than refusing. The request is stored as sent, which is what makes
         # replaying it by request id the same request.

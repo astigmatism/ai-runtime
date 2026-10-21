@@ -15,6 +15,13 @@ Three words carry the whole model, and none of them is a time of day:
 GPU group keys in `.state/host.json` (`gpu_ids`, `gpu_names`, `cuda_order`), the shared vision GPU
 (`vision_gpu_id`, `vision_gpu_name`, `vision_cuda_device`) and the container names are operational
 identifiers, deliberately still the historical ones; see docs/deployment.md and docs/shared-vision.md.
+
+A second machine is a setting, not a fork. `.state/host.json` names it (`host_id`) and states what its
+cards can execute (`gpu_architectures`); every profile states which hosts it was built for (`hosts`),
+and a configuration of another machine is refused rather than offered. What the house calls a
+configuration is therefore only half the story of what runs: the other half is which machine is
+asking, which is why `configurations_for()` -- and never `CONFIGURATIONS` -- is what anything that
+offers a choice reads. See docs/deployment.md, "More than one machine".
 """
 import copy
 import hashlib
@@ -26,6 +33,9 @@ from pathlib import Path
 # resident; a solo configuration holds every text GPU and runs the Everyday resident's service ID from
 # its own backend instead. Display names come from each profile file.
 #
+# This is the whole registry of the revision, which is not the same thing as what any one machine can
+# select: read configurations_for(host) for that, and read this only when the question is "does this
+# revision know this id at all" (a retired name, an alias, the updater reading a target revision).
 # Every one of these publishes a service alias a contract client can address, and every one publishes
 # `daytime`: a client that only ever sends `daytime` -- which is what LLM Router's CLIENT_CONTRACT.md
 # tells it to do -- always has something to send, whichever configuration is selected. Asserted for
@@ -103,6 +113,117 @@ def read(path):
     return json.loads(Path(path).read_text())
 
 
+# A deployment is one machine, and which machine it is used to be an assumption. Three names carry
+# it now: `host_id` in `.state/host.json` names the machine, `gpu_architectures` names what its
+# cards can actually execute, and `hosts` on a profile names the machines that profile was built
+# for. This is the same rule the house applies to every other fact -- what is not stated is a fact
+# that drifts -- aimed at the specific failure of rendering a measured launch onto hardware it was
+# never measured on, which spends a drain to arrive at a model that cannot start.
+HOST_ID = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?')
+
+
+def host_id(host):
+    """The machine these host settings belong to, or None when they do not say.
+
+    Absent is deliberately not an error. The private settings of a host that is already serving are
+    edited by an operator and not by a release, so a deployment whose `host.json` names no host
+    keeps the registry it has always seen instead of waking up with nothing selectable. Naming
+    itself is what turns the filter on, on both sides.
+    """
+    value = (host or {}).get('host_id')
+    if value is None:
+        return None
+    require(isinstance(value, str) and HOST_ID.fullmatch(value),
+        "host_id, if a host states it at all, is a lowercase slug of letters, digits and '-', not a "
+        "hostname, a path or a GPU UUID")
+    return value
+
+
+def gpu_architectures(host):
+    """The CUDA architectures this host's cards execute, or None when the host does not say.
+
+    This is the reading that keeps an image built for one generation off another machine: the images
+    in service carry sm_86/sm_89 SASS and a Turing card cannot run a line of it. A host that states
+    its architectures gets that checked while a configuration renders, before the drain rather than
+    at the first kernel launch.
+    """
+    value = (host or {}).get('gpu_architectures')
+    if value is None:
+        return None
+    require(isinstance(value, list) and value and all(isinstance(v, str) and v.isdigit() for v in value),
+        'gpu_architectures, if a host states it at all, is a non-empty list of CUDA architecture '
+        'numbers as strings, in the form an engine entry states them')
+    return tuple(value)
+
+
+def require_engine_architecture(name, host, engine):
+    """Refuse an image that has no SASS for these cards.
+
+    An engine built for another architecture is not a slow start: the container loads, answers the
+    health check its own entry point writes, and dies at its first kernel launch -- for an exclusive
+    resident that is nothing serving, after the drain. Checked against what the engine entry states
+    it was built for, which is the same declaration a person reads to decide what to build.
+    """
+    built = tuple(str(arch) for arch in engine.get('cuda_architectures', []))
+    stated = gpu_architectures(host)
+    if stated is None or not built:
+        return
+    require(set(built) & set(stated), name + ': engine ' + engine['tag'] + ' carries SASS for CUDA '
+        + '/'.join(built) + ', and this host states cards of CUDA ' + '/'.join(stated) +
+        '. The image would start and refuse to compute, so the configuration is refused here rather '
+        'than after the drain: build the engine for this architecture, or select a configuration of '
+        'this host')
+
+
+def profile_hosts(definition):
+    """The machines a definition says it was built for.
+
+    No default of "every machine": the pair of cards, the memory sizing and the artifact set *are*
+    the machine, and a configuration that names no host is a configuration nobody has said where it
+    runs. Naming hosts is cheap -- it is one line beside the engine it pins.
+    """
+    hosts = definition.get('hosts')
+    require(isinstance(hosts, list) and hosts and all(
+        isinstance(value, str) and HOST_ID.fullmatch(value) for value in hosts),
+        str(definition.get('id')) + ': hosts must state at least one host this definition is built '
+        'for, as a list of host_id slugs')
+    return tuple(hosts)
+
+
+def belongs_to_host(definition, host):
+    """Whether this machine's settings entitle it to select this definition."""
+    machine = host_id(host)
+    return machine is None or machine in profile_hosts(definition)
+
+
+def configurations_for(config_dir, host=None):
+    """The selectable configuration ids for this host, in registry order.
+
+    The registry stays one list, because `runtime/update.py` reads the `CONFIGURATIONS` tuple out of
+    the *target* revision's source with a parser that has no host to ask. This is the one place the
+    host's share of that list is derived, and every surface that offers a choice reads it here.
+    """
+    machine = host_id(host)
+    if machine is None:
+        return tuple(CONFIGURATIONS)
+    config_dir = Path(config_dir)
+    return tuple(name for name in CONFIGURATIONS
+        if machine in profile_hosts(read(config_dir / 'profiles' / (name + '.json'))))
+
+
+def default_profile(config_dir, host=None):
+    """What a host with no recorded release starts on.
+
+    `DEFAULT_PROFILE` is the house default, and it is only a default where its hardware exists. On a
+    host that does not run the paired 27B, the first configuration of its own registry order is the
+    default, so a host is never started on a configuration that would refuse its selection.
+    """
+    selectable = configurations_for(config_dir, host)
+    require(selectable, 'No configuration of this revision names this host; every one of '
+        + ', '.join(CONFIGURATIONS) + ' belongs to another machine')
+    return DEFAULT_PROFILE if DEFAULT_PROFILE in selectable else selectable[0]
+
+
 def resolve_profile(profile):
     """Map a renamed configuration id to the id this revision uses.
 
@@ -150,7 +271,7 @@ def service_engine(bundle, role):
 
 
 def is_exclusive(definition):
-    """A solo configuration owns all four text GPUs; no second resident runs while it is selected."""
+    """A solo configuration owns every text GPU this host declares; no second resident runs beside it."""
     exclusive = definition.get('exclusive', False)
     require(exclusive is True or exclusive is False, definition['id'] + ': exclusive must be true or false')
     if exclusive:
@@ -169,22 +290,49 @@ def parallel_slots(definition):
     return slots
 
 
+def text_groups(host):
+    """The text GPU groups this host declares, in the order a solo configuration reserves them.
+
+    A machine with two text cards declares one pair and a machine with four declares two. `all` has
+    always meant "every text GPU there is"; this is that fact read from the host instead of from a
+    constant that assumed every machine looked like the first one.
+    """
+    groups = host['gpu_ids']
+    require(isinstance(groups, dict) and groups and not set(groups) - set(PAIR_GROUPS),
+        'host.json declares its text GPUs in groups named ' + ' and '.join(PAIR_GROUPS) +
+        '; this host declares ' + (', '.join(sorted(groups)) if groups else 'nothing'))
+    return [group for group in PAIR_GROUPS if group in groups]
+
+
+def gpu_pair(host, group):
+    """The two text GPU UUIDs of one group this host actually declares.
+
+    The refusal matters more than the lookup: a one-pair host handed a configuration of the second
+    pair used to fail on a missing key or on a total that named four GPUs, and neither said that the
+    machine simply does not have that many cards.
+    """
+    groups = host['gpu_ids']
+    require(group in groups, 'host.json declares no "' + str(group) + '" GPU group; this host declares '
+        + ', '.join(text_groups(host)) + '. A configuration places its GPUs on groups this host states, '
+        'and a host with fewer cards runs the configurations of a host with fewer cards')
+    pair = groups[group]
+    require(len(pair) == 2 and all(x.startswith('GPU-') and 'REPLACE' not in x for x in pair),
+        'Configure two real GPU UUIDs per group in host.json')
+    return list(pair)
+
+
 def text_gpus(host, definition):
-    """Text GPU UUIDs in CUDA order for an exclusive profile, or the configured pair otherwise."""
-    groups = PAIR_GROUPS if is_exclusive(definition) else (definition['gpu_group'],)
-    devices = []
-    for group in groups:
-        pair = host['gpu_ids'][group]
-        require(len(pair) == 2 and all(x.startswith('GPU-') and 'REPLACE' not in x for x in pair),
-            'Configure two real GPU UUIDs per group in host.json')
-        devices.extend(pair)
-    return devices
+    """Text GPU UUIDs in CUDA order for a configuration that owns the host, or for its own pair."""
+    groups = text_groups(host) if is_exclusive(definition) else (definition['gpu_group'],)
+    return [gpu for group in groups for gpu in gpu_pair(host, group)]
 
 
 def gpu_names(host, definition):
     """Card names in the same order as text_gpus(); empty when the host does not name them."""
     names = (host or {}).get('gpu_names') or {}
-    groups = PAIR_GROUPS if is_exclusive(definition) else (definition['gpu_group'],)
+    if not names:
+        return []
+    groups = text_groups(host) if is_exclusive(definition) else (definition['gpu_group'],)
     return [name for group in groups for name in names.get(group, [])]
 
 
@@ -631,16 +779,25 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}
     reserved, vision_index = engine_vision_gpu(name, host, engine, options, environment, text_devices)
-    if vision_index is not None:
-        # The engine numbers the cards itself, so the profile states which of them the language
-        # model runs on and the renderer only grows the visible list by the card the host lends.
-        # Indices rather than UUIDs, because that is what this engine is addressed in: the encoder
-        # is placed by the same numbering, so `--gpus 0,1,2,3` keeps meaning the text cards.
-        stated = [item.strip() for item in str(environment.get('CUDA_VISIBLE_DEVICES', '')).split(',')]
-        require(stated == [str(index) for index in range(len(text_devices))], name +
-            ': the container-visible GPU list must state the text cards as ' +
-            ','.join(str(index) for index in range(len(text_devices))) +
+    # The engine numbers the cards it is given, so two statements in a profile are statements about
+    # how many cards this machine has: which ones the language model runs on (`--gpus`) and which ones
+    # the container can see. Both are checked against what the host can actually place, because a
+    # four-card launch rendered onto a two-card host is otherwise a container of two cards whose engine
+    # was told to use four -- and that boot fails after the drain, on a machine that was serving.
+    text_indices = [str(index) for index in range(len(text_devices))]
+    if '--gpus' in options:
+        require([item.strip() for item in str(options['--gpus']).split(',')] == text_indices, name +
+            ': --gpus must name the text cards in the order this host can place them, as '
+            + ','.join(text_indices) + '. A configuration places its model on the cards the host has; '
+            'a host with fewer cards runs the configurations written for fewer cards')
+    visible = environment.get('CUDA_VISIBLE_DEVICES')
+    if visible is not None:
+        require([item.strip() for item in str(visible).split(',')] == text_indices, name +
+            ': the container-visible GPU list must state the text cards as ' + ','.join(text_indices) +
             '; the shared vision GPU is appended by the renderer, being a fact of the host')
+    if vision_index is not None:
+        # Indices rather than UUIDs, because that is what this engine is addressed in: the encoder is
+        # placed by the same numbering, so `--gpus 0,1` keeps meaning the text cards.
         environment['CUDA_VISIBLE_DEVICES'] = ','.join(str(index) for index in range(len(reserved)))
     cfg.update(image=engine['tag'], container_name=definition['container_name'], command=[],
         environment=environment, volumes=mounts,
@@ -730,26 +887,38 @@ def profile_summary(config_dir, name, shared, host=None):
 
 
 def available_profiles(config_dir, host=None):
-    """Every configuration this revision can apply, plus the second resident a paired one loads."""
+    """The configurations this host can select, plus the second resident a paired one loads.
+
+    The host is not a display nicety. A row on the status page is read as a decision the operator
+    could make, and on a machine with one GPU pair the configurations of a four-GPU machine are not
+    decisions it can make at all -- they would refuse their own selection. `host=None` asks for the
+    whole registry, which is what a revision-wide check wants and what a host whose private settings
+    name no machine still sees.
+    """
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
+    definitions = {}
     def describe(name):
+        definitions[name] = read(config_dir / 'profiles' / (name + '.json'))
         return profile_summary(config_dir, name, shared, host)
     residents = {name: describe(name) for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS)}
-    selectable = [residents[name] for name in CONFIGURATIONS]
+    offered = {name for name, definition in definitions.items() if belongs_to_host(definition, host)}
+    selectable = [residents[name] for name in CONFIGURATIONS if name in offered]
     for entry in selectable:
         # What a client can ask for while this configuration is selected. For a paired configuration
         # that is the two residents together: `nighttime` is answered by the second one, and a page
         # that read only the first resident's aliases would report a service as missing while it was
-        # answering.
+        # answering. A second resident this host does not run is not an alias it answers either.
         second = residents.get(entry.get('everyday'))
-        if second:
+        if second and entry.get('everyday') in offered:
             entry['service_ids'] = sorted(set(entry['service_ids']) | set(second['service_ids']))
     used = {entry['everyday'] for entry in selectable if 'everyday' in entry}
     return {'selectable': selectable,
-        'always_included': [residents[name] for name in EVERYDAY_PROFILES
-            if name == EVERYDAY_PROFILE or name in used]}
+        # A second resident is listed because some configuration this host offers loads it. The
+        # Everyday resident being in the registry is not that: on a host whose every configuration
+        # runs alone, naming one would have the CLI and the page describe a resident nothing starts.
+        'always_included': [residents[name] for name in EVERYDAY_PROFILES if name in used]}
 
 
 def offline_services(config_dir, shared, host, loaded):
@@ -762,11 +931,17 @@ def offline_services(config_dir, shared, host, loaded):
     therefore declares nothing offline, and one that stopped offering it would. Roles and service IDs
     are separate facts -- `offline_roles` says what is loaded, this says what answers -- and
     conflating them is how a status page comes to tell you a model is off while it is answering.
+
+    A resident that belongs to another machine publishes nothing here at all, so it makes nothing
+    offline: the honest answer for a service this host never offered is that it does not know it,
+    not that it is temporarily down.
     """
     published = {alias for definition in loaded for alias in definition['catalog'].get('aliases', [])}
     offline = []
     for name in EVERYDAY_PROFILES:
         definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
+        if not belongs_to_host(definition, host):
+            continue
         aliases = [alias for alias in definition['catalog'].get('aliases', []) if alias not in published]
         if not aliases:
             continue
@@ -805,6 +980,14 @@ def render(config_dir, host, profile):
         'router': {'external': True, 'name': shared['network']}}}
     models, artifacts, manifests, gpu_ids = [], {}, [], []
     selected = read(config_dir / 'profiles' / (profile + '.json'))
+    # Another machine's configuration is refused here and not offered upstream: the registry the
+    # status page reads filters the same way, but the switch API, the CLI and a hand-written
+    # transaction can all name an id directly, and rendering one onto the wrong hardware is a drain
+    # spent on a launch that was measured somewhere else.
+    require(belongs_to_host(selected, host), profile + ' is a configuration of '
+        + ' or '.join(repr(name) for name in profile_hosts(selected)) + ', and this host is '
+        + repr(host_id(host)) + '. Its cards, its memory sizing and its artifacts are that machine\'s; '
+        'select a configuration of this host, or state this host on the profile if it really runs here')
     exclusive_profile = is_exclusive(selected)
     # Also refuses a second resident named by a solo configuration, which has no other GPU pair.
     # Resolved before the exclusivity check for the same reason profile_summary resolves it: a solo
@@ -814,10 +997,16 @@ def render(config_dir, host, profile):
         second = None
     loaded = [selected] if second is None else [selected,
         read(config_dir / 'profiles' / (second + '.json'))]
+    for definition in loaded[1:]:
+        require(belongs_to_host(definition, host), 'Configuration ' + profile + ' loads '
+            + definition['id'] + ' beside it, and that resident belongs to '
+            + ' or '.join(repr(name) for name in profile_hosts(definition))
+            + ' -- a configuration cannot bring another machine\'s second resident with it')
     for definition in loaded:
         name = definition['id']
         role = definition['role']
         engine = shared['engines'][definition['engine']]
+        require_engine_architecture(name, host, engine)
         ctx = definition['context_tokens']
         require_router_context(ctx)
         slots = parallel_slots(definition)
@@ -962,7 +1151,17 @@ def render(config_dir, host, profile):
             'model_alias': entry['model'], 'context_tokens': ctx, 'parallel_slots': slots,
             'display_name': entry['display_name'], 'recommended_argv': argv,
             'gpu_device_ids': devices, 'mounts': mounts})
-    require(len(gpu_ids) == 4 and len(set(gpu_ids)) == 4, 'Backends require four distinct GPUs')
+    # What "every text GPU this host declares, once each" used to be written as: four, in a house
+    # with four. The number was the machine, and the machine is now a setting -- a host with one
+    # pair renders the configurations of one pair, and a configuration that left a declared card
+    # unplugged would be a card nothing can be placed on.
+    declared = {gpu for group in text_groups(host) for gpu in gpu_pair(host, group)}
+    require(len(gpu_ids) == len(set(gpu_ids)),
+        'Backends require one reservation per text GPU; ' + ', '.join(gpu_ids) + ' reserves a card twice')
+    require(set(gpu_ids) == declared, 'The selected configuration reserves ' + str(len(set(gpu_ids)))
+        + ' text GPUs and this host declares ' + str(len(declared)) +
+        '. A configuration reserves every text GPU this host states, in one resident or in two; a card '
+        'that belongs to neither is a card the operator believes is serving and nothing can be placed on')
     catalog = {**copy.deepcopy(models[0]), 'schema_version': 3,
         'default_model': models[0]['model'], 'models': models,
         'configuration': {'id': profile, 'exclusive': exclusive_profile},

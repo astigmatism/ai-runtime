@@ -1,5 +1,6 @@
 {
   "id": "flash-next-strata-two-card-iq3-s",
+  "hosts": ["rosalina"],
   "role": "coding",
   "display_name": "Qwen3.8 Flash-Next Two-Card IQ3_S",
   "variant_label": "two cards, the 3.5-bit pack",

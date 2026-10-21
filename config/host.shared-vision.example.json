@@ -1,4 +1,6 @@
 {
+  "host_id": "rosalina",
+  "gpu_architectures": ["86", "89"],
   "model_root": "/home/operator/ai/models/llm",
   "router_state_dir": "/home/operator/deployments/llm-router/data/runtime",
   "router_admin_url": "http://ai-router:11435",

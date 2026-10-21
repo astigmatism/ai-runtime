@@ -369,6 +369,53 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(pre_migration['configurations']['active'], 'qwen27b-q8-pair')
         self.assertEqual(len(pre_migration['configurations']['selectable']), len(CONFIGURATIONS))
 
+    def test_the_page_says_which_machine_is_answering(self):
+        # A GPU rail that counts the cards it was written against describes a machine that is not
+        # there as soon as a second machine reads the same source. The count is published from the
+        # host settings, and so is the name, which is the only way a screenshot of a two-card host
+        # can be told apart from a four-card host that lost two cards.
+        self.assertEqual(self.c.status()['host'], {'id': None, 'gpu_architectures': None,
+            'text_gpu_groups': ['daytime', 'nighttime'], 'text_gpus': 4, 'vision_gpu_id': None})
+        self.c.host = {**self.c.host, 'host_id': 'daisy', 'gpu_architectures': ['75']}
+        status = self.c.status()
+        self.assertEqual(status['host'], {'id': 'daisy', 'gpu_architectures': ['75'],
+            'text_gpu_groups': ['daytime', 'nighttime'], 'text_gpus': 4, 'vision_gpu_id': None})
+        # A host that names a machine no configuration is built for still reports its health -- and
+        # offers nothing, which is the state an operator has to be able to see and then fix.
+        self.assertEqual(status['ready'], True)
+        self.assertEqual(status['configurations']['selectable'], [])
+        self.assertEqual(status['configurations']['always_included'], [])
+        self.assertEqual(status['configurations']['active'], 'qwen27b-q8-pair',
+            'what is running stays reported even when nothing on this machine may be selected')
+        self.c.host = {**self.c.host, 'gpu_architectures': ['75', 'Turing']}
+        self.assertIn('error', self.c.status()['host'])
+
+    def test_a_host_that_names_itself_loads_what_it_was_built_for(self):
+        # The same controller on a host that names itself: the registry it publishes is the share of
+        # it that was built for this machine, which is the whole separation, seen from the surface.
+        config = self.state / 'config'
+        shutil.copytree(ROOT / 'config', config)
+        for name in ('flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'):
+            path = config / 'profiles' / (name + '.json')
+            definition = read(path)
+            definition.update(hosts=['rosalina', 'daisy'], exclusive=True, gpu_group='all')
+            path.write_text(json.dumps(definition))
+        host = copy.deepcopy(HOST); host['host_id'] = 'daisy'
+        host['gpu_ids'] = {'daytime': HOST['gpu_ids']['daytime'][:2]}
+        host['gpu_names'] = {'daytime': HOST['gpu_names']['daytime'][:2]}
+        host.pop('cuda_order', None); host.pop('vision_gpu_id', None)
+        atomic_json(self.state / 'host.json', host)
+        (self.state / 'active.json').unlink()  # This machine has never deployed anything of its own.
+        controller = Controller(config, self.state, 'a' * 40, self.system)
+        status = controller.status()
+        self.assertEqual([x['profile'] for x in status['configurations']['selectable']],
+            ['flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'])
+        self.assertEqual(status['configurations']['active'], 'flash-next-strata-two-card-iq4-xs')
+        self.assertEqual(status['host']['text_gpus'], 2)
+        self.assertEqual(status['offline_roles'], ['everyday'])
+        # With nothing else to load, the first configuration of this host is the one to fall back to.
+        self.assertEqual(controller.desired()['profile'], 'flash-next-strata-two-card-iq4-xs')
+
     def test_unreadable_registry_never_hides_the_health_of_the_pair(self):
         with patch('runtime.controller.available_profiles', side_effect=RuntimeError('registry exploded')):
             status = self.c.status()

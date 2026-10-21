@@ -20,13 +20,21 @@ const answers = (config, id) => !!config && (config.service_ids || []).includes(
 const configFor = profile => configurations().find(c => c.profile === profile);
 const profileName = profile => configFor(profile)?.display_name || profile || 'Unknown configuration';
 const gpuList = names => names?.length ? names.join(' + ') : 'GPUs unavailable';
+// How a configuration that runs alone owns the machine. The count comes from this host's status,
+// because "all the text cards" is a different number on a two-card host than on a four-card one, and
+// a page that hard-codes the number the source was written against is a page that lies about a
+// second machine.
+const ownsTextGpus = () => {
+  const count = status?.host?.text_gpus;
+  return count ? `all ${count} text GPUs` : 'every text GPU of this host';
+};
 // Only added where a display name does not already say how many requests run at once.
 const slotsText = (slots, name = '') => slots > 1 && !/request/i.test(name) ? ` · ${slots} requests at once` : '';
 function configTitle(config) {
   // Two configurations of one backend have the same display name because it is the same model, so the
   // variant label is the only thing that tells an operator which one the radio is selecting.
   const own = config.variant_label ? ` (${config.variant_label})` : '';
-  if (config.exclusive) return `${config.display_name}${own} · one model, all four text GPUs`;
+  if (config.exclusive) return `${config.display_name}${own} · one model, ${ownsTextGpus()}`;
   const variant = everyday(config.everyday);
   const label = variant?.variant_label;
   return `${config.display_name} + Everyday${label ? ` (${label})` : ''}`;
@@ -381,7 +389,7 @@ el('switch-form').addEventListener('submit',async event => {
   // word "exclusive": stopping a resident and stopping a service are different promises.
   const stopped = answers(target, 'nighttime') ? `${profileName(selected)} answers its requests in the meantime`
     : 'its requests will fail until you choose a configuration that loads it again';
-  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses all four text GPUs, so the Everyday model will stop. ${stopped}. Continue?`)) return;
+  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected && !confirm(`${profileName(selected)} uses ${ownsTextGpus()}, so the Everyday model will stop. ${stopped}. Continue?`)) return;
   submitting=true; actionError=''; tellError(''); updateControls(); clearTimeout(timer);
   const request = pending && pending.profile===selected && pending.expected_profile===status.profile && pending.expected_revision===status.deployed_revision ? pending : {profile:selected,request_id:uuid(),expected_profile:status.profile,expected_revision:status.deployed_revision};
   remember(request);
