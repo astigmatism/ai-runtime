@@ -13,7 +13,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY runtime /app/runtime
 COPY config /app/config
+# The deployment surface is part of what a revision is tested against, and two of those tests read the
+# service definition rather than the running container: what a machine mounts, and which environment file
+# its push credential arrives through, are decided here and nowhere else.
 COPY tests /app/tests
+COPY compose.yaml /app/compose.yaml
 RUN printf '%s\n' "$SOURCE_REVISION" > /app/REVISION
 USER 1000:1000
 CMD ["python3", "-m", "runtime", "serve"]

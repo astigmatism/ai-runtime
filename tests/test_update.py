@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -57,6 +58,16 @@ class UpdateTests(unittest.TestCase):
         (self.root / '.env').write_text('RUNTIME_IMAGE=old-image\nKEEP_THIS=value\n')
         self.active = {'revision': A, 'image': 'old-image', 'bundle': {'profile': 'daytime'}}
         atomic_json(self.state / 'active.json', self.active)
+        # `candidate()` reads the Docker group id off the host's socket, and the box running this suite
+        # may be a container that never had one — the candidate image runs these very tests before it is
+        # trusted with anything. What matters to the tests is which group id lands in `--group-add`.
+        real_stat = os.stat
+        def fake_stat(path, *args, **kwargs):
+            if str(path) == '/var/run/docker.sock':
+                return SimpleNamespace(st_gid=998)
+            return real_stat(path, *args, **kwargs)
+        socket = patch('os.stat', side_effect=fake_stat)
+        socket.start(); self.addCleanup(socket.stop)
         self.h = Harness(self.root); self.u = Updater(self.root, execute=self.h)
         def export(revision):
             source = self.state / revision; source.mkdir(exist_ok=True)
