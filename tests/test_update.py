@@ -51,6 +51,17 @@ class Harness:
         return SimpleNamespace(returncode=code, stdout=stdout, stderr='simulated failure' if code else '')
 
 
+def deployment_surface():
+    """The service definition this checkout deploys with. The candidate image runs the tests from a tree
+    that ships the runtime, the configuration registry and the tests — deliberately not the deployment
+    surface it is started by — so a test about that surface says where it is instead of failing there.
+    """
+    path = Path(__file__).resolve().parents[1] / 'compose.yaml'
+    if not path.is_file():
+        raise unittest.SkipTest('compose.yaml belongs to the checkout, and this tree is an image')
+    return path.read_text()
+
+
 class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -234,7 +245,7 @@ class UpdateTests(unittest.TestCase):
         # naming a variable the machine has no reason to own, raised at the first `up`. The mount now
         # falls back to the state directory it already has, and `host.json` stays the only place that
         # decides whether this machine writes a file or pushes.
-        compose = (Path(__file__).resolve().parents[1] / 'compose.yaml').read_text()
+        compose = deployment_surface()
         self.assertIn('${ROUTER_STATE_DIR:-', compose)
         self.assertNotIn('${ROUTER_STATE_DIR:?', compose)
 
@@ -244,7 +255,7 @@ class UpdateTests(unittest.TestCase):
         # publisher, which is a machine that publishes once, by hand, and then stops on the five-minute
         # loop with nothing in the environment to send. `env_file` on the service is the fix, and it is
         # this line that notices when it goes away.
-        compose = (Path(__file__).resolve().parents[1] / 'compose.yaml').read_text()
+        compose = deployment_surface()
         service = compose.split('services:')[1]
         self.assertIn('env_file:', service)
         self.assertLess(service.index('env_file:'), service.index('\n    environment:'))
