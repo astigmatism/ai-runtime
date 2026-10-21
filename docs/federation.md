@@ -34,6 +34,19 @@ While both are configured the two are not equals, and pretending otherwise gets 
 
 ## A new machine, in order
 
+The household router is `http://192.168.1.23:11435` for publication and control;
+consumers discover models and generate through `http://192.168.1.23:11434/v1`.
+Every runtime deployment supplies that target in its private host settings, its own
+`host_id`, a LAN `backend_address`, and both credentials in its deployment environment.
+The address is deployment configuration, not a constant in application code. A new
+host must also be declared in the router's roster; publishing does not enrol it.
+
+Publication verification reads the host's configuration and stored catalog revision
+from `/admin/api/hosts`. The model's `profile` (usually `primary`) is not the runtime
+configuration ID. During migration, recovery verifies the addresses in the release
+it restores, so a failed LAN binding can return to the previous local-only release
+and reopen the legacy router. A remote-only deployment requires reachable backends.
+
 Declare it at the router (`ROUTER_HOSTS`) and restart the router. Give it a `.state/host.json` with `host_id`, `gpu_architectures`, its own model root, `backend_address`, and a `router_target` naming the credential — [the example](../config/host.second-machine.example.json) is that file. Give the container both tokens in its environment — `CATALOG_PUSH_TOKEN` to hand over a catalog, and the router's control token to drain and read state — never in the repository, and never in `host.json`. The second is not optional for a machine that switches behind a remote router: the router's contract keeps a publisher out of its control plane on purpose, and a switch has to do both. The router's address lives in an environment variable, which is the only reason it is not in the code. Run a switch, and read the receipt.
 
 A machine that states neither sink refuses to start. The failure it prevents is a runtime that begins, passes every health check, and tells nobody, with every metric green and the household without models.

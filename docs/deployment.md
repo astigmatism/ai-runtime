@@ -948,6 +948,21 @@ journals; the browser is shown the shape of the failure, never its text.
 
 ## Recover an interrupted update
 
+If the deployed updater cannot launch a candidate at all (for example, releases
+before `a0e9b27` put a Docker mount option after the image name), retrying the Portal
+action cannot install its fix. Use a previously built, verified candidate image's
+updater for this exceptional recovery. Keep the production checkout untouched:
+mount that checkout at its existing absolute path and the Docker socket into the
+candidate, run as the deployment user with the socket group, and invoke
+`python3 -m runtime.update --root <production-checkout>` from `/app` in the image.
+Use `--recover` first if the journals still describe an interrupted transaction.
+Verify the image's OCI revision against the published commit before invoking it.
+
+This runs the same clean-checkout, fast-forward, candidate-test, validation, drain,
+rollback and controller-health gates. Only the updater advances the checkout.
+Do not edit the checkout to repair the updater, replace release receipts, or apply
+an image by hand. After recovery, verify a normal **Update and restart** action.
+
 ```sh
 cd /home/astigmatism/apps/local-ai-runtime
 scripts/recover-update.sh

@@ -27,10 +27,68 @@ from runtime.controller import Controller
 from runtime.operations import Operations, OperationError, public_operation
 from runtime.system import atomic_json
 from runtime.web import public_status
+import test_publication as publication_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVED = 'The last-known-good configuration is serving and requests are open.'
 BOTH = ['qwen38-daytime', 'qwen38-nighttime']
+
+
+class RemoteRouterRestorationTests(unittest.TestCase):
+    # Reuse the fixture, not its tests. Its router reports the real role "primary" and
+    # the configuration separately, as the production router did during the October 21 outage.
+    build = publication_fixture.PublisherTests.build
+    PROFILE = publication_fixture.PublisherTests.PROFILE
+
+    def setUp(self):
+        self.c = self.build()
+        self.c.validate = lambda bundle, **kw: None
+        self.c.preparation_needed = lambda bundle: False
+        self.c.transition(self.PROFILE, adopt=True)
+
+    def assert_serving(self):
+        self.assertTrue(self.c.serving())
+        self.assertFalse(self.system.draining)
+        self.assertEqual(self.router.drain, {})
+        self.assertFalse(self.c.restoration_pending())
+
+    def test_controller_deployment_verifies_configuration_separately_from_model_role(self):
+        self.c.revision = 'b' * 40
+        result = self.c.transition(deploy=True)
+        self.assertEqual(result['changed_roles'], [])
+        self.assertEqual(self.c.load('transaction.json')['phase'], 'succeeded')
+        self.assert_serving()
+
+    def test_failed_lan_migration_restores_the_previous_local_backend_and_opens_admission(self):
+        previous = self.c.load('active.json')
+        self.c.host['backend_address'] = '192.168.1.4'
+        self.router.available = False
+        with self.assertRaisesRegex(RuntimeError, 'Deployment failed:.*cannot reach'):
+            self.c.transition()
+        self.assertEqual(self.c.load('active.json'), previous)
+        self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
+        self.assert_serving()
+
+    def test_admin_failure_during_restoration_retries_and_reopens_both_routers(self):
+        self.c.set_drain(True, {'id': 'interrupted'})
+        real = self.router.handle
+        def fail_once(path, *args, **kwargs):
+            if path.endswith('/runtime-state'):
+                raise urllib.error.HTTPError(path, 401, 'Unauthorized', {}, BytesIO(b''))
+            return real(path, *args, **kwargs)
+        self.router.handle = fail_once
+        with self.assertRaises(urllib.error.HTTPError):
+            self.c.restore_last_known_good()
+        pending = self.c.restoration()
+        self.assertEqual(pending['attempts'], 1)
+        self.router.handle = real
+        pending['next_attempt_at'] = '2000-01-01T00:00:00+00:00'
+        self.c.save('restoration.json', pending)
+        operations = Operations(self.c, {})
+        self.assertTrue(operations.restore_if_due())
+        operations.worker.join(10)
+        self.assertFalse(operations.worker.is_alive())
+        self.assert_serving()
 
 
 class StubbornSystem(fixture.FakeSystem):

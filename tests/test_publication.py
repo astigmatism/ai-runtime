@@ -77,7 +77,8 @@ class Router:
                     'hosts': {host: {'draining': True, 'drain_reason': reason}
                         for host, reason in self.drain.items()}},
                 'router': {'supported_backend_kinds': ['ollama', 'llama_cpp', 'strata']},
-                'active_model': ({'profile': document['configuration']['id']} if document else None),
+                'active_model': ({'profile': document['profile'], 'model': document['default_model']}
+                    if document else None),
                 'models': models}
         if path.endswith('/runtime-drain'):
             host = body.get('host')
@@ -90,6 +91,7 @@ class Router:
             return {'ok': True, 'default_host': self.default_host, 'hosts': [
                 {'id': host, 'published': host in self.catalogs,
                     'revision': self.revisions.get(host),
+                    'configuration': self.catalogs.get(host, {}).get('configuration'),
                     'model_ids': [m['model'] for m in self.catalogs[host]['models']]
                     if host in self.catalogs else []} for host in self.declared]}
         if '/catalog' in path:
@@ -275,6 +277,27 @@ class PublisherTests(unittest.TestCase):
         self.assertTrue(order, 'the local sink was never asked to reload')
         self.assertTrue(self.system.push(), 'the remote sink was never given the catalog')
 
+    def test_a_receipt_must_match_the_host_catalog_served_by_the_router(self):
+        for field, value in [('revision', 'stale-revision'),
+                ('configuration', {'id': 'wrong-configuration'}), ('model_ids', [])]:
+            with self.subTest(field=field):
+                controller = self.build()
+                handle = self.router.handle
+                def stale(path, *args, **kwargs):
+                    result = handle(path, *args, **kwargs)
+                    if path.endswith('/hosts'):
+                        next(h for h in result['hosts'] if h['id'] == 'rosalina')[field] = value
+                    return result
+                self.router.handle = stale
+                with self.assertRaisesRegex(RuntimeError, 'host-catalog verification'):
+                    controller.publish(self.bundle)
+
+    def test_a_remote_only_runtime_cannot_publish_an_unreachable_backend_as_ready(self):
+        controller = self.build(host_changes={'router_state_dir': None})
+        self.router.available = False
+        with self.assertRaisesRegex(RuntimeError, 'cannot reach'):
+            controller.publish(self.bundle)
+
     def test_a_refusal_from_the_router_is_a_failure_and_the_local_document_goes_back(self):
         # `409 CATALOG_ID_CONFLICT` is the name-collision rule doing its job: the router that already
         # answers `daytime` for another machine refuses this one rather than letting a client's
@@ -323,6 +346,10 @@ class PublisherTests(unittest.TestCase):
         # router" stops being an expected transition and becomes a publication that would serve
         # nothing — which is exactly the moment it should stop being a warning.
         controller = self.build(host_changes={'backend_address': '192.168.1.4'})
+        allowed = self.bundle['compose']['services']['coding']['environment']['STRATA_ALLOWED_HOSTS'].split(',')
+        self.assertIn('192.168.1.4', allowed)
+        self.assertIn('qwen38-daytime', allowed)
+        self.assertNotIn('*', allowed)
         self.assertEqual(render(self.config, self.host, self.PROFILE)['catalog']['models'][0]
             ['backend_url'], 'http://192.168.1.4:18080')
         self.router.available = False
@@ -426,6 +453,15 @@ class AnnouncementTests(PublisherTests):
         before = list(self.router.calls)
         controller.announce({'publication': controller.load('publication.json')})
         self.assertEqual(self.router.calls, before)
+
+    def test_adding_a_router_publishes_even_when_the_local_receipt_is_successful(self):
+        controller = self.adopt()
+        record = controller.load('publication.json')
+        record['sinks'] = [s for s in record['sinks'] if s['kind'] == 'file']
+        controller.save('publication.json', record)
+        self.router.catalogs.clear()
+        controller.announce({'publication': record})
+        self.assertIn('rosalina', self.router.catalogs)
 
     def test_a_publication_that_did_not_land_is_recorded_and_tried_again(self):
         # The failure has to be readable, and it has to be transient in the right direction: the next

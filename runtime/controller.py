@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import time
 import urllib.error
+import urllib.parse
 import uuid
 
 from . import provision as provision_tool
@@ -1125,18 +1126,16 @@ class Controller:
             json.dumps(receipt.get('error') or receipt.get('warnings') or receipt)[:600])
         report.update({'revision': receipt['revision'], 'accepted_at': now(),
             'warnings': sorted(set(receipt.get('warnings') or []))})
-        report.update(self.verify_remote(catalog))
+        report.update(self.verify_remote(catalog, receipt['revision']))
         return report
 
-    def verify_remote(self, catalog):
+    def verify_remote(self, catalog, revision):
         """What a router two hosts away can confirm, and what it cannot be asked to confirm.
 
         It can confirm the document: each model this machine publishes is listed with the context
-        window claimed and output and thinking uncapped. And because a shared router lists every
-        machine, this runtime answers only for the models it published, and for the router's active
-        model only when this machine is the host the router answers unnamed requests with — a machine
-        that is not the default has no business failing a switch because the default host's model is
-        the one on offer.
+        window claimed and output and thinking uncapped. A shared router lists every machine,
+        so this runtime verifies its own host's configuration and revision, independently of
+        the model the router serves by default.
 
         What it cannot confirm is that the backend is alive, not without reporting on its own network.
         `available: false` from a remote router says *it* cannot open `backend_url`, which during the
@@ -1164,15 +1163,28 @@ class Controller:
         # carries a loopback address or a container name from before the migration — is in the state
         # the migration exists to leave, and failing its switches would keep the new router empty for
         # exactly as long as it takes to move the backends.
-        require(available or not self.host.get('backend_address'),
+        # Recovery publishes the previous bundle, whose addresses may predate the LAN binding.
+        # Current host settings describe the attempted release, not the one being restored.
+        claims_address = bool(self.host.get('backend_address')) and all(
+            urllib.parse.urlsplit(m['backend_url']).hostname == self.host['backend_address']
+            for m in catalog['models'])
+        require(available or (self.host.get('router_state_dir') and not claims_address),
             'The router at ' + self.target['url'] + ' cannot reach this machine\'s backends, and this '
             'machine states ' + str(self.host.get('backend_address')) + ' as the address it publishes them '
             'on. Either the router opens that address or the address is wrong; a catalog that would '
             'serve nothing is not worth switching to')
-        default = (self.remote_call('hosts') or {}).get('default_host')
-        if default in (None, self.target['host']):
-            require(state['active_model']['profile'] == catalog['configuration']['id'],
-                'Router active-model verification failed on ' + self.target['url'])
+        roster = self.remote_call('hosts') or {}
+        accepted = next((h for h in roster.get('hosts', []) if h['id'] == self.target['host']), {})
+        # active_model.profile is the model's role ("primary"), not configuration.id.
+        # The per-host roster carries both the configuration and the stored revision, including
+        # for a non-default host. Compare the receipt to what the router actually serves.
+        require(accepted.get('published') and accepted.get('revision') == revision
+            and set(accepted.get('model_ids') or []) == set(mine)
+            and (accepted.get('configuration') or {}).get('id') == catalog['configuration']['id']
+            and (accepted.get('configuration') or {}).get('runtime_revision') ==
+                catalog['configuration']['runtime_revision'],
+            'Router host-catalog verification failed on ' + self.target['url'])
+        default = roster.get('default_host')
         return {'available': available, 'router_default': default,
             **({} if available else {'warnings': ['ROUTER_CANNOT_REACH_BACKEND:' + self.target['host']]})}
 
@@ -1620,7 +1632,9 @@ class Controller:
             return None  # A switch is in flight and will publish with its own verification.
         record = ((status or {}).get('publication') if status is not None
             else self.load('publication.json', {})) or {}
-        if record and not record.get('error') and not record.get('retired_at') \
+        expected_sinks = {(s['kind'], s['name']) for s in self.sinks()}
+        recorded_sinks = {(s['kind'], s['name']) for s in record.get('sinks', [])}
+        if record and expected_sinks == recorded_sinks and not record.get('error') and not record.get('retired_at') \
                 and not any(sink.get('error') for sink in record.get('sinks', [])):
             return None
         # Not this pass, then: the record carries when it is worth asking again. The loop that

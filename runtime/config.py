@@ -871,6 +871,14 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # What the profile states about the environment comes first: the engine's own settings are the
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}
+    if host.get('backend_address') and 'STRATA_ALLOWED_HOSTS' in environment:
+        # The published LAN address is also the HTTP Host header the remote router sends.
+        # Keep the engine's DNS-rebinding protection, adding only this deployment's address.
+        allowed = [h.strip() for h in environment['STRATA_ALLOWED_HOSTS'].split(',') if h.strip()]
+        address = backend_bind_address(host)
+        if address not in allowed:
+            allowed.append(address)
+        environment['STRATA_ALLOWED_HOSTS'] = ','.join(allowed)
     reserved, vision_index = engine_vision_gpu(name, host, engine, options, environment, text_devices)
     # The engine numbers the cards it is given, so two statements in a profile are statements about
     # how many cards this machine has: which ones the language model runs on (`--gpus`) and which ones

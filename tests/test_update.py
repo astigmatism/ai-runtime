@@ -211,9 +211,9 @@ class UpdateTests(unittest.TestCase):
         self.h.calls.clear()
         real.candidate('new-image', 'apply')
         run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
-        self.assertEqual(run[run.index('--env-file') + 1], str(self.root / '.env'))
+        self.assertEqual(Path(run[run.index('--env-file') + 1]), (self.root / '.env').resolve())
         # The settings the action is about still win over anything the file happens to carry.
-        self.assertEqual(run[run.index('--env') + 1], 'RUNTIME_STATE_DIR=' + str(self.state))
+        self.assertEqual(run[run.index('--env') + 1], 'RUNTIME_STATE_DIR=' + str(self.state.resolve()))
         (self.root / '.env').unlink(); self.h.calls.clear()
         real.candidate('new-image', 'status')
         self.assertNotIn('--env-file', [call for call in self.h.calls if call[:2] == ('docker', 'run')][0])
