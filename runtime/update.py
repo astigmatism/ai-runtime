@@ -151,14 +151,17 @@ class Updater:
         args += ['--env', 'RUNTIME_STATE_DIR=' + str(self.state), '--env', 'RUNTIME_IMAGE=' + image,
             '--mount', 'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock',
             '--mount', f'type=bind,source={self.state},target={self.state}' + suffix,
-            '--mount', f"type=bind,source={host['model_root']},target={host['model_root']},readonly",
-            image, 'python3', '-m', 'runtime', action]
+            '--mount', f"type=bind,source={host['model_root']},target={host['model_root']},readonly"]
         if host.get('router_state_dir'):
             # The directory belongs to a router on this machine. A machine that publishes to a router
             # elsewhere has no such directory, and Docker fails a container whose bind source does not
             # exist — so the mount travels with the setting that says this machine writes a file.
             args += ['--mount',
                 f"type=bind,source={host['router_state_dir']},target={host['router_state_dir']}" + suffix]
+        # Everything the container needs has to be said before the image: after it, Docker stops reading
+        # options and starts reading a command, and the runtime receives `--mount` as an argument of its
+        # own. The image and the action are therefore appended last, once, here.
+        args += [image, 'python3', '-m', 'runtime', action]
         if full_hash:
             args.append('--full-hash')
         return self.run(*args, capture=capture)

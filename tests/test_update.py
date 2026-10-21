@@ -237,6 +237,11 @@ class UpdateTests(unittest.TestCase):
         real.candidate('new-image', 'apply')
         run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
         self.assertIn('type=bind,source=/router,target=/router', run)
+        # Presence is not enough. Docker reads options until it reaches the image and a command after
+        # it, so a mount named late is a mount the runtime is handed as one of its own arguments — and
+        # the whole deployment surface of a machine with a router on it depends on that order.
+        self.assertLess(run.index('type=bind,source=/router,target=/router'), run.index('new-image'))
+        self.assertEqual(list(run[run.index('new-image'):]), ['new-image', 'python3', '-m', 'runtime', 'apply'])
 
     def test_a_machine_whose_router_lives_elsewhere_needs_no_catalog_directory(self):
         # `compose.yaml` used to make the router's catalog directory a required variable, which
