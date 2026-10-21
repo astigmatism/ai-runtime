@@ -14,8 +14,20 @@ Measured on 2026-10-21, in the order the stages went:
 
 - Stage 0 is done. Rosalina runs the current revision with the resident untouched, and her page publishes to the file sink exactly as before.
 - Stage 3 is done on the router: a pushed catalog is no longer made incomplete by a marker it never needed, the host list is a line in the router's own installer instead of a shell variable in whoever's session deployed it last, and `local` is off the roster because a router that declares a host it can never publish reports itself degraded forever. The client's gate — `validateRouterMetadata` in the Harness plugin — accepts the new router's document today.
-- Stage 1 is in progress: `host_id`, the two credentials and the push target are on Rosalina, and the receipt from `192.168.1.23` is what closes it.
-- Stage 2 is the only step that costs a client anything, and it has not been started.
+- Stage 1 is done, and the receipt is what closes it: `192.168.1.23` accepted Rosalina's catalog at `20:12:55Z` under revision `836d290`, names `flash-next-strata-solo-thinking-recovery-cache` as her configuration, lists `qwen3.8-flash-next-ud-iq4_xs`, reports her as the default host, holds no drain, and carries no warnings — and her page shows the same, with the file sink beside the HTTP one and the resident never leaving service.
+- Stage 2 turned out to cost nothing and is effectively done. She states no `backend_address`, yet the household router reaches her backend — `available: true` on the client's own document, `reachable: true` in the publication receipt — because the backend's port binding, not the declared address, is what the published URL is built from and verified against. The 112-second window this stage was budgeted for is not owed; what remains of it is a documentation matter, whether to have Rosalina *state* the address she is answering on, so the claim is explicit rather than observed.
+- Stage 4 has not been started: no client has been repointed. That is now the only step that costs anything, and it costs one client at a time, one `extra_hosts` line each, reversible in the same edit.
+
+Measured again after stage 1, because the plan is worth less than the reading:
+
+| Fact | Value | Where it comes from |
+| --- | --- | --- |
+| Rosalina's publication | two sinks, `file` and `http://192.168.1.23:11435`, revision `836d290`, accepted `2026-10-21T20:12:55Z`, `router_default: rosalina`, no warnings | `GET http://192.168.1.4:11436/api/status` |
+| The household router serves her model to a client | `daytime: available=true`, metadata accepted, non-blocking | `validateRouterMetadata`/`residentStatus` in the Harness plugin, run against `192.168.1.23` |
+| The legacy router | untouched, `complete: true`, `daytime` available, no warnings | the same gate against `192.168.1.4` |
+| What is left undeclared on the router | `daisy` — powered off, so unpublished, so the deployment's document reads `complete: false` with `HOST_CATALOG_UNPUBLISHED:daisy` | `GET /admin/api/hosts` |
+
+That last row is worth understanding rather than fixing. Completeness is a property of the *deployment*, while a client's decision is per service: `validateRouterMetadata` reads the metadata of the model being used, and `residentStatus` scores the service it was asked about. A machine that is switched off therefore makes the household document honest and costs `daytime` nothing. Dropping `daisy` from `ROUTER_HOSTS` to make the document read `true` would buy a prettier field by deleting the fact that the household has a second machine that is presently not there.
 
 ## What is true right now, measured
 
@@ -31,6 +43,8 @@ Measured on 2026-10-21, in the order the stages went:
 | What the new router reports for Rosalina today | `available: false`, `metadata.complete: false`, warnings `["ACTIVE_MODEL_MARKER_UNAVAILABLE"]`, `metadata.schema_version: 2`, capabilities document `schema_version: 2` | `GET http://192.168.1.23:11434/v1/router/capabilities` |
 
 ## Two things on the router block the client move, and neither is the runtime
+
+*(Both of these were fixed on the router on 2026-10-21; the analysis is kept because it is the reason the router is what it is now, and because the second one came back in a new form.)*
 
 **A pushed catalog cannot be `complete` on the new router, and a client refuses an incomplete one.** The router computes a model's metadata completeness as *no warnings at all*, and it adds `ACTIVE_MODEL_MARKER_UNAVAILABLE` to every catalog whose `loadedFrom` is not `file` — which is every catalog that was pushed. The DSH plugin throws `router metadata is incomplete` on exactly that field and marks the resident `incomplete`, which is one of its blocking statuses. So a client repointed at `192.168.1.23` today has no usable model, and it would have none even with a reachable backend, for a reason that is an artifact of the single-host router it grew out of. The fix belongs to the router: a catalog that arrived by push has no local marker to be missing, so the warning should not be pushed for it. The strictness of `complete` is worth keeping — it is the reason a half-known model is never called usable.
 
