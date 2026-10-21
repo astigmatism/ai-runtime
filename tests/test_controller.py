@@ -207,6 +207,34 @@ class ControllerTests(unittest.TestCase):
         self.prepare.start(); self.addCleanup(self.prepare.stop)
         self.sleep = patch('runtime.controller.time.sleep'); self.sleep.start(); self.addCleanup(self.sleep.stop)
 
+    def test_an_unadopted_machine_refuses_a_switch_it_was_not_told_to_install(self):
+        # The migration gate stays: a machine that was never adopted does not start loading a model
+        # because somebody clicked, and the message names the two doors that are open.
+        atomic_json(self.state / 'active.json', None)
+        with self.assertRaisesRegex(RuntimeError, 'not adopted'):
+            self.c.transition('qwen27b-q8-pair')
+
+    def test_an_install_starts_a_machine_that_has_never_run_this_runtime(self):
+        # A second machine has no legacy stack to adopt: an empty Docker host, a model to load, and
+        # nothing to fall back to. `install` is the switch that admits it — the same drain, the same
+        # verification, the same publication — and `previous.json` stays empty because there is no
+        # earlier release behind it, which the page reports as having nothing to restore to.
+        atomic_json(self.state / 'active.json', None)
+        self.system.containers.clear()
+        result = self.c.transition('qwen27b-q8-pair', install=True)
+        self.assertEqual(sorted(result['changed_roles']), ['coding', 'everyday'])
+        active = json.loads((self.state / 'active.json').read_text())
+        self.assertEqual(active['bundle']['profile'], 'qwen27b-q8-pair')
+        self.assertIsNone(json.loads((self.state / 'previous.json').read_text()))
+        self.assertTrue((self.state / 'router' / 'active-model.json').is_file())
+
+    def test_an_install_refuses_a_machine_that_is_already_serving(self):
+        # Healthy backends with no active release is a migrated host, and a migrated host is adopted
+        # through the reviewed procedure rather than installed over.
+        atomic_json(self.state / 'active.json', None)
+        with self.assertRaisesRegex(RuntimeError, 'adopt'):
+            self.c.transition('qwen27b-q8-pair', install=True)
+
     def test_healthy_startup_does_not_drain_recreate_or_publish(self):
         self.system.active_count = 1; self.system.direct_busy = True
         result = self.c.transition()
@@ -822,3 +850,4 @@ class EnvironmentEngineObservationTests(unittest.TestCase):
         self.assertEqual(image['input_modalities'], ['text', 'image'])
         self.assertEqual(image['gpu_uuids'], [*model['gpu_uuids'], VISION])
         self.assertEqual(image['text_gpu_uuids'], model['gpu_uuids'])
+

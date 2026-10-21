@@ -48,7 +48,8 @@ def listed(config_dir, host=None):
 def main():
     parser = argparse.ArgumentParser(prog='ai-runtime')
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
-        'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'retire', 'serve',
+        'deploy', 'adopt', 'install', 'recover', 'restore', 'rollback-release', 'publish', 'retire',
+        'serve',
         'list', 'check', 'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
     # Not `choices`: argparse prints "invalid choice" and exits 2, which tells an operator that a
@@ -87,7 +88,8 @@ def main():
         if args.action == 'check' and not result['ready']:
             raise RuntimeError('Runtime is not ready: ' + json.dumps(result))
     elif args.action in ('apply', 'adopt', 'deploy'):
-        result = controller.transition(args.profile, deploy=args.action == 'deploy', adopt=args.action == 'adopt')
+        result = controller.transition(args.profile, deploy=args.action == 'deploy',
+            adopt=args.action == 'adopt', install=args.action == 'install')
     elif args.action == 'recover':
         result = controller.recover()
     elif args.action == 'restore':

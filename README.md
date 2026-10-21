@@ -107,6 +107,7 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |
 | `docker exec local-ai-runtime python3 -m runtime publish` | Verify and republish the selected catalog |
 | `docker exec local-ai-runtime python3 -m runtime retire` | Take this machine's catalog off every router it publishes to, for when it stops serving these models |
+| `docker exec local-ai-runtime python3 -m runtime install --profile <name>` | First configuration on a machine that has never run this runtime and runs nothing now: the normal switch, with no release behind it to restore to (a migrated host is `adopt`ed instead) |
 | `docker exec local-ai-runtime python3 -m runtime restore` | Bring back the release that last served and reopen requests, whether or not a failure left the router drained |
 | `docker exec local-ai-runtime python3 -m runtime provision --profile <name>` | Measure a self-provisioning engine's workspace build (`--phase warm` for the boot) on this host, as evidence; the switch to it builds and waits for the engine's answer itself |
 | `docker exec local-ai-runtime python3 -m runtime gate --profile <name>` | Read-only: what a switch to this configuration would do (notes) and what would refuse it (reasons), without attempting one; exit code 1 only when it would be refused |

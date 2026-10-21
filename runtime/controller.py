@@ -1438,13 +1438,13 @@ class Controller:
             self.schedule_restoration(error, transaction)
             raise
 
-    def transition(self, profile=None, deploy=False, adopt=False):
+    def transition(self, profile=None, deploy=False, adopt=False, install=False):
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
         with lock(self.state / 'runtime.lock'):
-            return self._transition_locked(profile, deploy=deploy, adopt=adopt)
+            return self._transition_locked(profile, deploy=deploy, adopt=adopt, install=install)
 
-    def _transition_locked(self, profile=None, deploy=False, adopt=False, *, operation_id=None,
-                           progress=lambda phase: None, keep_everyday=False):
+    def _transition_locked(self, profile=None, deploy=False, adopt=False, install=False, *,
+                           operation_id=None, progress=lambda phase: None, keep_everyday=False):
         """Caller must hold runtime.lock for the entire transaction, including recovery."""
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
         require(not self.load('router-maintenance.json', {}).get('reserved'),
@@ -1453,7 +1453,9 @@ class Controller:
         require(pending.get('phase') not in PENDING_PHASES,
             'An interrupted deployment needs explicit runtime recover before another operation')
         previous = self.load('active.json')
-        require(previous is not None or adopt, 'Runtime is not adopted; use the reviewed migration procedure')
+        require(previous is not None or adopt or install,
+            'Runtime is not adopted; use the reviewed migration procedure, or install it on a machine '
+            'that has never run this runtime')
         require(not previous or previous['revision'] == self.revision or deploy,
             'This controller has been superseded; it cannot reapply an older release')
         progress('checking')
@@ -1461,6 +1463,15 @@ class Controller:
         self.switchable(bundle)
         self.prepare(bundle)
         observed = self.observe(bundle)
+        # An install is a machine with nothing on it, and only that. It exists because the migration
+        # gate above is a gate about a *migrated* machine — a host whose backends were started by the
+        # stack this runtime replaced, where adopting them without a switch is the reviewed act — and a
+        # second machine has no such history: it has an empty Docker host and a model to load. Without
+        # this, the only way onto a new machine was to start its backend by hand and then adopt it,
+        # which manufactures the very receipt this runtime exists to earn.
+        require(not install or (previous is None and not any(s['healthy'] for s in observed.values())),
+            'An install is a machine with no active release and no healthy backend: adopt a migrated '
+            'host instead')
         prior = services_of(previous['bundle']) if previous else {}
         roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
             prior.get(role) != bundle['compose']['services'][role])]
