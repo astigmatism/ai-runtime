@@ -114,12 +114,22 @@ class Controller:
     def router_call(self, sink, path, body=None, method=None):
         """One admin call against one sink, authenticated the way that sink wants it."""
         if sink['kind'] == 'http':
-            token = self.target['token']
+            # Two credentials, because the router trusts them for different things: the publisher token
+            # writes this machine's catalog and nothing else, and drain and state are the control plane,
+            # which a write credential is not allowed to touch. A machine that switched behind a remote
+            # router with only the first would fail at the moment it had already drained the local one.
+            control = not path.startswith('hosts/')
+            env = self.target['admin_token_env'] if control else self.target['token_env']
+            token = self.target['admin_token'] if control else self.target['token']
             require(bool(token),
-                'The router at ' + self.target['url'] + ' is published to with the token in ' +
-                self.target['token_env'] + ', which is not in this container environment. The '
-                'publisher credential is named in host.json and delivered in the environment; it '
-                'never belongs in the repository.')
+                'The router at ' + self.target['url'] + ' is called with the token in ' + env +
+                ', which is not in this container environment. ' + (
+                    'Drain and state are the router\'s control plane, and its contract keeps the '
+                    'publisher credential out of them on purpose, so the control token has to be '
+                    'stated: router_target.admin_token_env names it, and the value goes in the '
+                    'deployment env file.' if control else
+                    'The publisher credential is named in host.json and delivered in the environment; '
+                    'it never belongs in the repository.'))
             headers = {'Authorization': 'Bearer ' + token}
             url = self.target['url'] + '/admin/api/' + path
         else:

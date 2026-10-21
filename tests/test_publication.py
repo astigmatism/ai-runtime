@@ -27,6 +27,9 @@ from test_controller import FakeSystem, vision_host
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = 'http://192.168.1.23:11435'
 TARGET = {'url': REMOTE, 'token_env': 'PUBLISHER_TOKEN'}
+# The router's control credential, named by `admin_token_env` when a deployment wants it called
+# something else. Both are environment names in every test below; neither value is a secret.
+CONTROL_ENV = 'ADMIN_TOKEN'
 # What the router already serves for somebody else. A shared router lists every machine, so a
 # runtime that reads it as its own inventory is wrong the moment a second machine publishes.
 OTHER = [{'id': 'whisper-large-v3', 'x_ollama_router': {'health': {'available': True},
@@ -160,7 +163,8 @@ class PublisherTests(unittest.TestCase):
         self.router = Router(declared=declared, default_host=default_host)
         self.system = PushSystem(self.bundle, self.router)
         self.environ = patch.dict('os.environ',
-            {TARGET['token_env']: 'publisher-secret'} if env is None else env)
+            {TARGET['token_env']: 'publisher-secret', CONTROL_ENV: 'control-secret'}
+            if env is None else env)
         self.environ.start(); self.addCleanup(self.environ.stop)
         return Controller(self.config, self.state, 'a' * 40, self.system)
 
@@ -207,6 +211,29 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, TARGET['token_env']):
             controller.publish(self.bundle)
         self.assertEqual(self.router.catalogs, {})
+
+    def test_the_catalog_and_the_control_plane_are_carried_by_two_credentials(self):
+        # The router keeps a publisher out of its control plane deliberately: a runtime that is
+        # compromised can go quiet, but it cannot drive the router. A switch has to do both — hand over
+        # a catalog and close the door in front of it — so it presents two credentials, and neither
+        # call presents a secret the other one needed.
+        controller = self.adopt()
+        controller.set_drain(True, {'id': 'tx-1'})
+        presented = {}
+        for method, path, body, headers in self.router.calls:
+            presented.setdefault(path.split('/admin/api/')[-1], headers.get('Authorization'))
+        self.assertEqual(presented['hosts/rosalina/catalog'], 'Bearer publisher-secret')
+        self.assertEqual(presented['runtime-drain'], 'Bearer control-secret')
+        self.assertEqual(presented['runtime-state'], 'Bearer control-secret')
+
+    def test_a_publisher_given_nothing_to_drain_with_says_which_variable_it_missed(self):
+        # A machine configured for a remote router and handed only the publisher token reaches the
+        # router, publishes, and then cannot stop traffic for itself — which is the moment a switch
+        # discovers it has no way back. Naming the variable is the whole fix, so the message is the fix.
+        controller = self.build(env={TARGET['token_env']: 'publisher-secret'})
+        with self.assertRaisesRegex(RuntimeError, CONTROL_ENV):
+            controller.publish(self.bundle)
+        self.assertEqual(self.router.catalogs, {'rosalina': self.published_document()})
 
     # --- obligations 2, 4 and 7: what goes over the wire, and what comes back --------------------
 

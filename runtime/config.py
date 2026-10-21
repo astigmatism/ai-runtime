@@ -164,6 +164,14 @@ def router_target(host):
     that leaks it. Absent the whole definition means the historical handoff — write the marker into
     `router_state_dir` and tell the router to reload — which is what a machine whose router is the
     machine it runs on still does, and what Rosalina keeps doing beside a push during the migration.
+
+    There are two credentials, because the router has two listeners' worth of trust. `token_env` is the
+    publisher: by the router's own contract it is a write credential for one host's catalog, and it
+    cannot change drain state — deliberately, so a runtime that is compromised cannot drive the router.
+    But a switch behind a remote router *has* to drain it, so the machine needs the control credential
+    as well, and `admin_token_env` names it. A deployment with one secret sets the two to the same
+    variable and says so in one line; a deployment that cares says which machine can publish and which
+    can close the door.
     """
     value = (host or {}).get('router_target')
     if value is None:
@@ -171,9 +179,9 @@ def router_target(host):
     require(isinstance(value, dict),
         "router_target is an object stating 'url' and 'token_env'; anything else is a typo in a "
         "private setting, not a publication target")
-    unknown = sorted(set(value) - {'url', 'token_env'})
+    unknown = sorted(set(value) - {'url', 'token_env', 'admin_token_env'})
     require(not unknown, 'router_target states ' + ', '.join(unknown) +
-        '; the router is given a URL, a credential name, and this machine\'s host_id, and nothing else')
+        '; the router is given a URL, two credential names, and this machine\'s host_id, and nothing else')
     url = value.get('url')
     require(isinstance(url, str) and URL.fullmatch(url),
         "router_target.url is the router's admin base, e.g. http://192.168.1.23:11435")
@@ -185,8 +193,13 @@ def router_target(host):
         'router_target publishes as this machine, so host.json has to state host_id: the router '
         'refuses a push from an id it has not declared, and a machine that guesses its own name '
         'gets a catalog nobody can address')
-    return {'url': url.rstrip('/'), 'token_env': token_env, 'host': host_id(host),
-        'token': os.environ.get(token_env, '')}
+    admin_token_env = value.get('admin_token_env', 'ADMIN_TOKEN')
+    require(isinstance(admin_token_env, str) and ENV_NAME.fullmatch(admin_token_env),
+        "router_target.admin_token_env names the variable holding the router's control token, e.g. "
+        "ADMIN_TOKEN — the name, and again not the value")
+    return {'url': url.rstrip('/'), 'token_env': token_env, 'admin_token_env': admin_token_env,
+        'host': host_id(host), 'token': os.environ.get(token_env, ''),
+        'admin_token': os.environ.get(admin_token_env, '')}
 
 
 def backend_bind_address(host):

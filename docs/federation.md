@@ -34,7 +34,7 @@ While both are configured the two are not equals, and pretending otherwise gets 
 
 ## A new machine, in order
 
-Declare it at the router (`ROUTER_HOSTS`) and restart the router. Give it a `.state/host.json` with `host_id`, `gpu_architectures`, its own model root, `backend_address`, and a `router_target` naming the credential — [the example](../config/host.second-machine.example.json) is that file. Give the container the token in its environment: never in the repository, and never in `host.json`. The router's address lives in an environment variable, which is the only reason it is not in the code. Run a switch, and read the receipt.
+Declare it at the router (`ROUTER_HOSTS`) and restart the router. Give it a `.state/host.json` with `host_id`, `gpu_architectures`, its own model root, `backend_address`, and a `router_target` naming the credential — [the example](../config/host.second-machine.example.json) is that file. Give the container both tokens in its environment — `CATALOG_PUSH_TOKEN` to hand over a catalog, and the router's control token to drain and read state — never in the repository, and never in `host.json`. The second is not optional for a machine that switches behind a remote router: the router's contract keeps a publisher out of its control plane on purpose, and a switch has to do both. The router's address lives in an environment variable, which is the only reason it is not in the code. Run a switch, and read the receipt.
 
 A machine that states neither sink refuses to start. The failure it prevents is a runtime that begins, passes every health check, and tells nobody, with every metric green and the household without models.
 
