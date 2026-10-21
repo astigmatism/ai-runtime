@@ -77,7 +77,7 @@ class StubbornSystem(fixture.FakeSystem):
             {'ok': False, 'error': {'code': 'INVALID_BACKEND_KIND',
                 'message': 'Unsupported active backend kind: ' + self.router_wedged_kind + '.'}}).encode()))
 
-    def http(self, url, body=None, headers=None, timeout=None):
+    def http(self, url, body=None, headers=None, timeout=None, method=None):
         if url.endswith(('/runtime-state', '/runtime-drain', '/reload-config')):
             self._wedged_router_check(url)
             if self.router_503 is not None:

@@ -323,12 +323,27 @@ function renderRestoration() {
     ? 'No last-known-good release is recorded on this host, so there is nothing to restore to.'
     : unavailable || (restoring ? 'The restoration is already running.' : '');
 }
+// Where this machine's catalog lives, in one line. "Models running here" and "published there" are
+// two different failures and an operator should not need a shell to tell them apart; the router's
+// complaint about its own network is shown as what it is — a reachability fact about the address,
+// not this machine being unwell.
+const publicationLine=()=>{
+  const p=status?.publication, warn=[...new Set((p?.sinks||[]).flatMap(s=>s.warnings||[]))]
+    .map(w=>w.startsWith('ROUTER_CANNOT_REACH_BACKEND:')?'router cannot reach these backends':w);
+  if (!connected) return 'Publication state unavailable';
+  if (!p) return 'Catalog not published yet';
+  if (p.error) return `Catalog publication failing: ${p.error}`;
+  if (p.retired_at) return `Catalog retired ${new Date(p.retired_at).toLocaleString()}`;
+  const sinks=(p.sinks||[]).map(s=>s.kind==='file'?'the local router':`${String(s.name).replace(/^\w+:\/\//,'')} revision ${String(s.revision||'').slice(0,8)}`);
+  return `Catalog published to ${sinks.join(' and ')}${warn.length?` · ${warn.join(' · ')}`:''}`;
+};
 function render() {
   const health=el('health');
   health.textContent=!connected?'Disconnected':running()?'Switching':status?.ready?'Ready':operation?.status==='needs-attention'?'Needs attention':status?.maintenance?.draining?'Maintenance':'Needs attention';
   health.className=`badge ${connected && status?.ready && !running()?'ready':'pending'}`;
   const counts = status?.maintenance;
   el('requests').textContent = connected && counts ? `${counts.active_requests} active · ${counts.queued_requests} queued` : 'Requests unavailable';
+  el('publication').textContent = publicationLine();
   renderRegistry(); renderTopology(); renderProgress(); renderRestoration(); renderDetails();
   if (connected) el('updated').textContent=`Status updated ${new Date(status.updated_at || Date.now()).toLocaleTimeString()}`;
 }

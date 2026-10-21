@@ -144,8 +144,13 @@ class Updater:
             '--mount', 'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock',
             '--mount', f'type=bind,source={self.state},target={self.state}' + suffix,
             '--mount', f"type=bind,source={host['model_root']},target={host['model_root']},readonly",
-            '--mount', f"type=bind,source={host['router_state_dir']},target={host['router_state_dir']}" + suffix,
             image, 'python3', '-m', 'runtime', action]
+        if host.get('router_state_dir'):
+            # The directory belongs to a router on this machine. A machine that publishes to a router
+            # elsewhere has no such directory, and Docker fails a container whose bind source does not
+            # exist — so the mount travels with the setting that says this machine writes a file.
+            args += ['--mount',
+                f"type=bind,source={host['router_state_dir']},target={host['router_state_dir']}" + suffix]
         if full_hash:
             args.append('--full-hash')
         return self.run(*args, capture=capture)

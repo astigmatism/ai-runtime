@@ -69,10 +69,13 @@ class System:
         raw = self.docker('inspect', name, check=False)
         return json.loads(raw)[0] if raw and raw != '[]' else None
 
-    def http(self, url, body=None, headers=None, timeout=10):
-        if self.readonly and body is not None:
+    def http(self, url, body=None, headers=None, timeout=10, method=None):
+        # A PUT can carry no body and still be a mutation, so the verb is what is checked and not
+        # the payload: an inspection pass that published with `method='PUT'` would otherwise slip
+        # past a guard written against request bodies.
+        if self.readonly and (body is not None or (method and method.upper() != 'GET')):
             raise RuntimeError('HTTP mutation is forbidden in inspection mode')
         request = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
-            headers={'Content-Type': 'application/json', **(headers or {})})
+            headers={'Content-Type': 'application/json', **(headers or {})}, method=method)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)

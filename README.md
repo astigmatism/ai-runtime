@@ -9,7 +9,7 @@ git clone https://github.com/astigmatism/ai-runtime.git
 cd ai-runtime
 ```
 
-This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and configuration-switching UI/API, with a container CLI for recovery and administration. One router fronts the household and one runtime owns each machine; how a machine's active catalog reaches a router that is not on its own filesystem is [one router, more than one machine](docs/federation.md), currently a design.
+This is the model lifecycle controller. Inference requests go through [LLM Router](https://github.com/astigmatism/llm-router); AI Runtime exposes a status and configuration-switching UI/API, with a container CLI for recovery and administration. One router fronts the household and one runtime owns each machine; a machine sends its catalog to the routers that serve it — a directory when the router is on its own filesystem, an authenticated push when it is not — and [one router, more than one machine](docs/federation.md) is that contract.
 
 ## Current configurations
 
@@ -106,6 +106,7 @@ Open `http://192.168.1.4:11436` for the GPU overview, active model/context detai
 | `~/local-ai-config.sh gpus` | Host GPU status |
 | `docker exec local-ai-runtime python3 -m runtime check` | Exit nonzero unless the deployed runtime and router discovery are ready |
 | `docker exec local-ai-runtime python3 -m runtime publish` | Verify and republish the selected catalog |
+| `docker exec local-ai-runtime python3 -m runtime retire` | Take this machine's catalog off every router it publishes to, for when it stops serving these models |
 | `docker exec local-ai-runtime python3 -m runtime restore` | Bring back the release that last served and reopen requests, whether or not a failure left the router drained |
 | `docker exec local-ai-runtime python3 -m runtime provision --profile <name>` | Measure a self-provisioning engine's workspace build (`--phase warm` for the boot) on this host, as evidence; the switch to it builds and waits for the engine's answer itself |
 | `docker exec local-ai-runtime python3 -m runtime gate --profile <name>` | Read-only: what a switch to this configuration would do (notes) and what would refuse it (reasons), without attempting one; exit code 1 only when it would be refused |

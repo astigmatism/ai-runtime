@@ -26,6 +26,7 @@ offers a choice reads. See docs/deployment.md, "More than one machine".
 import copy
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -142,6 +143,80 @@ def host_id(host):
         "host_id, if a host states it at all, is a lowercase slug of letters, digits and '-', not a "
         "hostname, a path or a GPU UUID")
     return value
+
+
+ENV_NAME = re.compile(r'[A-Z][A-Z0-9_]*')
+URL = re.compile(r'https?://[^\s/]+(?:/\S*)?$')
+
+
+def router_target(host):
+    """Where this machine sends its catalog when the router is not on its own filesystem, or None.
+
+    The router's contract asks a publisher for exactly three facts: the router's address, the machine
+    the publisher is speaking for, and the name of the variable holding its credential. Two of the
+    three are already in these settings — `host_id` says which machine this is, and a machine that
+    published a catalog under somebody else's name would be offering its own backends under another
+    machine's addresses — so the definition holds the other two and the host ID is not stated twice.
+    Stating the same fact in two files is how one of them ends up wrong.
+
+    The credential is named and never stored: the value arrives in the container environment the way
+    every other secret here does, and a repository that held a bearer token would be a repository
+    that leaks it. Absent the whole definition means the historical handoff — write the marker into
+    `router_state_dir` and tell the router to reload — which is what a machine whose router is the
+    machine it runs on still does, and what Rosalina keeps doing beside a push during the migration.
+    """
+    value = (host or {}).get('router_target')
+    if value is None:
+        return None
+    require(isinstance(value, dict),
+        "router_target is an object stating 'url' and 'token_env'; anything else is a typo in a "
+        "private setting, not a publication target")
+    unknown = sorted(set(value) - {'url', 'token_env'})
+    require(not unknown, 'router_target states ' + ', '.join(unknown) +
+        '; the router is given a URL, a credential name, and this machine\'s host_id, and nothing else')
+    url = value.get('url')
+    require(isinstance(url, str) and URL.fullmatch(url),
+        "router_target.url is the router's admin base, e.g. http://192.168.1.23:11435")
+    token_env = value.get('token_env')
+    require(isinstance(token_env, str) and ENV_NAME.fullmatch(token_env),
+        "router_target.token_env names the environment variable holding the publisher token, e.g. "
+        "CATALOG_PUSH_TOKEN — the name, never the value")
+    require(host_id(host),
+        'router_target publishes as this machine, so host.json has to state host_id: the router '
+        'refuses a push from an id it has not declared, and a machine that guesses its own name '
+        'gets a catalog nobody can address')
+    return {'url': url.rstrip('/'), 'token_env': token_env, 'host': host_id(host),
+        'token': os.environ.get(token_env, '')}
+
+
+def backend_bind_address(host):
+    """The address a backend's port is published on: loopback until the router lives elsewhere.
+
+    The port has always been published, because the router on this machine's own Docker network was
+    never the only way in — but on `127.0.0.1`, which is the honest answer while the router is a
+    neighbour container and a lie the moment it is another machine. Naming an address here moves the
+    binding and the advertised URL together, which is the pair that has to agree.
+    """
+    value = (host or {}).get('backend_address')
+    if value is None:
+        return '127.0.0.1'
+    require(isinstance(value, str) and value and not value.startswith('http'),
+        "backend_address is a bare address this machine answers on, e.g. 192.168.1.4 — not a URL and "
+        "not a hostname someone's Docker network happens to resolve")
+    return value
+
+
+def advertised_backend_url(host, definition):
+    """The URL a *reader* of the catalog must use, which is not how this machine reaches itself.
+
+    `http://qwen38-daytime:8080` is correct on the machine that resolves it and meaningless one hop
+    away; the router's own documentation names that pair of facts as the classic multi-host mistake.
+    A host that states no backend address is a host whose router is a neighbour, and the container
+    name stays right.
+    """
+    if (host or {}).get('backend_address') is None:
+        return definition['catalog']['backend_url']
+    return 'http://' + backend_bind_address(host) + ':' + str(definition['host_port'])
 
 
 def gpu_architectures(host):
@@ -806,7 +881,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
         environment['CUDA_VISIBLE_DEVICES'] = ','.join(str(index) for index in range(len(reserved)))
     cfg.update(image=engine['tag'], container_name=definition['container_name'], command=[],
         environment=environment, volumes=mounts,
-        ports=[f"127.0.0.1:{definition['host_port']}:8080"],
+        ports=[f"{backend_bind_address(host)}:{definition['host_port']}:8080"],
         deploy={'resources': {'reservations': {'devices': [{
             'driver': 'nvidia', 'device_ids': reserved, 'capabilities': ['gpu']}]}}})
     # The house default is the deployment user, which can write the workspace and the model files but
@@ -822,7 +897,8 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
         name + ': an environment-configured engine writes its own configuration and needs a writable root')
     require(cfg.get('environment', {}).get('CUDA_VISIBLE_DEVICES'),
         name + ': the container-visible GPU list must be stated, since the engine numbers cards itself')
-    entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
+    entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog']),
+        'backend_url': advertised_backend_url(host, definition)}
     # Same rule as the llama.cpp path: the router never infers this from a model name.
     require(type(entry['capability_profile'].get('nsfw')) is bool,
         name + ': capability_profile.nsfw must be declared true or false')
@@ -1099,7 +1175,7 @@ def render(config_dir, host, profile):
         cfg.update(copy.deepcopy(definition['container']))
         cfg.update(image=engine['tag'], container_name=definition['container_name'], command=argv,
             user=f"{host['uid']}:{host['gid']}", volumes=mounts,
-            ports=[f"127.0.0.1:{definition['host_port']}:8080"],
+            ports=[f"{backend_bind_address(host)}:{definition['host_port']}:8080"],
             deploy={'resources': {'reservations': {'devices': [{
                 'driver': 'nvidia', 'device_ids': devices, 'capabilities': ['gpu']}]}}})
         if cuda_order:
@@ -1115,7 +1191,8 @@ def render(config_dir, host, profile):
                 'Split model is missing a declared shard mount')
         require_container_contract(role, cfg)
         compose['services'][role] = cfg
-        entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog'])}
+        entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog']),
+            'backend_url': advertised_backend_url(host, definition)}
         # Router clients select models by this flag ("most capable NSFW model"); every profile
         # states it explicitly, because the router never infers it from a model name.
         require(type(entry['capability_profile'].get('nsfw')) is bool,

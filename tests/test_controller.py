@@ -124,7 +124,7 @@ class FakeSystem:
             for role in roles: self.install(role, compose['services'][role])
         return ''
 
-    def http(self, url, body=None, headers=None, timeout=None):
+    def http(self, url, body=None, headers=None, timeout=None, method=None):
         if url.endswith('/runtime-state'):
             # The deployed router reports the backend kinds it can serve, which is what the
             # switch gate verifies before it takes the drain.
@@ -288,7 +288,8 @@ class ControllerTests(unittest.TestCase):
 
     def test_foreign_drain_is_never_cleared(self):
         self.system.draining = True; self.system.reason = 'another owner'
-        with self.assertRaisesRegex(RuntimeError, 'Another operation owns'): self.c.transition('qwen27b-q8-pair')
+        with self.assertRaisesRegex(RuntimeError, 'drained for this machine by another operation'):
+            self.c.transition('qwen27b-q8-pair')
         self.assertNotIn(('drain', False), self.system.events)
 
     def test_shared_lock_blocks_cli_and_startup(self):

@@ -169,7 +169,12 @@ def refresh(controller, state, operations):
         print('Runtime checks waiting: ' + str(error), flush=True)
     # Even an interrupted startup must keep assignments and diagnostic status visible.
     try:
-        operations.publish_status(controller.status())
+        # Even an interrupted startup keeps assignments and diagnostic status visible — and keeps
+        # saying what this machine is serving, because a router that was never told is a fact the
+        # page has to be able to show and then go and fix.
+        status = controller.status()
+        controller.announce(status)
+        operations.publish_status(status)
     except Exception:
         state['status'] = {'ready': False, 'error': 'Runtime checks unavailable'}
 

@@ -4,9 +4,11 @@
     "75"
   ],
   "model_root": "/home/operator/ai/models/llm",
-  "router_state_dir": "/home/operator/deployments/llm-router/data/runtime",
-  "router_admin_url": "http://ai-router:11435",
-  "router_admin_header": "X-Admin-Token",
+  "router_target": {
+    "url": "http://192.168.1.23:11435",
+    "token_env": "CATALOG_PUSH_TOKEN"
+  },
+  "backend_address": "192.168.1.8",
   "uid": 1000,
   "gid": 1000,
   "gpu_ids": {

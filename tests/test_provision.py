@@ -97,7 +97,7 @@ class ProvisioningSystem(fixture.FakeSystem):
             state['State'].setdefault('Health', {'Status': 'healthy'})
         return state
 
-    def http(self, url, body=None, headers=None, timeout=None):
+    def http(self, url, body=None, headers=None, timeout=None, method=None):
         # Only the throwaway's own answer is simulated, and only on the route the controller can
         # really use: its name on the shared network. The host's published loopback port answers to
         # nobody from in here, so a tool that depended on it would never see a healthy boot.

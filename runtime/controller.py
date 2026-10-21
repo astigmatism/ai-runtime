@@ -19,7 +19,7 @@ import uuid
 from . import provision as provision_tool
 from .config import (CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS, available_profiles,
     configurations_for, default_profile, digest, gpu_architectures, host_id, read, render, require,
-    resolve_profile, service_engine)
+    resolve_profile, router_target, service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # A transaction that has not reached a terminal phase. While one exists the runtime holds its
@@ -52,6 +52,16 @@ class Controller:
         self.system = system or System()
         self.revision = revision or Path('/app/REVISION').read_text().strip()
         self.image = os.environ.get('RUNTIME_IMAGE', 'local/ai-runtime:git-' + self.revision)
+        # Where this machine sends its catalog. A runtime that starts and publishes nowhere is the
+        # failure the router's contract names explicitly, so it is refused here, at the one place
+        # every path constructs the controller through, rather than at the first switch — which is
+        # the difference between a host that will not start and a host that drains a router, changes
+        # a model, and tells nobody.
+        self.target = router_target(self.host)
+        require(self.target or self.host.get('router_state_dir'),
+            'host.json states nowhere to publish: router_target (a router on another machine, with '
+            'this machine\'s host_id) or router_state_dir (the directory this machine\'s own router '
+            'reads). A runtime that starts publishing nowhere serves models nobody is told about.')
 
     def load(self, filename, default=None):
         path = self.state / filename
@@ -61,11 +71,137 @@ class Controller:
         require(not self.system.readonly, 'State mutation is forbidden in inspection mode')
         atomic_json(self.state / filename, value)
 
+    def sinks(self):
+        """Every router this machine publishes to, in the order it publishes to them.
+
+        There used to be one answer to this question — the router on this machine, reached through a
+        directory — and the whole of publication, drain and verification was written against it. A
+        machine can now feed a router that lives elsewhere, and during the migration between those two
+        states it feeds both: the same document, two sinks, and every obligation the router contract
+        states has to be honoured against each of them, because a switch that drains one router while
+        the other is still admitting work is a switch that interrupts someone.
+
+        A local sink is a directory plus a reload call; a remote sink is a URL, a host id and a
+        bearer token. Both are drained, both are published to, both are read back. The order is local
+        first: it is the sink this runtime can put back exactly, and the one whose router refuses a
+        catalog can be restored while the remote router has not yet been touched.
+        """
+        sinks = []
+        if self.host.get('router_state_dir'):
+            sinks.append({'kind': 'file', 'name': self.host.get('router_state_dir')})
+        if self.target:
+            sinks.append({'kind': 'http', 'name': self.target['url'], 'host': self.target['host']})
+        return sinks
+
+    def router_call(self, sink, path, body=None, method=None):
+        """One admin call against one sink, authenticated the way that sink wants it."""
+        if sink['kind'] == 'http':
+            token = self.target['token']
+            require(bool(token),
+                'The router at ' + self.target['url'] + ' is published to with the token in ' +
+                self.target['token_env'] + ', which is not in this container environment. The '
+                'publisher credential is named in host.json and delivered in the environment; it '
+                'never belongs in the repository.')
+            headers = {'Authorization': 'Bearer ' + token}
+            url = self.target['url'] + '/admin/api/' + path
+        else:
+            token = (self.state / 'router-token').read_text().strip()
+            require(bool(token), 'Router credential is missing')
+            headers = {self.host['router_admin_header']: token}
+            url = self.host['router_admin_url'].rstrip('/') + '/admin/api/' + path
+        # Only pass the verb when there is one: a caller that says nothing means GET, and a
+        # double written against the shape this code had for two years keeps working.
+        return self.system.http(url, body, headers, **({} if method is None else {'method': method}))
+
     def admin(self, path, body=None):
+        """The legacy sink's admin call: this machine's own router, on this machine's admin port."""
         token = (self.state / 'router-token').read_text().strip()
         require(bool(token), 'Router credential is missing')
         return self.system.http(self.host['router_admin_url'].rstrip('/') + '/admin/api/' + path,
             body, {self.host['router_admin_header']: token})
+
+    def remote_call(self, path, body=None, method=None):
+        """The push sink's admin call, or None on a machine that has no push sink configured."""
+        if not self.target:
+            return None
+        return self.router_call({'kind': 'http'}, path, body, method=method)
+
+
+    def admin_healing_for(self, sink, path, body=None):
+        """`admin_healing` against one named sink."""
+        try:
+            return self.router_call(sink, path, body)
+        except urllib.error.HTTPError as error:
+            if not self.heal_wedged_router(error, sink):
+                raise
+            return self.router_call(sink, path, body)
+
+    def sink_drain(self, sink, healing=True):
+        """One router's report about this machine: (draining, reason, work in flight).
+
+        A host-scoped deployment reports drain per machine — `draining_hosts`, and a reason under
+        `hosts[<id>]` — while `draining` stays the whole-router flag a router release of the router
+        itself pulls. Reading the wrong one of those is the interesting failure: a machine that reads
+        the global flag would refuse to switch while its neighbour was in a maintenance window, and a
+        machine that reads the per-host flag against a router too old to have it would drain beside
+        live traffic. So the presence of `draining_hosts` decides which is authoritative, and an older
+        router keeps the meaning it always had.
+        """
+        call = self.admin_healing_for(sink, 'runtime-state') if healing else \
+            self.router_call(sink, 'runtime-state')
+        state = call['runtime']
+        mine = self.target['host'] if sink['kind'] == 'http' else None
+        if sink['kind'] == 'http' and 'draining_hosts' in state:
+            report = (state.get('hosts') or {}).get(mine) or {}
+            return {'draining': mine in (state.get('draining_hosts') or []),
+                'reason': report.get('drain_reason'), 'scoped': True,
+                'active': int((state.get('active_by_host') or {}).get(mine, 0) or 0),
+                'queued': int((state.get('queued_by_host') or {}).get(mine, 0) or 0)}
+        return {'draining': bool(state['draining']),
+            'reason': state.get('drain_reason', state.get('reason')), 'scoped': False,
+            'active': int(state.get('active_count', 0) or 0),
+            'queued': int(state.get('queued_count', 0) or 0)}
+
+    def drain_reports(self, healing=True):
+        """Every sink's drain report, as (sink, report) pairs.
+
+        A router that will not answer raises, and the caller's retry schedule is what that error is
+        for. "Unknown" is not an answer here: a pass that treated an unreachable router as "not
+        drained" would walk into a backend that still has somebody generating in it, and a recovery
+        that treated it as "nothing to release" would leave traffic parked behind a drain nobody
+        owns. Which is also why the notes in `drain_pass` are about backends and never about routers
+        — an unreachable *backend* is serving nothing and must not hold a drain open forever, while
+        an unreachable *router* is a question that has not been answered.
+        """
+        return [(sink, self.sink_drain(sink, healing)) for sink in self.sinks()]
+
+    def draining_for_me(self, healing=True):
+        """Whether a router this machine publishes to is holding traffic for this machine.
+
+        Not the global flag: that one belongs to the router as a whole, and on a shared router it says
+        nothing about whether *this* machine may replace a backend. It is a name collision waiting to
+        be removed from the code, which is why nothing reads it any more.
+        """
+        return any(report['draining'] for _, report in self.drain_reports(healing))
+
+    def router_view(self):
+        """One router's runtime-state, for the read-only surfaces that have always shown one.
+
+        The page shows one number for requests in flight and one drain flag, and a machine feeding two
+        routers has two of each. Publication and the drain never read through here — they go to every
+        sink — but a status page that printed two GPU rails and a table of routers would be answering
+        a question nobody is asking yet. The local router is the one clients are still on during the
+        migration, so it is the one described; a machine with only a push sink describes that one.
+        """
+        sinks = self.sinks()
+        order = sorted(sinks, key=lambda s: 0 if s['kind'] == 'file' else 1)
+        last = None
+        for sink in order:
+            try:
+                return self.router_call(sink, 'runtime-state')
+            except Exception as error:
+                last = error
+        raise last
 
     def admin_healing(self, path, body=None):
         """The admin call a mutating operation makes, with the one repair it is allowed.
@@ -85,7 +221,7 @@ class Controller:
                 raise
             return self.admin(path, body)
 
-    def heal_wedged_router(self, error):
+    def heal_wedged_router(self, error, sink=None):
         """Write the last-known-good catalog back to the router and reload it.
 
         Returns True only when something was actually changed. If the router was not wedged on a
@@ -98,6 +234,14 @@ class Controller:
         transient 503 against an otherwise-healthy file must not rewrite it. The router re-reads
         its catalog file on every call, so the reload is enough and no restart is involved.
         """
+        # A push cannot wedge a router, so there is nothing here to heal for one: the document is
+        # read by the same reader that would serve it before it is stored, and a refusal leaves the
+        # accepted catalog in force. The wedge this repairs is specific to a directory — this runtime
+        # wrote a file, a router then failed to read it, and the sink has no door to refuse at.
+        if sink is not None and sink['kind'] == 'http':
+            return False
+        if not self.host.get('router_state_dir'):
+            return False
         body = {}
         try:
             body = json.loads(error.read() or b'{}')
@@ -110,7 +254,7 @@ class Controller:
         if good is None:
             return False
         catalog = copy.deepcopy(good['bundle']['catalog'])
-        path = Path(self.host['router_state_dir']) / 'active-model.json'
+        path = self.local_catalog_path()
         try:
             on_disk = json.loads(path.read_text())
         except Exception:
@@ -590,7 +734,7 @@ class Controller:
         bundle = self.desired(profile)
         validation = self.validate(bundle, full_hash=full_hash)
         services = self.observe(bundle)
-        router = self.admin('runtime-state')
+        router = self.router_view()
         return {'mode': 'inspection', 'revision': self.revision, 'profile': bundle['profile'],
             'config_sha256': bundle['config_sha256'], 'validation': validation, 'services': services,
             'matches_live': all(s['healthy'] and not s['differences'] for s in services.values()),
@@ -610,9 +754,13 @@ class Controller:
         container left standing. That is the exact case restoration exists for, so an unreachable
         backend is recorded and never holds the drain open.
         """
-        state = self.admin('runtime-state')['runtime']
-        relayed = int(state['active_count'] or 0) + int(state.get('queued_count', 0) or 0)
-        notes = {'unreachable': [], 'busy': [], 'malformed': []}
+        # Work is counted per router and summed, because the point of the wait is that nobody is
+        # generating anywhere. A machine's own queue on a shared router is `active_by_host` for its
+        # own id: another machine's long generation is not this machine's maintenance window, and a
+        # drain that waited for it would be a second machine holding a switch hostage indefinitely.
+        relayed, notes = 0, {'unreachable': [], 'busy': [], 'malformed': []}
+        for sink, report in self.drain_reports():
+            relayed += report['active'] + report['queued']
         for name, cfg in configs.items():
             ci = self.system.inspect(name)
             if not ci or not ci['State']['Running']:
@@ -797,41 +945,221 @@ class Controller:
             'exclusive': 'everyday' not in bundle['compose']['services']}
         catalog['configuration'] = {**configuration, 'runtime_revision': self.revision, 'published_at': now()}
         require(not self.system.readonly, 'Publication forbidden in inspection mode')
-        catalog_path = Path(self.host['router_state_dir']) / 'active-model.json'
-        previous_catalog = read(catalog_path) if catalog_path.exists() else None
+        # Publication is per sink, and so is the receipt. Each sink records the document accepted
+        # there and, for a push, the revision the router computed from those bytes: the router's own
+        # contract calls that revision the receipt, and a runtime that did not compare it would be
+        # publishing on optimism instead of on proof.
+        previous = self.read_local_catalog()
+        reports = []
         try:
-            atomic_json(catalog_path, catalog)
-            self.admin('reload-config', {})
-            state = self.admin('runtime-state')
-            models = state.get('models', [])
-            expected = {m['model']: m['context_length'] for m in catalog['models']}
-            require({m['id'] for m in models} == set(expected) and all(
-                m['x_ollama_router']['health']['available'] and m['x_ollama_router']['output_policy'] == 'unrestricted'
-                and m['x_ollama_router']['context_window'] == expected[m['id']]
-                and m['x_ollama_router'].get('default_output_tokens') is None
-                and m['x_ollama_router'].get('max_output_tokens') is None for m in models),
-                'Router catalog/readiness verification failed')
+            for sink in self.sinks():
+                reports.append(self.publish_sink(sink, catalog))
         except BaseException:
-            # An unsupported catalog can break runtime-state itself. Restore the exact prior
-            # catalog before recovery asks who owns the drain; leave admissions and release
-            # receipts alone until backend recovery verifies the previous release.
-            if previous_catalog is not None:
-                atomic_json(catalog_path, previous_catalog)
-                try:
-                    self.admin('reload-config', {})
-                except Exception:
-                    pass  # The original failure remains the diagnostic; recovery will retry.
-            else:
-                catalog_path.unlink(missing_ok=True)
+            # Whatever a sink wrote stays written: a catalog the router refused, or a catalog of a
+            # release that is not live. The local sink is the one this runtime can put back exactly,
+            # and the push sink needs no equivalent — a refusal there leaves the previously accepted
+            # catalog in force by construction — so restoring the file converges both. An
+            # unsupported catalog can also break runtime-state itself, which is why the prior
+            # document goes back before recovery asks who owns the drain; admissions and release
+            # receipts wait for backend recovery to verify the previous release.
+            self.restore_local_catalog(previous)
             raise
+        self.save('publication.json', {'published_at': now(), 'runtime_revision': self.revision,
+            'configuration': catalog['configuration']['id'], 'sinks': reports})
+
+    def local_catalog_path(self):
+        return Path(self.host['router_state_dir']) / 'active-model.json'
+
+    def read_local_catalog(self):
+        if not self.host.get('router_state_dir'):
+            return None
+        path = self.local_catalog_path()
+        return read(path) if path.exists() else None
+
+    def write_local_catalog(self, catalog):
+        """Put one document in the local router's directory, or remove it when handed None."""
+        if not self.host.get('router_state_dir'):
+            return False
+        path = self.local_catalog_path()
+        if catalog is None:
+            path.unlink(missing_ok=True)
+        else:
+            atomic_json(path, catalog)
+        return True
+
+    def restore_local_catalog(self, catalog):
+        """Put a specific document back and make the local router read it again.
+
+        The reload is the half that matters: the router re-reads the file on demand, and a file
+        restored while the router still holds the refused catalog in memory has restored nothing.
+        A reload that fails is not the failure being reported, so it is not allowed to hide it.
+        """
+        if not self.write_local_catalog(catalog):
+            return
+        try:
+            self.admin('reload-config', {})
+        except Exception:
+            pass  # The original failure remains the diagnostic; recovery will retry.
+
+    def publish_sink(self, sink, catalog):
+        report = {'kind': sink['kind'], 'name': sink['name']}
+        if sink['kind'] == 'file':
+            self.write_local_catalog(catalog)
+            self.admin('reload-config', {})
+            self.verify_local(catalog)
+            return report
+        return self.publish_http(catalog, report)
+
+    def verify_local(self, catalog):
+        """The router on this machine, holding exactly this machine's document, serving it live.
+
+        This is the historical check, unchanged: one router, one catalog, so every model it lists is
+        one this runtime published, and `available` is a fact about a backend on this machine's own
+        Docker network rather than about somebody's routing table.
+        """
+        state = self.admin('runtime-state')
+        models = state.get('models', [])
+        expected = {m['model']: m['context_length'] for m in catalog['models']}
+        require({m['id'] for m in models} == set(expected) and all(
+            m['x_ollama_router']['health']['available'] and m['x_ollama_router']['output_policy'] == 'unrestricted'
+            and m['x_ollama_router']['context_window'] == expected[m['id']]
+            and m['x_ollama_router'].get('default_output_tokens') is None
+            and m['x_ollama_router'].get('max_output_tokens') is None for m in models),
+            'Router catalog/readiness verification failed')
+
+    def publish_http(self, catalog, report):
+        """Send the whole catalog to the router that lives elsewhere and read the receipt back.
+
+        The response is the proof: it repeats the revision computed from the bytes accepted, the
+        default model, and the models now listed for this machine. A router that refused keeps serving
+        whatever it accepted last, so a failed publish is a deployment that did not happen rather than
+        a house with no models — which is why there is no undo path here.
+        """
+        try:
+            receipt = self.remote_call('hosts/' + self.target['host'] + '/catalog', catalog, method='PUT')
+        except urllib.error.HTTPError as error:
+            # The router answers a refusal with a code and a reason, and both are the whole point of
+            # the answer: `409 CATALOG_ID_CONFLICT` names the service ID another machine already
+            # serves, `404 HOST_NOT_DECLARED` means this machine's id is not in the router's list, and
+            # `422` names the field of the document the reader could not accept. All three are a
+            # different fix, and none of them is inferable from a bare 4xx.
+            detail = ''
+            try:
+                detail = error.read().decode('utf-8', 'replace')
+            except Exception:
+                pass
+            raise RuntimeError('The router at ' + self.target['url'] + ' refused this machine\'s catalog ('
+                + str(error.code) + '): ' + detail[:600]) from error
+        require(isinstance(receipt, dict) and receipt.get('revision'),
+            'The router at ' + self.target['url'] + ' answered a catalog push without a revision: ' +
+            json.dumps(receipt)[:400])
+        require(receipt.get('ok', True) and receipt.get('default_model') == catalog['default_model'],
+            'The router at ' + self.target['url'] + ' refused this machine\'s catalog: ' +
+            json.dumps(receipt.get('error') or receipt.get('warnings') or receipt)[:600])
+        report.update({'revision': receipt['revision'], 'accepted_at': now(),
+            'warnings': sorted(set(receipt.get('warnings') or []))})
+        report.update(self.verify_remote(catalog))
+        return report
+
+    def verify_remote(self, catalog):
+        """What a router two hosts away can confirm, and what it cannot be asked to confirm.
+
+        It can confirm the document: each model this machine publishes is listed with the context
+        window claimed and output and thinking uncapped. And because a shared router lists every
+        machine, this runtime answers only for the models it published, and for the router's active
+        model only when this machine is the host the router answers unnamed requests with — a machine
+        that is not the default has no business failing a switch because the default host's model is
+        the one on offer.
+
+        What it cannot confirm is that the backend is alive, not without reporting on its own network.
+        `available: false` from a remote router says *it* cannot open `backend_url`, which during the
+        migration is true of a backend still published on loopback and expected to be true. So
+        availability is required of a remote router only once this machine states a backend address —
+        only once it has claimed the address is routable — and until then it is reported, in the
+        status, as the difference between "running here" and "reachable from there".
+        """
+        state = self.remote_call('runtime-state')
+        mine = {m['model']: m['context_length'] for m in catalog['models']}
+        entries = [m for m in state.get('models', []) if m['id'] in mine]
+        require({m['id'] for m in entries} == set(mine),
+            'The router at ' + self.target['url'] + ' is not serving this machine\'s models: it lists ' +
+            str(sorted(m['id'] for m in state.get('models', []))) + ', this machine published ' +
+            str(sorted(mine)))
+        require(all(m['x_ollama_router']['output_policy'] == 'unrestricted'
+            and m['x_ollama_router']['context_window'] == mine[m['id']]
+            and m['x_ollama_router'].get('default_output_tokens') is None
+            and m['x_ollama_router'].get('max_output_tokens') is None for m in entries),
+            'Router catalog verification failed on ' + self.target['url'] + ': a model is served with '
+            'a context window or an output quota this machine did not publish')
+        available = all(m['x_ollama_router']['health']['available'] for m in entries)
+        # The refusal is reserved for a machine that has claimed a routable address and cannot
+        # deliver on it. A machine that has said nothing about reachability — whose catalog still
+        # carries a loopback address or a container name from before the migration — is in the state
+        # the migration exists to leave, and failing its switches would keep the new router empty for
+        # exactly as long as it takes to move the backends.
+        require(available or not self.host.get('backend_address'),
+            'The router at ' + self.target['url'] + ' cannot reach this machine\'s backends, and this '
+            'machine states ' + str(self.host.get('backend_address')) + ' as the address it publishes them '
+            'on. Either the router opens that address or the address is wrong; a catalog that would '
+            'serve nothing is not worth switching to')
+        default = (self.remote_call('hosts') or {}).get('default_host')
+        if default in (None, self.target['host']):
+            require(state['active_model']['profile'] == catalog['configuration']['id'],
+                'Router active-model verification failed on ' + self.target['url'])
+        return {'available': available, 'router_default': default,
+            **({} if available else {'warnings': ['ROUTER_CANNOT_REACH_BACKEND:' + self.target['host']]})}
+
+    def retire(self):
+        """Tell every sink this machine no longer serves these models.
+
+        A catalog whose backends nobody starts is worse than no catalog: clients are told a model
+        exists and get a 503 from a machine that has stopped trying. The push sink has an explicit
+        retirement for that; the local one retires the same way it publishes — the document going
+        away.
+        """
+        require(not self.system.readonly, 'Mutation forbidden in inspection mode')
+        retired = []
+        for sink in self.sinks():
+            if sink['kind'] == 'http':
+                self.remote_call('hosts/' + self.target['host'] + '/catalog', {}, method='DELETE')
+            else:
+                self.write_local_catalog(None)
+                self.admin('reload-config', {})
+            retired.append(sink['name'])
+        self.save('publication.json', {'retired_at': now(), 'runtime_revision': self.revision,
+            'retired_from': retired})
+        return retired
 
     def set_drain(self, enabled, transaction):
-        return self.admin_healing('runtime-drain', {'enabled': enabled,
-            'reason': 'local-ai-runtime:' + transaction['id'] if enabled else 'runtime ready'})
+        """Hold traffic for this machine, on every router that is serving it.
+
+        A switch that drains one router and not the other does not interrupt a generation, it changes
+        which router's clients get interrupted — and the reason travels with the drain because the
+        reason is how a router tells its owner from an intruder. A host-scoped drain is sent scoped
+        when the sink is a push: on a shared router this machine's maintenance window is not the other
+        machines' window, and pausing the whole deployment to replace one card is how a second machine
+        makes the first one slower to maintain instead of faster.
+        """
+        reason = 'local-ai-runtime:' + transaction['id'] if enabled else 'runtime ready'
+        results = []
+        for sink in self.sinks():
+            body = {'enabled': enabled, 'reason': reason}
+            if sink['kind'] == 'http':
+                body['host'] = self.target['host']
+            results.append((sink['name'], self.admin_healing_for(sink, 'runtime-drain', body)))
+        return results
 
     def owns_drain(self, transaction):
-        state = self.admin_healing('runtime-state')['runtime']
-        return state['draining'] and state.get('drain_reason', state.get('reason')) == 'local-ai-runtime:' + transaction['id']
+        """Whether this machine's drain is held under this transaction's reason.
+
+        Any sink that says so is enough to release, because releasing goes to every sink: the case
+        this answers for is a pass that drained one router and died before reaching the other, where
+        the untouched router has nothing to release and the drained one must not be left holding
+        traffic with no transaction behind it.
+        """
+        reason = 'local-ai-runtime:' + transaction['id']
+        return any(report['draining'] and report['reason'] == reason
+            for _, report in self.drain_reports())
 
     def mark(self, transaction, phase, step=None):
         """Write the phase a pass has reached into the transaction before doing anything else.
@@ -885,7 +1213,7 @@ class Controller:
             bundle = (bundle if bundle is not None else (self.last_known_good() or {}).get('bundle'))
             if not bundle:
                 return False
-            if self.admin('runtime-state')['runtime']['draining']:
+            if self.draining_for_me(healing=False):
                 return False
             return bool(self.observe(bundle)) and all(s['healthy'] for s in self.observe(bundle).values())
         except Exception:
@@ -1083,8 +1411,8 @@ class Controller:
         require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
         require(not keep_everyday or topology or night_change or 'everyday' not in roles,
             'The switch would replace the second resident; operator attention required')
-        state = self.admin_healing('runtime-state')['runtime']
-        require(not state['draining'], 'Another operation owns the router drain')
+        require(not self.draining_for_me(),
+            'A router this machine publishes to is drained for this machine by another operation')
         if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles and not removed:
             return {'already_active': True, 'profile': bundle['profile']}
         unchanged = {role: s['id'] for role, s in observed.items() if role not in roles}
@@ -1153,7 +1481,7 @@ class Controller:
             tx = self.load('transaction.json')
             require(tx and tx['phase'] in PENDING_PHASES,
                 'There is no interrupted deployment to recover')
-            if tx['phase'] == 'prepared' and not self.admin_healing('runtime-state')['runtime']['draining']:
+            if tx['phase'] == 'prepared' and not self.draining_for_me():
                 self.finish(tx, 'failed', 'Interrupted before draining; prior runtime preserved')
             else:
                 self.recover_locked(tx, restoring=True)
@@ -1166,7 +1494,8 @@ class Controller:
             active = self.load('active.json')
             require(previous and active, 'No prior release is available')
             require(active['revision'] == self.revision, 'Refusing rollback from a superseded updater')
-            require(not self.admin_healing('runtime-state')['runtime']['draining'], 'Another operation owns the router drain')
+            require(not self.draining_for_me(),
+                'A router this machine publishes to is drained for this machine by another operation')
             tx = {'id': str(uuid.uuid4()), 'phase': 'prepared', 'started_at': now(), 'previous': previous,
                 'target': active, 'revision': self.revision, 'profile': previous['bundle']['profile'],
                 'error': 'Replacement controller failed readiness'}
@@ -1187,6 +1516,36 @@ class Controller:
                 'Interrupted runtime transaction blocks publication')
             self.publish(active['bundle'])
 
+    def announce(self, status=None):
+        """Say again, to every router, what this machine is serving — unless someone already was.
+
+        Publication is an event and not a state: it happens when a configuration changes, and the
+        router keeps the document afterwards. But a controller restart with nothing to change — the
+        ordinary shape of a portal update, and of a machine rebooting onto a router that has been
+        redeployed underneath it — goes through `transition()` reporting that everything is already
+        active, and publishes nothing. A machine that only publishes on change is then healthy and
+        unheard-from, which is the state this exists to prevent, so the loop that already asks
+        whether this machine is serving asks whether anyone was told.
+
+        A failure is recorded and not raised. The catalog not landing is exactly the fact the page is
+        for, and a controller that refused to serve the page over it would delete the way to fix it.
+        """
+        active = self.load('active.json')
+        if not active or active['revision'] != self.revision:
+            return None  # Nothing of this revision is serving; there is nothing to claim.
+        if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
+            return None  # A switch is in flight and will publish with its own verification.
+        record = (status or {}).get('publication') if status is not None else self.load('publication.json', {})
+        if record and not record.get('error') and not record.get('retired_at'):
+            return None
+        try:
+            return self.publish(active['bundle'])
+        except Exception as error:
+            self.save('publication.json', {**(self.load('publication.json', {})),
+                'failed_at': now(), 'runtime_revision': self.revision,
+                'configuration': active['profile'], 'error': str(error)})
+            return None
+
     def router_maintenance(self, begin):
         """Reserve runtime configuration across a router-only deployment's process boundary."""
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
@@ -1195,7 +1554,7 @@ class Controller:
             require(active and active['revision'] == self.revision, 'Controller does not own the deployed revision')
             reservation = self.load('router-maintenance.json', {})
             if begin:
-                require(not reservation.get('reserved') and not self.admin_healing('runtime-state')['runtime']['draining'],
+                require(not reservation.get('reserved') and not self.draining_for_me(),
                     'Another maintenance operation is active')
                 require(self.load('transaction.json', {}).get('phase') not in PENDING_PHASES,
                     'Interrupted runtime transaction')
@@ -1299,17 +1658,33 @@ class Controller:
                     'exclusive': model.get('exclusive', False),
                     'gpu_names': [names[gpu] for gpu in text if gpu in names],
                     **live})
-            router = self.admin('runtime-state')
+            router = self.router_view()
             state = router['runtime']
-            result['maintenance'] = {'draining': state['draining'], 'active_requests': state['active_count'],
+            # Requests in flight as one router sees them; see router_view for which one that is.
+            result['maintenance'] = {'draining': self.draining_for_me(healing=False),
+                'active_requests': state['active_count'],
                 'queued_requests': state.get('queued_count', 0)}
             tx = self.load('transaction.json', {})
             expected = {m['model']: m['context_length'] for m in bundle['catalog']['models']}
-            catalog_ready = {m['id'] for m in router.get('models', [])} == set(expected) and all(
+            # A shared router lists every machine's models, so readiness is about the ones this machine
+            # publishes. Asking the whole list whether it is this machine's document turns a second
+            # machine joining the deployment into this machine reporting itself unhealthy, which is the
+            # same category of mistake the drain scoping fixes.
+            mine = [m for m in router.get('models', []) if m['id'] in expected]
+            catalog_ready = {m['id'] for m in mine} == set(expected) and all(
                 m['x_ollama_router']['health']['available'] and
-                m['x_ollama_router']['context_window'] == expected[m['id']] for m in router.get('models', []))
+                m['x_ollama_router']['context_window'] == expected[m['id']] for m in mine)
+            # Where this machine's catalog lives. Two different failures look identical from a
+            # terminal — models running here, nothing answering there — and are fixed in opposite
+            # directions: one is a backend, the other is a router that has not been told. The
+            # publication record is the difference, and the warning a router reports about its own
+            # network belongs on this page and not in a log line: `available: false` from a router
+            # two hops away says the router cannot open the address, which is a fact about the
+            # address, and never a reason to call this machine unhealthy.
+            result['publication'] = self.load('publication.json')
             result['ready'] = bool(active and active['revision'] == self.revision and
-                all(x['healthy'] for x in observed.values()) and catalog_ready and not state['draining'] and
+                all(x['healthy'] for x in observed.values()) and catalog_ready and
+                not self.draining_for_me(healing=False) and
                 not self.load('router-maintenance.json', {}).get('reserved') and
                 tx.get('phase') not in PENDING_PHASES)
         except Exception as error:

@@ -48,8 +48,8 @@ def listed(config_dir, host=None):
 def main():
     parser = argparse.ArgumentParser(prog='ai-runtime')
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
-        'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'serve', 'list', 'check',
-        'provision', 'gate',
+        'deploy', 'adopt', 'recover', 'restore', 'rollback-release', 'publish', 'retire', 'serve',
+        'list', 'check', 'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
     # Not `choices`: argparse prints "invalid choice" and exits 2, which tells an operator that a
     # name they typed for three years is simply wrong. resolve_profile says what it means -- a
@@ -115,6 +115,8 @@ def main():
         result = controller.rollback_release()
     elif args.action == 'publish':
         result = controller.republish()
+    elif args.action == 'retire':
+        result = controller.retire()
     elif args.action.startswith('router-maintenance-'):
         result = controller.router_maintenance(args.action.endswith('begin'))
     print(json.dumps(result, indent=2))
