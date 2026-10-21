@@ -69,6 +69,37 @@ class RemoteRouterRestorationTests(unittest.TestCase):
         self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
         self.assert_serving()
 
+    def test_lan_migration_verifies_the_requested_binding_and_reopens_both_routers(self):
+        self.c.host['backend_address'] = '192.168.1.4'
+        result = self.c.transition()
+        self.assertEqual(result['changed_roles'], ['coding'])
+        active = self.c.load('active.json')['bundle']
+        name = active['compose']['services']['coding']['container_name']
+        self.assertEqual(self.system.containers[name]['HostConfig']['PortBindings'],
+            {'8080/tcp': [{'HostIp': '192.168.1.4', 'HostPort': '18080'}]})
+        self.assertEqual(self.router.catalogs['rosalina']['models'][0]['backend_url'],
+            'http://192.168.1.4:18080')
+        self.assert_serving()
+
+    def test_wrong_lan_binding_recovers_the_recorded_loopback_binding(self):
+        previous = self.c.load('active.json')
+        self.c.host['backend_address'] = '192.168.1.4'
+        install = self.system.install
+        def wrong_binding(role, cfg):
+            install(role, cfg)
+            if cfg['ports'][0].startswith('192.168.1.4:'):
+                self.system.containers[cfg['container_name']]['HostConfig']['PortBindings'][
+                    '8080/tcp'][0]['HostIp'] = '0.0.0.0'
+        self.system.install = wrong_binding
+        with self.assertRaisesRegex(RuntimeError, 'Deployment failed:.*port bindings'):
+            self.c.transition()
+        self.assertEqual(self.c.load('active.json'), previous)
+        self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
+        name = previous['bundle']['compose']['services']['coding']['container_name']
+        self.assertEqual(self.system.containers[name]['HostConfig']['PortBindings'][
+            '8080/tcp'][0]['HostIp'], '127.0.0.1')
+        self.assert_serving()
+
     def test_admin_failure_during_restoration_retries_and_reopens_both_routers(self):
         self.c.set_drain(True, {'id': 'interrupted'})
         real = self.router.handle

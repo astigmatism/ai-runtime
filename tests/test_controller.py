@@ -70,7 +70,8 @@ class FakeSystem:
                 'User': cfg.get('user') or '', 'Env': [k + '=' + v for k, v in cfg.get('environment', {}).items()]},
             'HostConfig': {'ReadonlyRootfs': cfg.get('read_only', True), 'RestartPolicy': {'Name': 'unless-stopped'},
                 'Init': True, 'DeviceRequests': [{'Driver': 'nvidia', 'Count': 0, 'Capabilities': [['gpu']], 'DeviceIDs': cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']}],
-                'PortBindings': {'8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': cfg['ports'][0].split(':')[1]}]}},
+                'PortBindings': {'8080/tcp': [{'HostIp': cfg['ports'][0].rsplit(':', 2)[0],
+                    'HostPort': cfg['ports'][0].rsplit(':', 2)[1]}]}},
             'Mounts': [{'Type': 'bind', 'Source': v['source'], 'Destination': v['target'],
                     'RW': not v.get('read_only', True)} for v in cfg['volumes']],
             'NetworkSettings': {'Networks': {'local-ai-ollama_default': {'Aliases': cfg['networks']['router']['aliases']}}}}

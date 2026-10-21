@@ -780,9 +780,11 @@ class Controller:
                     for x in cfg.get('volumes') or []}:
                 reasons.append('model mounts')
             ports = cfg.get('ports') or []
-            host_port = ports[0].split(':')[1] if ports else None
-            if not host_port or ci['HostConfig'].get('PortBindings') != {
-                    '8080/tcp': [{'HostIp': '127.0.0.1', 'HostPort': host_port}]}:
+            # Compare to this release's binding, including during rollback to a release
+            # that predates the current host's LAN address setting.
+            binding = ports[0].rsplit(':', 2) if len(ports) == 1 else []
+            if len(binding) != 3 or binding[2] != '8080' or ci['HostConfig'].get('PortBindings') != {
+                    '8080/tcp': [{'HostIp': binding[0], 'HostPort': binding[1]}]}:
                 reasons.append('port bindings')
             connection = (ci.get('NetworkSettings') or {}).get('Networks', {}).get(network, {})
             aliases = ((cfg.get('networks') or {}).get('router') or {}).get('aliases') or []
