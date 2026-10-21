@@ -169,14 +169,19 @@ def refresh(controller, state, operations):
         print('Runtime checks waiting: ' + str(error), flush=True)
     # Even an interrupted startup must keep assignments and diagnostic status visible.
     try:
-        # Even an interrupted startup keeps assignments and diagnostic status visible — and keeps
-        # saying what this machine is serving, because a router that was never told is a fact the
-        # page has to be able to show and then go and fix.
-        status = controller.status()
-        controller.announce(status)
-        operations.publish_status(status)
+        # Even an interrupted startup must keep assignments and diagnostic status visible.
+        operations.publish_status(controller.status())
     except Exception:
         state['status'] = {'ready': False, 'error': 'Runtime checks unavailable'}
+    # ...and keeps saying what this machine is serving, because a router that was never told is a
+    # fact the page has to show and then let someone go and fix. It goes after the status and in its
+    # own attempt: whether the catalog reached the router is news *about* the state, and a pass that
+    # lost the page to a publication that could not start would remove the way to find out, which is
+    # precisely the failure the record above is there to survive.
+    try:
+        controller.announce(state.get('status'))
+    except Exception as error:
+        print('Catalog publication check waiting: ' + str(error), flush=True)
 
 
 def serve(controller):

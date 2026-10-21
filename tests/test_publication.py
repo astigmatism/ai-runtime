@@ -34,6 +34,11 @@ OTHER = [{'id': 'whisper-large-v3', 'x_ollama_router': {'health': {'available': 
         'max_output_tokens': None}}]
 
 
+def now_iso():
+    from runtime.system import now
+    return now()
+
+
 def refusal(code, payload):
     return urllib.error.HTTPError(REMOTE, code, 'Refused', {}, io.BytesIO(json.dumps(payload).encode()))
 
@@ -407,6 +412,12 @@ class AnnouncementTests(PublisherTests):
         record = controller.load('publication.json')
         self.assertIn('HOST_NOT_DECLARED', record['error'])
         self.assertEqual(record['configuration'], self.bundle['profile'])
+        self.assertGreater(record['retry_at'], now_iso(),
+            'a failure retried on every status pass is a machine shouting at a router')
+        asked = len(self.router.calls)
+        controller.announce(record and {'publication': record})
+        self.assertEqual(len(self.router.calls), asked, 'the backoff was read and then ignored')
+        record['retry_at'] = '2000-01-01T00:00:00+00:00'
         self.router.declared = ['local', 'rosalina']
         controller.announce(record and {'publication': record})
         self.assertIn('rosalina', self.router.catalogs)
@@ -420,6 +431,13 @@ class AnnouncementTests(PublisherTests):
         self.router.catalogs = {}
         controller.announce({'publication': {}})
         self.assertEqual(self.router.catalogs, {})
+
+        # A status with no publication record at all is the shape of a machine that has published
+        # nothing yet — a reason to publish, and not an attribute error on the way to doing it.
+        controller.save('active.json', {'revision': controller.revision, 'profile': self.bundle['profile'],
+            'bundle': self.bundle})
+        controller.announce({'ready': True})
+        self.assertIn('rosalina', self.router.catalogs)
 
 
 class MirrorTests(PublisherTests):
@@ -465,8 +483,11 @@ class MirrorTests(PublisherTests):
 
         # The catalog is not abandoned there, either. The record says a sink has not caught up, the
         # supervising pass reads that, and the copy is handed the document the moment it is back.
+        stale = controller.load('publication.json')
+        stale['retry_at'] = '2000-01-01T00:00:00+00:00'
+        controller.save('publication.json', stale)
         del self.system.http
-        controller.announce({'publication': controller.load('publication.json')})
+        controller.announce({'publication': stale})
         self.assertIn('rosalina', self.router.catalogs)
         self.assertFalse([s for s in controller.load('publication.json')['sinks']
             if s['kind'] == 'http'][0].get('error'))

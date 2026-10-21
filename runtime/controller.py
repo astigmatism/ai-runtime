@@ -22,6 +22,12 @@ from .config import (CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS, available_pr
     resolve_profile, router_target, service_engine)
 from .system import System, atomic_json, future, lock, now
 
+# How long a router that was not listening has to stay not-listening before this machine offers it
+# the catalog again. Five minutes is neither polite nor urgent: it is short enough that a router
+# restarted during a coffee break finds its catalog on the next pass, and long enough that a router
+# down for the afternoon is not asked five times a minute, every minute, for hours.
+ANNOUNCE_RETRY_SECONDS = 300
+
 class RouterRefused(RuntimeError):
     """A router answered and said no."""
     # Worth its own type because the two ways a router can fail a publication are opposite news: a
@@ -1008,8 +1014,15 @@ class Controller:
             # receipts wait for backend recovery to verify the previous release.
             self.restore_local_catalog(previous)
             raise
+        # A sink that was written but refused, or written and unreachable, is a promise this machine
+        # intends to keep: the record carries when to try it again, which is what stops the loop that
+        # reports health every few seconds from offering a router the same catalog five times a
+        # minute for the length of an afternoon. A switch publishes whenever it likes; the backoff is
+        # read only by the loop that has nothing else to do.
         self.save('publication.json', {'published_at': now(), 'runtime_revision': self.revision,
-            'configuration': catalog['configuration']['id'], 'sinks': reports})
+            'configuration': catalog['configuration']['id'], 'sinks': reports,
+            **({'retry_at': future(ANNOUNCE_RETRY_SECONDS)}
+                if any(report.get('error') for report in reports) else {})})
 
     def local_catalog_path(self):
         return Path(self.host['router_state_dir']) / 'active-model.json'
@@ -1584,16 +1597,24 @@ class Controller:
             return None  # Nothing of this revision is serving; there is nothing to claim.
         if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
             return None  # A switch is in flight and will publish with its own verification.
-        record = (status or {}).get('publication') if status is not None else self.load('publication.json', {})
+        record = ((status or {}).get('publication') if status is not None
+            else self.load('publication.json', {})) or {}
         if record and not record.get('error') and not record.get('retired_at') \
                 and not any(sink.get('error') for sink in record.get('sinks', [])):
+            return None
+        # Not this pass, then: the record carries when it is worth asking again. The loop that
+        # publishes is the one that reports health every few seconds, and a router that is down for
+        # the afternoon would otherwise be offered the catalog five times a minute by a machine that
+        # is otherwise doing nothing but asking.
+        if record.get('retry_at', '') > now():
             return None
         try:
             return self.publish(active['bundle'])
         except Exception as error:
             self.save('publication.json', {**(self.load('publication.json', {})),
-                'failed_at': now(), 'runtime_revision': self.revision,
-                'configuration': active['profile'], 'error': str(error)})
+                'failed_at': now(), 'retry_at': future(ANNOUNCE_RETRY_SECONDS),
+                'runtime_revision': self.revision, 'configuration': active['profile'],
+                'error': str(error)})
             return None
 
     def router_maintenance(self, begin):
