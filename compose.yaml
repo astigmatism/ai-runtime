@@ -37,9 +37,17 @@ services:
         target: "${MODEL_ROOT}"
         read_only: true
         bind: {create_host_path: false}
+      # The router's catalog directory, for the machine whose router reads a file. A machine that
+      # publishes to a router elsewhere has no such directory, and `.state/host.json` says so by not
+      # naming one; with no value to interpolate, the mount presents the state directory a second
+      # time — an existing path the controller can already see, and the only shape a compose file
+      # can write without a conditional volume; the two identical entries render as one mount. What
+      # makes a machine's sink a file or a push is the setting in `host.json`, and this mount is not
+      # it: a machine that set `router_state_dir` and left this variable unset would be handed a
+      # directory it does not write to, and would find out at the first publication.
       - type: bind
-        source: "${ROUTER_STATE_DIR:?Set the router catalog directory}"
-        target: "${ROUTER_STATE_DIR}"
+        source: "${ROUTER_STATE_DIR:-${RUNTIME_STATE_DIR:?Set the absolute state directory}}"
+        target: "${ROUTER_STATE_DIR:-${RUNTIME_STATE_DIR}}"
         bind: {create_host_path: false}
     labels:
       io.service-portal.update.enabled: "true"

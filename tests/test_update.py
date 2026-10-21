@@ -215,3 +215,14 @@ class UpdateTests(unittest.TestCase):
         real.candidate('new-image', 'apply')
         run = [call for call in self.h.calls if call[:2] == ('docker', 'run')][0]
         self.assertIn('type=bind,source=/router,target=/router', run)
+
+    def test_a_machine_whose_router_lives_elsewhere_needs_no_catalog_directory(self):
+        # `compose.yaml` used to make the router's catalog directory a required variable, which
+        # quietly made every machine a machine with a router on it. A host that publishes to a router
+        # elsewhere has no such path, and the failure was not a helpful one: an interpolation error
+        # naming a variable the machine has no reason to own, raised at the first `up`. The mount now
+        # falls back to the state directory it already has, and `host.json` stays the only place that
+        # decides whether this machine writes a file or pushes.
+        compose = (Path(__file__).resolve().parents[1] / 'compose.yaml').read_text()
+        self.assertIn('${ROUTER_STATE_DIR:-', compose)
+        self.assertNotIn('${ROUTER_STATE_DIR:?', compose)
