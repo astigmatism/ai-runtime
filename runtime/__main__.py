@@ -87,7 +87,7 @@ def main():
             result.update(requested_profile=args.profile, active=result['profile'] == args.profile)
         if args.action == 'check' and not result['ready']:
             raise RuntimeError('Runtime is not ready: ' + json.dumps(result))
-    elif args.action in ('apply', 'adopt', 'deploy'):
+    elif args.action in ('apply', 'adopt', 'deploy', 'install'):
         result = controller.transition(args.profile, deploy=args.action == 'deploy',
             adopt=args.action == 'adopt', install=args.action == 'install')
     elif args.action == 'recover':
