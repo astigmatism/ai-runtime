@@ -1162,6 +1162,21 @@ class Controller:
             and m['x_ollama_router'].get('max_output_tokens') is None for m in models),
             'Router catalog/readiness verification failed')
 
+    def push_host_identity(self):
+        """This machine as it names itself when it pushes to a router that serves many.
+
+        The router accepts a `host` block in the catalog body — `{id}`, plus an optional
+        `display_name` for an operator-facing label — and refuses it unless the id is the machine the
+        push authenticated as. Declaring the identity in the document, and not only in the URL and
+        token that carry it, is what lets a shared router label each model by where it runs and lets
+        a client tell two machines apart when their model names collide.
+        """
+        identity = {'id': self.target['host']}
+        name = self.host.get('display_name')
+        if name:
+            identity['display_name'] = name
+        return identity
+
     def publish_http(self, catalog, report):
         """Send the whole catalog to the router that lives elsewhere and read the receipt back.
 
@@ -1170,8 +1185,12 @@ class Controller:
         whatever it accepted last, so a failed publish is a deployment that did not happen rather than
         a house with no models — which is why there is no undo path here.
         """
+        # The host block is added to the push copy only. The local file sink's router source is
+        # `local`, and stamping a remote machine's id into that document would be a name the local
+        # router has every right to refuse.
+        payload = {**catalog, 'host': self.push_host_identity()}
         try:
-            receipt = self.remote_call('hosts/' + self.target['host'] + '/catalog', catalog, method='PUT')
+            receipt = self.remote_call('hosts/' + self.target['host'] + '/catalog', payload, method='PUT')
         except urllib.error.HTTPError as error:
             # The router answers a refusal with a code and a reason, and both are the whole point of
             # the answer: `409 CATALOG_ID_CONFLICT` names the service ID another machine already

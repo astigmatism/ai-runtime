@@ -113,6 +113,12 @@ class Router:
             raise refusal(409, {'error': {'code': 'CATALOG_ID_CONFLICT', 'message': ', '.join(clash)}})
         if document['default_model'] not in claimed:
             raise refusal(422, {'error': {'code': 'CATALOG_DEFAULT_MODEL_INVALID'}})
+        # The real reader refuses a body that declares a machine other than the one the push
+        # authenticated as: the identity is verifiable, not a label the publisher gets to invent.
+        declared = (document.get('host') or {}).get('id')
+        if declared is not None and declared != host:
+            raise refusal(422, {'error': {'code': 'CATALOG_HOST_ID_MISMATCH',
+                'message': str(declared) + ' declared itself to ' + host}})
         revision = hashlib.sha256(json.dumps(document).encode()).hexdigest()
         self.catalogs[host] = document
         self.revisions[host] = revision
@@ -260,6 +266,9 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(body['backend_url'], body['models'][0]['backend_url'])
         self.assertEqual(body['context_length'], body['models'][0]['context_length'])
         self.assertEqual(body['configuration']['runtime_revision'], 'a' * 40)
+        # The push names the machine it authenticated as, so a shared router can attribute every
+        # model it composes to where it runs. The id is this machine's own slug, matching the path.
+        self.assertEqual(body['host'], {'id': 'rosalina'})
         # And the revision in the response is the receipt: comparing it is what turns "the request
         # did not raise" into "the catalog being served is the one this machine sent".
         record = controller.load('publication.json')
@@ -268,13 +277,37 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual({s['name'] for s in record['sinks']},
             {str(self.state / 'router'), REMOTE})
 
+    def test_a_machine_publishes_its_host_label_when_it_states_one(self):
+        # `display_name` in host.json is the operator-facing name a shared router shows for this
+        # machine; when it is set the push carries both the verifiable id and that label.
+        controller = self.build(host_changes={'display_name': 'Rosalina'})
+        controller.publish(self.bundle)
+        method, path, body, headers = self.system.push()[0]
+        self.assertEqual(body['host'], {'id': 'rosalina', 'display_name': 'Rosalina'})
+
+    def test_a_catalog_naming_another_machine_is_refused_at_the_door(self):
+        # The host block is worth trusting because the door checks it: an id that is not the machine
+        # the push authenticated as is a refusal, not a label taken on faith.
+        self.build()
+        bad = {**self.bundle['catalog'], 'host': {'id': 'someone-else'}}
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.router.accept('rosalina', bad)
+        self.assertIn('CATALOG_HOST_ID_MISMATCH',
+            caught.exception.read().decode())
+        self.assertNotIn('rosalina', self.router.catalogs, 'a mismatched identity was stored anyway')
+
     def test_both_sinks_get_the_same_document_and_the_file_goes_first(self):
         # Two sinks is a migration state and not a design: the same bytes go to the router that has
         # always read the directory and to the one two hops away, in the order that can be put back.
         controller = self.build()
         controller.publish(self.bundle)
         on_disk = read(self.state / 'router' / 'active-model.json')
-        self.assertEqual(on_disk, self.published_document())
+        pushed = self.published_document()
+        # The catalog bytes are identical to both sinks; the push additionally names the machine it
+        # authenticated as, an identity the local router knows by proximity and would refuse to be
+        # handed in the document.
+        self.assertEqual(on_disk, {k: v for k, v in pushed.items() if k != 'host'})
+        self.assertEqual(pushed['host'], {'id': 'rosalina'})
         order = [call for call in self.system.events if call[0] == 'publish']
         self.assertTrue(order, 'the local sink was never asked to reload')
         self.assertTrue(self.system.push(), 'the remote sink was never given the catalog')
@@ -314,7 +347,7 @@ class PublisherTests(unittest.TestCase):
             controller.publish(self.bundle)
         self.assertEqual(read(self.state / 'router' / 'active-model.json'), before)
         self.assertEqual(self.router.revisions['rosalina'],
-            hashlib.sha256(json.dumps(before).encode()).hexdigest(),
+            hashlib.sha256(json.dumps({**before, 'host': {'id': 'rosalina'}}).encode()).hexdigest(),
             'a refusal replaced the catalog the router had already accepted')
 
     def test_a_machine_the_router_has_not_declared_is_told_so_by_name(self):
