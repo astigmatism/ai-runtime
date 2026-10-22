@@ -50,10 +50,12 @@ class Router:
     """The machine at .23: hosts are declared, a catalog is validated on the way in, and the
     drain is per host. Deliberately simpler than the real reader, and just as unimpressed."""
 
-    def __init__(self, declared=('local', 'rosalina'), default_host='rosalina'):
+    def __init__(self, declared=('local', 'rosalina'), default_host='rosalina',
+            kinds=('ollama', 'llama_cpp', 'strata')):
         self.base = REMOTE
         self.declared = list(declared)
         self.default_host = default_host
+        self.kinds = list(kinds)
         self.catalogs = {}       # host -> accepted document
         self.revisions = {}      # host -> revision of the accepted document
         self.drain = {}          # host -> reason
@@ -76,7 +78,7 @@ class Router:
                     'queued_by_host': self.queued_by_host,
                     'hosts': {host: {'draining': True, 'drain_reason': reason}
                         for host, reason in self.drain.items()}},
-                'router': {'supported_backend_kinds': ['ollama', 'llama_cpp', 'strata']},
+                'router': {'supported_backend_kinds': self.kinds},
                 'active_model': ({'profile': document['profile'], 'model': document['default_model']}
                     if document else None),
                 'models': models}
@@ -579,3 +581,26 @@ class MirrorTests(PublisherTests):
         self.router.clashes = tuple(m['model'] for m in self.bundle['catalog']['models'])
         with self.assertRaisesRegex(RuntimeError, 'CATALOG_ID_CONFLICT'):
             controller.publish(self.bundle)
+
+    def test_a_push_only_machine_verifies_its_kind_against_the_router_it_pushes_to(self):
+        # The first machine to switch a catalog with no router of its own. Nothing down the road is
+        # "this machine's own router on this machine's admin port", and the legacy credential that
+        # phrase describes was never written here -- so a check that asked the local admin port for
+        # the supported kinds found no file to read, failed closed, and refused a switch on a machine
+        # whose router supports the kind perfectly well. The household's second machine lost its very
+        # first install this way. The gate has to ask the router this machine publishes to.
+        controller = self.build(host_changes={'router_state_dir': None})
+        (self.state / 'router-token').unlink()   # a machine that never had a local router has no such file
+        self.assertEqual(self.bundle['catalog']['backend_kind'], 'strata')
+        controller.require_router_supports(self.bundle)   # reaches .23 over the push sink; must not raise
+        self.assertTrue(any('/runtime-state' in call[1] for call in self.router.calls))
+
+    def test_a_push_router_without_the_kind_refuses_the_switch_before_the_drain(self):
+        # Asking the router over the road is not asking permission it will not exercise: a router that
+        # reports this kind unsupported still stops the switch, because publishing the catalog would
+        # leave it unable to serve it -- a refusal on the push is as fatal as on a directory, and the
+        # only thing a push forgives is being unreachable while it is still a migration mirror.
+        controller = self.build(host_changes={'router_state_dir': None})
+        self.router.kinds = ['ollama', 'llama_cpp']
+        with self.assertRaisesRegex(RuntimeError, 'does not support backend kind strata'):
+            controller.require_router_supports(self.bundle)

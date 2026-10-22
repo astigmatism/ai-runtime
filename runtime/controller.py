@@ -613,7 +613,7 @@ class Controller:
             return cached[1]
         kinds = None
         try:
-            state = self.admin('runtime-state')
+            state = self.router_view()
             reported = (state.get('router') or {}).get('supported_backend_kinds')
             # A router old enough not to report its kinds supports exactly the two kinds it has
             # always served; a catalog of anything else is refused below, as it should be.
@@ -635,18 +635,28 @@ class Controller:
         kind = bundle['catalog'].get('backend_kind')
         if not kind:
             return
-        try:
-            state = self.admin_healing('runtime-state')
-        except Exception as error:
-            require(False, 'The router cannot be reached, so this switch cannot verify that its backend '
-                'kind ' + kind + ' is supported: ' + str(error))
-        reported = (state.get('router') or {}).get('supported_backend_kinds')
-        supported = tuple(reported) if reported else ('ollama', 'llama_cpp')
-        require(kind in supported,
-            'The deployed router does not support backend kind ' + kind + ': publishing this catalog would '
-            'leave the router unable to serve the configuration or to take administration, and a restart '
-            'would not clear it. The switch is refused before the drain; update the router to a release '
-            'that supports the kind, or the profile must name a supported kind')
+        # Every router this machine feeds must be able to serve the kind, and a refusal is asked
+        # the same way the drain asks it: through the sink, healing the file router it might itself
+        # have wedged with an earlier refused catalog. A router over the road that is merely
+        # unreachable is a mirror that has not caught up, not a router that refuses this catalog, so
+        # it holds the switch no more than it holds the drain -- and once `router_state_dir` leaves
+        # the host settings it stops being a mirror and its silence becomes fatal by itself.
+        for sink in self.sinks():
+            try:
+                state = self.admin_healing_for(sink, 'runtime-state')
+            except Exception as error:
+                if self.mirror(sink) and unreachable(error):
+                    continue
+                require(False, 'The router ' + sink['name'] + ' cannot be reached, so this switch cannot '
+                    'verify that its backend kind ' + kind + ' is supported: ' + str(error))
+            reported = (state.get('router') or {}).get('supported_backend_kinds')
+            supported = tuple(reported) if reported else ('ollama', 'llama_cpp')
+            require(kind in supported,
+                'The deployed router ' + sink['name'] + ' does not support backend kind ' + kind + ': '
+                'publishing this catalog would '
+                'leave the router unable to serve the configuration or to take administration, and a restart '
+                'would not clear it. The switch is refused before the drain; update the router to a release '
+                'that supports the kind, or the profile must name a supported kind')
 
     def verdict_notes(self, bundle):
         """What a switch to this bundle will do that is worth knowing before it is selected.
