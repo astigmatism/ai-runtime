@@ -1,0 +1,121 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Runtime mock · switch in progress</title><link rel="stylesheet" href="mock.css"></head><body><main>
+
+<div class="top">
+  <div>
+    <p class="eyebrow">ROSALINA / AI RUNTIME</p>
+    <h1>Qwen3.8 27B Q8 (160K)</h1>
+    <p class="sub">Loading &middot; from <b>Workhorse</b> &middot; <span class="mono">flash-next-strata-solo-thinking-recovery-cache</span></p>
+  </div>
+  <span class="badge pending">Switching &middot; 1m 12s</span>
+</div>
+
+<div class="strip">
+  <span class="fact"><i class="dot warn"></i> New requests paused for both models</span>
+  <span class="fact"><i class="dot"></i> <b>0</b> active &middot; <b>3</b> queued</span>
+  <span class="fact"><i class="dot warn"></i> Catalog republishing &middot; previous revision still advertised</span>
+</div>
+
+<div class="grid">
+  <div>
+    <section class="panel">
+      <h2>Switch progress</h2>
+      <ol class="steps">
+        <li class="done"><span class="m">&#10003;</span>Check</li>
+        <li class="done"><span class="m">&#10003;</span>Prepare</li>
+        <li class="done"><span class="m">&#10003;</span>Drain</li>
+        <li class="now"><span class="m"></span>Load</li>
+        <li><span class="m"></span>Verify</li>
+      </ol>
+      <p class="sub mt18">Loading Qwen3.8 27B Q8 (160K) on RTX 3090 + RTX 4080 SUPER. Everyday stays loaded; nothing is unloaded until the new coding resident answers.</p>
+
+      <h2 class="mt26">Running now</h2>
+      <div class="residents">
+        <article class="resident unwell">
+          <div><p class="role">Coding resident &middot; daytime</p><p class="name">Qwen3.8 27B Q8 (160K)</p>
+            <p class="alias">Loading &middot; not ready &middot; RTX 3090 + RTX 4080 SUPER</p></div>
+          <span class="state">Loading</span>
+        </article>
+        <article class="resident everyday">
+          <div><p class="role">Everyday resident &middot; nighttime</p><p class="name">Night owl <span class="alias-note">&middot; alias</span></p>
+            <p class="alias">Qwen3.8 27B Abliterated Q6_K (96K) &middot; stays loaded through the switch</p></div>
+          <span class="state">Loaded &middot; paused</span>
+        </article>
+      </div>
+      <div class="board">
+        <div class="gpu coding"><h3>RTX 3090</h3><div class="chips"><span class="mini">Coding</span><span class="mini off">draining</span></div><p class="own">CUDA0</p></div>
+        <div class="gpu coding"><h3>RTX 4080 SUPER</h3><div class="chips"><span class="mini">Coding</span><span class="mini off">draining</span></div><p class="own">CUDA1</p></div>
+        <div class="gpu everyday"><h3>RTX 4080</h3><div class="chips"><span class="mini">Everyday</span></div><p class="own">CUDA2</p></div>
+        <div class="gpu everyday"><h3>RTX 3080 Ti</h3><div class="chips"><span class="mini">Everyday</span></div><p class="own">CUDA3</p></div>
+        <div class="gpu vision"><h3>RTX 3080</h3><div class="chips"><span class="mini">Vision</span><span class="mini">MTP draft</span></div><p class="own">CUDA4</p></div>
+      </div>
+      <p class="legend"><span><i></i>Coding</span><span><i class="n"></i>Everyday</span><span><i class="v"></i>Vision</span>
+        <span><i class="d"></i>Preview &middot; not running</span></p>
+    </section>
+  </div>
+
+  <div>
+    <section class="panel">
+      <h2>Configurations</h2>
+      <div id="configs">
+        <article class="cfg sel">
+          <span class="r"></span>
+          <div>
+            <p class="title">Qwen3.8 27B Q8 (160K)</p>
+            <p class="id mono">qwen27b-q8-pair</p>
+            <p class="row"><span>Coding</span><span>Qwen3.8 27B Q8 (160K) &middot; RTX 3090 + RTX 4080 SUPER</span></p>
+            <p class="row"><span>Everyday</span><span>Night owl (96K) &middot; RTX 4080 + RTX 3080 Ti</span></p>
+          </div>
+          <div class="end"><span class="state">Selected</span></div>
+        </article>
+        <article class="cfg">
+          <span class="r"></span>
+          <div>
+            <p class="title">Qwen3.8 27B Q6_K (160K)</p>
+            <p class="id mono">qwen27b-q6k-pair</p>
+            <p class="row"><span>Coding</span><span>Qwen3.8 27B Q6_K (160K) &middot; RTX 3090 + RTX 4080 SUPER</span></p>
+          </div>
+          <div class="end"><button class="ghost">Rename</button></div>
+        </article>
+        <article class="cfg">
+          <span class="r"></span>
+          <div>
+            <p class="title">Workhorse <span class="pill">Alias</span></p>
+            <p class="id mono">flash-next-strata-solo-thinking-recovery-cache &middot; Qwen3.8 Flash-Next (256K)</p>
+          </div>
+          <div class="end"><span class="state prev">Previous</span><button class="ghost">Rename</button></div>
+        </article>
+        <article class="cfg">
+          <span class="r"></span>
+          <div>
+            <p class="title">Warm spare <span class="pill">Alias</span></p>
+            <p class="id mono">flash-next-strata-solo-thinking-recovery-cache-yarn &middot; Qwen3.8 Flash-Next (512K)</p>
+          </div>
+          <div class="end"><button class="ghost">Rename</button></div>
+        </article>
+        <article class="cfg">
+          <span class="r"></span>
+          <div>
+            <p class="title">Qwen3.8 Flash-Next Two-Card IQ3_S (256K)</p>
+            <p class="id mono">flash-next-strata-two-card-iq3-s</p>
+            <p class="row"><span>Blocked</span><span>Everyday is being reconciled; wait for the switch to finish.</span></p>
+          </div>
+          <div class="end"><span class="state prev">Blocked</span></div>
+        </article>
+      </div>
+      <p class="impact">A switch is running. The page keeps its place across refreshes and reconnects; nothing is sent again automatically.</p>
+      <button class="wide" disabled>Switch in progress</button>
+    </section>
+
+    <details>
+      <summary>Runtime details &middot; revision <span class="mono">103f90c8</span></summary>
+      <div class="details-body"><table>
+        <tr><th>Operation</th><td class="mono">7f2c&hellip; load &middot; started 12:03:41 &middot; expected Qwen3.8 27B Q8 (160K)</td></tr>
+        <tr><th>Failure path</th><td>A failed switch restores Workhorse automatically; a failed restoration schedules the next attempt by itself.</td></tr>
+      </table></div>
+    </details>
+  </div>
+</div>
+
+<footer><span>GPU map shows assignments and model-service health, not hardware telemetry</span><span>AI Runtime &middot; Rosalina</span></footer>
+</main></body></html>
