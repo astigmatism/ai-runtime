@@ -1109,6 +1109,8 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
     # never load is a configuration lying about what it launches, and everyday_for refuses it.
     second = everyday_for(definition) if definition['role'] == 'coding' else None
     return {'profile': definition['id'], 'role': definition['role'],
+        'models': [model_summary(config_dir, model, shared, host, aliases)
+            for model in models_of(config_dir, definition)],
         'display_name': display_name(definition, aliases), 'default_name': default_name(definition),
         **({'alias': aliases[model_id(definition)]}
             if (aliases or {}).get(model_id(definition)) else {}),
@@ -1164,6 +1166,43 @@ def available_profiles(config_dir, host=None, aliases=None):
         # Everyday resident being in the registry is not that: on a host whose every configuration
         # runs alone, naming one would have the CLI and the page describe a resident nothing starts.
         'always_included': [residents[name] for name in EVERYDAY_PROFILES if name in used]}
+
+
+def models_of(config_dir, definition):
+    """The models a configuration loads.
+
+    A configuration is a placement decision, and the only thing worth saying about its models is which
+    ones they are: one model on two cards, one model on every card, or several models with the cards
+    divided between them. Nothing here says how many there are supposed to be.
+    """
+    config_dir = Path(config_dir)
+    found = [definition]
+    second = everyday_for(definition) if definition['role'] == 'coding' else None
+    if second is not None and not is_exclusive(definition):
+        found.append(read(config_dir / 'profiles' / (second + '.json')))
+    return found
+
+
+def model_summary(config_dir, definition, shared, host=None, aliases=None):
+    """One model of a configuration: what it is called, where it runs, and how a client asks for it.
+
+    These are the only facts a surface needs to draw a model, and they are read the same way for the
+    model a configuration is named after and any other it loads beside it -- which is the whole point:
+    a machine that serves two models shows two of these, and neither of them is a footnote.
+    """
+    engine = shared['engines'][definition['engine']]
+    options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
+        else dict(definition['arguments'])
+    return {'model': model_id(definition), 'display_name': display_name(definition, aliases),
+        'default_name': default_name(definition),
+        **({'alias': aliases[model_id(definition)]}
+            if (aliases or {}).get(model_id(definition)) else {}),
+        'context_tokens': definition['context_tokens'],
+        'service_ids': sorted(definition['catalog'].get('aliases', [])),
+        'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
+        'exclusive': is_exclusive(definition),
+        'vision_gpu': bool(host and host.get('vision_gpu_id') and (
+            options.get('--mmproj') or 'image' in definition['catalog'].get('input_modalities', [])))}
 
 
 def offline_services(config_dir, shared, host, loaded, operator_aliases=None):

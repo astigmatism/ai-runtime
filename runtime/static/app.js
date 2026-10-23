@@ -20,27 +20,39 @@ const add = (parent, ...children) => { parent.append(...children); return parent
 const registry = () => status?.configurations || {};
 const configurations = () => registry().selectable || [];
 const configFor = profile => configurations().find(c => c.profile === profile);
-// The second resident a paired configuration loads. `everyday` is its role; `nighttime` is the
-// service ID a client sends to reach it, and the two are not the same fact.
-const everyday = profile => {
-  const variants = registry().always_included || [];
-  return variants.find(v => v.profile === profile) || variants[0];
+/* The models a configuration loads: one, two, or as many as its cards hold. A configuration is a
+   decision about which models run on which cards, and this page draws that list and nothing else.
+   Nothing below it knows a word like "coding" or "everyday", because a model is not a role — there
+   is no second half of a pair, no resident of a different kind, and no machine where a model that
+   happens to be second is anything other than a model. */
+const modelsOf = config => config?.models || [];
+const modelFor = (profile, model) => modelsOf(configFor(profile)).find(m => m.model === model);
+const indexFor = (profile, model) => {
+  const at = modelsOf(configFor(profile)).findIndex(m => m.model === model);
+  return at < 0 ? 0 : at;
 };
-// Whether a configuration answers a service ID at all, whichever resident it points it at.
-const answers = (config, id) => !!config && (config.service_ids || []).includes(id);
-/* What a configuration is called: the operator's alias when they saved one, and the default the
-   name rule produces otherwise. The server computes both; the page never assembles a name, because
-   the router and the CLI publish the same string and must not be reading a fourth opinion. */
-const nameOf = entry => entry?.display_name || entry?.profile || 'Unknown configuration';
-const defaultNameOf = entry => entry?.default_name || entry?.display_name || entry?.profile || '';
-const gpuList = entry => entry?.gpu_names?.length ? entry.gpu_names.join(' + ') : 'GPUs unavailable';
-// A machine with one resident is not "both residents ready", and a page that says it has read the
-// machine wrong: the second resident does not exist on every host.
+/* What a model is called: the operator's alias when they saved one, and the default the naming rule
+   produces otherwise. The server computes both; the page never assembles a name, because the router
+   and the CLI publish the same string and must not be reading a fourth opinion. */
+const nameOf = entry => entry?.display_name || entry?.model || entry?.profile || 'Unknown';
+const defaultNameOf = entry => entry?.default_name || entry?.display_name || entry?.model
+  || entry?.profile || '';
+/* A configuration is not a thing a client asks for by name, so a row is headed by its id and the
+   names underneath it belong to models. Where a sentence has to name a configuration anyway, it
+   names the models it loads. */
+const titleOf = config => modelsOf(config).map(nameOf).join(' + ') || nameOf(config);
+/* The short handle a GPU tile carries: a service ID, which is what a client sends, what an operator
+   types, and short enough to fit on a card. A tile that says `nighttime` is a tile about the model
+   that answers `nighttime`. */
+const handleOf = model => (model?.service_ids || [])[0] || model?.model || model?.profile || 'model';
+const gpuList = entry => entry?.gpu_names?.length ? entry.gpu_names.join(' + ')
+  : entry?.exclusive ? ownsTextGpus() : 'GPUs unavailable';
+// A machine with one model is not "both models ready", and a page that says it has read the machine
+// wrong: how many models a host runs is a fact about the configuration, not a fact about pages.
 const readyLine = () => {
   const loaded = (status?.services || []).length;
-  return loaded === 1 ? 'Resident ready' : loaded >= 2 ? 'Both residents ready' : 'Ready';
+  return !loaded ? 'Ready' : loaded === 1 ? 'One model ready' : `${loaded} models ready`;
 };
-const serviceIds = entry => (entry?.service_ids || ['nighttime']).join(', ');
 // How a configuration that runs alone owns the machine, from the cards this host has: "all the text
 // cards" is a different number on a two-card machine than on a four-card one, and a count of two
 // reads better as a word than as a digit.
@@ -49,56 +61,68 @@ const ownsTextGpus = () => {
   return !count ? 'every text GPU of this host' : count === 2 ? 'both text GPUs' : `all ${count} text GPUs`;
 };
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
-const residentRow = entry => entry ? `${nameOf(entry)} · ${gpuList(entry)}` : 'Unavailable';
 
 /* ------------------------------------------------------------------ the machine, as a set of cards */
 const inventory = () => status?.host?.gpu_inventory || {text: [], vision: null};
 const cards = () => [...(inventory().text || []), ...(inventory().vision ? [inventory().vision] : [])];
-// Owners keyed by GPU UUID. Two facts of very different strength feed it: the running services say
-// what is placed now, by UUID; a registry entry says what a switch would place, by GPU group, which
-// is the same order the host declares its cards in.
+/* Owners keyed by GPU UUID: which model has the card. Two facts of very different strength feed it —
+   the running services say what is placed now by UUID, a registry entry says what a switch would
+   place by the GPU group it names, which is the same order the host declares its cards in. A model
+   that owns every card takes all of them, which is why ownership is computed per model and not per
+   half of a pair. */
+const ofModel = (profile, service) => modelFor(profile, service.model)
+  || {model: service.model, display_name: service.name, service_ids: [], gpu_names: service.gpu_names};
 const placementNow = () => {
   const owners = {};
   for (const service of status?.services || []) {
-    for (const id of service.gpu_ids || []) owners[id] = {role: service.role, service};
+    const owner = {model: ofModel(status?.profile, service), index: indexFor(status?.profile, service.model), service};
+    for (const id of service.gpu_ids || []) owners[id] = owner;
     if (service.vision_gpu_id) {
-      owners[service.vision_gpu_id] = {role: 'vision', service, shared: service.vision_gpu_shared === true};
+      owners[service.vision_gpu_id] = {...owner, vision: true, shared: service.vision_gpu_shared === true};
     }
   }
   return owners;
 };
 function placementOf(config) {
   const owners = {};
-  if (!config) return owners;
-  const second = everyday(config.everyday);
-  for (const card of inventory().text) {
-    if (config.exclusive) owners[card.uuid] = {role: 'coding'};
-    else if (config.gpu_group && card.group === config.gpu_group) owners[card.uuid] = {role: 'coding'};
-    else if (second && card.group === second.gpu_group) owners[card.uuid] = {role: 'everyday'};
-  }
-  // The vision card is only owned by a configuration that would put something on it, and only on a
-  // host that has one: what a profile declares is what it is for, what the host has is what it gets.
-  if (config.vision_gpu && inventory().vision) owners[inventory().vision.uuid] = {role: 'vision'};
+  modelsOf(config).forEach((model, index) => {
+    for (const card of inventory().text) {
+      if (model.exclusive || (model.gpu_group && card.group === model.gpu_group)) {
+        owners[card.uuid] = {model, index};
+      }
+    }
+    // The vision card belongs only to a model that would put something on it, and only on a host that
+    // has one: what a profile declares is what it is for, what the host has is what it gets.
+    if (model.vision_gpu && inventory().vision) owners[inventory().vision.uuid] = {model, index, vision: true};
+  });
   return owners;
 }
-const roleName = role => role === 'everyday' ? 'Everyday' : role === 'vision' ? 'Vision' : 'Coding';
+// Which of the running service IDs survive a switch: an ID the target names is answered by the model
+// that names it, and an ID nothing names is the hole a switch leaves.
+const answeredBy = (target, id) => modelsOf(target).find(m => (m.service_ids || []).includes(id));
+const kindOf = owner => !owner ? 'free' : owner.vision ? 'vision' : `m${owner.index % 4}`;
+const sameOwner = (a, b) => {
+  const key = o => !o ? '' : `${o.vision ? 'vision' : 'model'}:${o.model?.model || ''}`;
+  return key(a) === key(b);
+};
 function cardNode(card, owner, preview = false) {
-  const tile = node('div', '', `gpu ${owner?.role || 'free'}${preview ? ' preview' : ''}`);
+  const tile = node('div', '', `gpu ${kindOf(owner)}${preview ? ' preview' : ''}`);
   add(tile, node('h3', card.name || 'GPU'), node('div', '', 'chips'));
   const chips = tile.querySelector('.chips');
-  if (owner?.role) {
-    add(chips, node('span', roleName(owner.role), `mini ${owner.role === 'vision' ? 'vision' : owner.role}`));
-    if (owner.role === 'vision' && owner.shared === false) add(chips, node('span', 'exclusive', 'mini vision'));
-    if (owner.role === 'vision' && owner.service?.vision_device) add(chips, node('span', owner.service.vision_device, 'mini vision'));
+  if (owner) {
+    const tone = owner.vision ? 'vision' : `m${owner.index % 4}`;
+    add(chips, node('span', handleOf(owner.model), `mini ${tone}`));
+    if (owner.vision && owner.shared === false) add(chips, node('span', 'exclusive', 'mini vision'));
+    if (owner.vision && owner.service?.vision_device) add(chips, node('span', owner.service.vision_device, 'mini vision'));
     if (owner.service && !owner.service.healthy) add(chips, node('span', 'unwell', 'mini off'));
     if (owner.service && admissionsPaused()) add(chips, node('span', 'paused', 'mini off'));
   } else add(chips, node('span', 'nothing', 'mini off'));
-  // Whether the vision card is shared with a second resident is a fact about a running service, and
-  // a preview has none, so a preview tile says only what a configuration is known to put there.
-  const detail = owner?.role === 'vision'
+  // Whether the vision card is shared with a model that also decodes text is a fact about a running
+  // service, and a preview has none, so a preview tile says only what a configuration puts there.
+  const detail = owner?.vision
     ? 'image encoder' + (owner.shared === undefined ? '' : owner.shared ? ' · shared' : ' · exclusive')
-    : owner?.role ? (card.group === 'daytime' ? 'daytime pair' : 'nighttime pair') : 'free';
-  add(tile, node('p', preview && !owner?.role ? 'stays free' : detail, 'own'));
+    : owner ? (owner.model.exclusive ? 'every text card' : 'text cards') : 'free';
+  add(tile, node('p', preview && !owner ? 'stays free' : detail, 'own'));
   return tile;
 }
 function healthOf(service) {
@@ -107,85 +131,85 @@ function healthOf(service) {
   if (!service.healthy) return 'Unavailable';
   return admissionsPaused() ? 'Loaded · new requests paused' : 'Ready';
 }
-function residentNode(entry, {service, everyday: second = false, state, detail, tag} = {}) {
-  const card = node('article', '', `resident${second ? ' everyday' : ''}${state && state !== 'Ready' ? (service && service.healthy === false ? ' bad' : ' unwell') : ''}`);
+/* One card per model a configuration loads, because a model is the unit everything else uses: the
+   thing a client routes to, the thing a name belongs to, the thing a drain waits for. A machine that
+   loads three models shows three of these, and none of them is a footnote to the others. */
+function modelNode(model, {service, index = 0, state, detail, tag} = {}) {
+  const card = node('article', '', `model m${index % 4}${state && state !== 'Ready' ? (service && service.healthy === false ? ' bad' : ' unwell') : ''}`);
   // The text gets a column of its own: `add` returns the parent it appended to, and a left hand
-  // written as `add(card, node('div'))` is the card, which turns every line of a resident into a
+  // written as `add(card, node('div'))` is the card, which turns every line of a model into a
   // flex sibling and squeezes a model name to the width of the word beside it.
   const left = node('div');
   add(card, left);
   add(left,
-    node('p', 'role', 'role'),
+    node('p', '', 'role'),
     node('p', '', 'name'),
     node('p', '', 'alias'));
-  const role = entry?.role || (service ? service.role : (second ? 'everyday' : 'coding'));
-  card.querySelector('.role').textContent = `${role} resident`;
-  // The house calls the second resident's service `nighttime` whether or not the registry had an
-  // entry to say so, because that is what a client sends and what an operator is looking for.
-  const ids = entry?.service_ids?.length ? entry.service_ids : (role === 'everyday' ? ['nighttime'] : null);
-  if (ids) card.querySelector('.role').textContent += ' · ' + ids.join(' · ');
-  // A resident the configuration does not load has no name to show, and `Nothing` is the truth.
-  card.querySelector('.name').textContent = entry ? nameOf(entry) : 'Nothing';
+  card.querySelector('.role').textContent = (model?.service_ids || []).join(' · ') || 'no service ID';
+  card.querySelector('.name').textContent = model ? nameOf(model) : 'Nothing';
   card.querySelector('.alias').textContent = detail || '';
   add(card, node('span', state || 'Unavailable', 'state'));
   if (tag) add(card.querySelector('.name'), node('span', ' ' + tag, 'tag new'));
   return card;
 }
+const details = model => `${model.model} · ${context(model.context_tokens)} · ${gpuList(model)}`;
+const legendItem = (cls, text) => {
+  const item = node('span');
+  return add(item, node('i', '', cls), node('span', text));
+};
+function renderLegend(models, vision) {
+  const legend = el('legend');
+  legend.replaceChildren();
+  models.forEach((model, index) => add(legend, legendItem(`m${index % 4}`, `${handleOf(model)} — ${nameOf(model)}`)));
+  if (vision) add(legend, legendItem('v', 'Vision'));
+  add(legend, legendItem('d', 'Nothing placed'));
+}
 
 /* --------------------------------------------------------------------- rendering: the map itself */
 function renderMap() {
-  const residents = el('residents'), board = el('gpus');
+  const loaded = el('models'), board = el('gpus');
   const services = status?.services || [];
   const signature = JSON.stringify([
-    services.map(s => [s.role, s.name, s.model, s.context_tokens, s.gpu_ids, s.gpu_names, s.vision_gpu_id,
+    services.map(s => [s.model, s.name, s.context_tokens, s.gpu_ids, s.gpu_names, s.vision_gpu_id,
       s.vision_gpu_name, s.exclusive, s.healthy, s.running]),
-    status?.offline_roles, status?.offline_services, status?.host?.gpu_inventory,
-    status?.maintenance?.draining, status?.configurations?.active, connected,
+    modelsOf(configFor(status?.profile)), status?.host?.gpu_inventory, status?.maintenance?.draining,
+    status?.configurations?.active, connected,
     running() ? [operation.target_profile, operation.phase] : null]);
   if (signature === mapSignature) return;
   mapSignature = signature;
-  residents.replaceChildren(); board.replaceChildren();
+  loaded.replaceChildren(); board.replaceChildren();
   if (!connected) {
-    add(residents, node('p', 'Runtime status is unavailable. Nothing below is a claim about this machine.', 'sub'));
+    add(loaded, node('p', 'Runtime status is unavailable. Nothing below is a claim about this machine.', 'sub'));
     return;
   }
-  if (!services.length && !status?.offline_roles?.length) {
-    add(residents, node('p', 'No resident is loaded. The configuration is shown below as a wish, not a fact.', 'sub'));
-  }
+  const config = configFor(status?.profile);
   const owners = placementNow();
   for (const service of services) {
-    // The resident's own registry entry, so the service IDs it publishes are the ones a client
-    // sends to *it* — the coding resident's IDs are not the second resident's.
-    const entry = service.role === 'everyday' ? everyday(configFor(status.profile)?.everyday)
-      : configFor(status.profile);
-    add(residents, residentNode(entry, {
-      service, state: healthOf(service),
-      detail: `${service.model} · ${context(service.context_tokens)}`}));
+    const model = ofModel(status.profile, service);
+    add(loaded, modelNode(model, {
+      index: indexFor(status.profile, service.model), service, state: healthOf(service),
+      detail: details(model)}));
   }
-  // A resident that is not loaded is only worth a card when its service ID is this machine's
-  // business at all: either the live configuration answers it — a solo model that answers `nighttime`
-  // from its own backend has the role offline and no offline service, and "off" there would be a lie
-  // about a model that is answering — or the catalog publishes it as deliberately unanswered. A host
-  // whose configurations route to a service of their own, with no second resident in its registry,
-  // has no second resident to draw at all, and a card about one would be an invention.
-  const nighttime = everyday()?.service_ids?.[0] || 'nighttime';
-  const stopped = (status?.offline_services || []).find(s => (s.aliases || []).includes(nighttime));
-  if (status?.offline_roles?.includes('everyday') && (stopped || answers(configFor(status.profile), nighttime))) {
-    // A second resident that is not loaded is only worth a card when nothing answers its service ID
-    // either: a solo configuration that answers `nighttime` from its own model has the role offline
-    // and no offline service, and "off" there would be a lie about a model that is answering. And
-    // with nothing loaded at all, the claim that it answers is worse than a silence.
-    const answered_by = stopped || !services.length ? null : configFor(status.profile)?.model;
-    add(residents, residentNode(stopped || everyday(), {
-      everyday: true,
-      state: answered_by ? 'Answers its requests' : 'Not loaded',
-      detail: answered_by ? `Not a separate process · answered by ${answered_by}`
-        : stopped ? `${gpuList(everyday())} are used by ${nameOf(configFor(status.profile))}`
-          : `Nothing is loaded, so nothing answers ${serviceIds(everyday())}`}));
+  // A model of the live configuration with no service behind it is worth a card, because the promise
+  // it makes — a service ID with nothing answering it — is the fact an operator needs when a client
+  // is being refused. A model this configuration does not name is not drawn at all: it is not this
+  // machine's business at all right now, whatever another configuration would do with it.
+  for (const [index, model] of modelsOf(config).entries()) {
+    if (services.some(s => s.model === model.model)) continue;
+    add(loaded, modelNode(model, {index, state: 'Not loaded', detail: details(model)}));
+  }
+  if (!services.length && !modelsOf(config).length) {
+    add(loaded, node('p', 'Nothing is loaded, and this machine has no configuration to read.', 'sub'));
   }
   for (const card of cards()) add(board, cardNode(card, owners[card.uuid]));
+  renderLegend(modelsOf(config), Boolean(inventory().vision));
 }
 
+/* The models this machine is running that a target configuration does not name. A switch runs the
+   models its configuration names and nothing else, so what falls out of that list is what stops. */
+const sameModel = (a, b) => !!a && !!b && a.model === b.model;
+const stopsOnSwitch = target => (status?.services || [])
+  .filter(s => target && !modelsOf(target).some(m => sameModel(m, ofModel(status?.profile, s))));
 /* A selected configuration that is not the live one: the same machine, redrawn as a promise, with
    the difference in ownership spelled out because that difference is the whole cost of the switch. */
 function renderPreview() {
@@ -194,35 +218,47 @@ function renderPreview() {
   const show = connected && target && target.profile !== status?.profile && !running();
   panel.hidden = !show;
   if (!show) return;
-  el('preview-name').textContent = nameOf(target);
+  el('preview-name').textContent = titleOf(target);
   const before = placementNow(), after = placementOf(target);
-  const residents = el('preview-residents'), board = el('preview-gpus');
+  const residents = el('preview-models'), board = el('preview-gpus');
   residents.replaceChildren(); board.replaceChildren();
-  add(residents, residentNode(target, {
-    state: 'Would load', detail: `${target.model} · ${context(target.context_tokens)}`}));
-  const second = everyday(target.everyday);
-  if (!target.exclusive && second) {
-    add(residents, residentNode(second, {everyday: true, state: 'Would load', detail: gpuList(second)}));
-  } else if (target.exclusive) {
-    add(residents, residentNode(null, {everyday: true, state: answers(target, 'nighttime') ? 'Answers its requests' : 'Stops',
-      detail: answers(target, 'nighttime') ? `${nameOf(target)} answers nighttime from its own backend`
-        : `Nothing would answer the Everyday resident's requests`}));
+  modelsOf(target).forEach((model, index) => add(residents,
+    modelNode(model, {index, state: 'Would load', detail: details(model)})));
+  // A model running now that the target does not name is drawn in the same shape as the models it
+  // would load, in the colour it has while it runs: what a switch stops is the part of the cost the
+  // card layout cannot show, because the cards a stopping model frees are usually the cards a loading
+  // model takes. What happens to its service IDs is said per ID, because an ID that another loaded
+  // model also answers does not stop being answered.
+  for (const service of stopsOnSwitch(target)) {
+    const model = ofModel(status.profile, service);
+    const ids = model.service_ids || [];
+    const taken_by = ids.filter(id => answeredBy(target, id));
+    const unanswered = ids.filter(id => !answeredBy(target, id));
+    add(residents, modelNode(model, {index: indexFor(status.profile, service.model), state: 'Stops',
+      detail: [unanswered.length ? `nothing would answer ${unanswered.join(', ')}` : '',
+        taken_by.length ? `${taken_by.join(', ')} answered by a model this configuration names` : '']
+        .filter(Boolean).join(' · ') || 'no service IDs'}));
   }
-  const moved = [], freed = [], taken = [];
+  // Which model ends up on which card, grouped by the model rather than by the card: an operator
+  // deciding whether to switch is asking "what would that machine be doing", and a list of five cards
+  // all going to the same model is one fact, not five.
+  const taking = new Map();
+  const freed = [];
   for (const card of cards()) {
-    const was = before[card.uuid]?.role, now = after[card.uuid]?.role;
-    if (was !== now) {
-      if (!was) taken.push(card.name); else if (!now) freed.push(card.name); else moved.push(`${card.name} → ${roleName(now)}`);
-    }
-    add(board, cardNode(card, after[card.uuid], true));
+    const was = before[card.uuid], now = after[card.uuid];
+    add(board, cardNode(card, now, true));
+    if (sameOwner(was, now)) continue;
+    if (!now) { freed.push(card.name); continue; }
+    const who = nameOf(now.model);
+    if (!taking.has(who)) taking.set(who, []);
+    taking.get(who).push(card.name);
   }
-  const changes = [['Would place', taken], ['Would change owner', moved], ['Would free', freed]]
-    .filter(([, list]) => list.length)
-    .map(([label, list]) => `${label} ${list.join(', ')}`);
-  const exclusiveNow = configFor(status.profile)?.exclusive;
-  const note = [changes.length ? changes.join('; ') + '.' : 'No card changes owner.',
-    target.exclusive && !exclusiveNow ? 'The Everyday resident stops for the length of the switch.'
-      : !target.exclusive && exclusiveNow ? 'The Everyday resident starts again.' : '',
+  const changes = [...taking].map(([who, list]) => `${who} would take ${list.join(', ')}`);
+  if (freed.length) changes.push(`nothing would be placed on ${freed.join(', ')}`);
+  const stopping = stopsOnSwitch(target).map(s => nameOf(ofModel(status.profile, s)));
+  const note = [changes.length ? changes.join('; ') + '.' : 'Every card keeps the model it has.',
+    stopping.length ? `${stopping.join(', ')} ${stopping.length === 1 ? 'stops' : 'stop'}: a switch runs the `
+      + `models this configuration names and nothing else.` : '',
     // A refusal is said before anything else would be done about the cards, and it is the one thing
     // the switch would not be able to work around; a note is a notice about how it would get there.
     ...(target.reasons?.length ? [target.reasons[0]] : target.notes?.length ? [target.notes.join(' ')] : [])]
@@ -240,29 +276,41 @@ function rowOf(config) {
   const radio = node('input', '', 'select');
   radio.type = 'radio'; radio.name = 'profile'; radio.value = config.profile;
   radio.checked = isSelected;
-  radio.setAttribute('aria-label', `Preview ${nameOf(config)} on the GPU map`);
+  radio.setAttribute('aria-label', `Preview ${titleOf(config)} on the GPU map`);
   radio.disabled = !controlsEnabled();
   radio.addEventListener('change', () => select(config.profile));
   add(row, radio);
   const body = node('div');
-  const title = add(node('p', '', 'title'), node('span', nameOf(config)));
-  if (config.alias) add(title, node('span', 'Alias', 'pill'));
-  add(body, title, node('p', `${config.profile} · ${defaultNameOf(config)}`, 'id mono'));
-  const second = everyday(config.everyday);
-  const rows = [['Coding', residentRow(config)],
-    ['Everyday', config.exclusive
-      ? (answers(config, 'nighttime') ? `Not loaded · ${nameOf(config)} answers its requests` : 'Not loaded on this configuration')
-      : residentRow(second)],
-    ['Serves', (config.service_ids || []).join(' · ')]];
-  if (config.variant_label) rows.push(['Variant', config.variant_label]);
+  // The row is headed by the configuration's id, not by a name, because a name belongs to a model and
+  // a configuration is the decision about which models share which cards. Its id is what `Switch to
+  // …` and a receipt in the log both use, so it is the honest heading for the thing being chosen.
+  const title = add(node('p', '', 'title'), node('span', config.profile));
+  add(body, title, node('p', modelsOf(config).map(m => m.model).join(' + ')
+    || 'This configuration names no model', 'id mono'));
+  // One line per model, each with the name it is published by, the cards it would run on, and its own
+  // Rename. A configuration that loads two models can be given two names, and neither of them is a
+  // spare for the other.
+  const rows = modelsOf(config).map(model => [handleOf(model), `${nameOf(model)} · ${gpuList(model)}`, model]);
+  if (config.variant_label) rows.push(['Variant', config.variant_label, null]);
   // A refusal is on the row a person is deciding not to click. What a switch would do — build a
-  // workspace, restart a resident — is a property of the selection, and the preview below the map
+  // workspace, reload a model — is a property of the selection, and the preview below the map
   // says it with the cards it applies to, where it can be read against the machines it names.
   if (config.reasons?.length) rows.push(['Refuses', config.reasons[0]]);
-  for (const [label, value] of rows) {
-    add(body, add(node('p', '', 'row'), node('span', label), node('span', value)));
+  for (const [label, value, model] of rows) {
+    const line = add(node('p', '', 'row'), node('span', label), node('span', value));
+    if (model) {
+      if (model.alias) add(line, node('span', 'Renamed', 'pill'));
+      const name = editingKey(config.profile, model.model);
+      const rename = node('button', editing === name ? 'Close' : 'Rename', 'ghost tiny');
+      rename.type = 'button';
+      rename.addEventListener('click', () => {
+        editing = editing === name ? null : name; aliasError = ''; aliasDraft = model.alias || ''; render();
+      });
+      add(line, rename);
+      if (editing === name) add(body, editor(config, model));
+    }
+    add(body, line);
   }
-  if (editing === config.profile) add(body, editor(config));
   add(row, body);
   const end = node('div', '', 'end');
   const marker = node('span', '', `state${isActive || isSelected ? '' : ' muted'}`);
@@ -270,47 +318,47 @@ function rowOf(config) {
     : running() && ['loading', 'verifying', 'restoring'].includes(operation.phase) && config.profile === operation.from_profile
       ? 'Previous' : isActive && !isSelected ? 'Active' : isSelected && !isActive ? 'Preview'
       : isActive ? 'Active' : '';
-  const rename = node('button', editing === config.profile ? 'Close' : 'Rename', 'ghost');
-  rename.type = 'button';
-  rename.addEventListener('click', () => { editing = editing === config.profile ? null : config.profile; aliasError = ''; aliasDraft = config.alias || ''; render(); });
-  add(end, marker, rename);
+  add(end, marker);
   add(row, end);
   return row;
 }
-function editor(config) {
+// Which model's name is being edited: a configuration can have several, and an editor belongs to one.
+const editingKey = (profile, model) => `${profile} ${model}`;
+function editor(config, model) {
   const box = node('div', '', 'edit');
   const field = node('input', '', 'name');
   field.type = 'text'; field.value = aliasDraft;
-  field.placeholder = defaultNameOf(config);
-  field.setAttribute('aria-label', 'Alias for ' + config.profile);
+  field.placeholder = defaultNameOf(model);
+  field.setAttribute('aria-label', 'Name for ' + model.model);
   field.maxLength = 48;
   field.addEventListener('input', () => { aliasDraft = field.value; });
   const acts = node('div', '', 'acts');
   const save = node('button', aliasSaving ? 'Saving…' : 'Save', 'ghost');
   save.type = 'button'; save.disabled = aliasSaving;
-  save.addEventListener('click', () => saveAlias(config.profile, aliasDraft.trim()));
+  save.addEventListener('click', () => saveAlias(model.model, aliasDraft.trim()));
   const clear = node('button', 'Use default', 'ghost');
-  clear.type = 'button'; clear.disabled = aliasSaving || !config.alias;
-  clear.addEventListener('click', () => saveAlias(config.profile, null));
+  clear.type = 'button'; clear.disabled = aliasSaving || !model.alias;
+  clear.addEventListener('click', () => saveAlias(model.model, null));
   const cancel = node('button', 'Cancel', 'ghost');
   cancel.type = 'button';
   cancel.addEventListener('click', () => { editing = null; aliasError = ''; render(); });
   add(acts, save, clear, cancel);
   add(box, field,
-    node('p', `Shown wherever this machine names the configuration, including the catalog it publishes to `
-      + `the router. Nothing is drained or reloaded to change a name. Saved on this machine only.`),
+    node('p', `Names ${model.model} wherever this machine speaks of it — the page, the CLI listing, and `
+      + `the catalog it publishes to the router — in this configuration and in every other one that loads `
+      + `it. Nothing is drained or reloaded to change a name. Saved on this machine only.`),
     acts);
   if (aliasError) add(box, node('p', aliasError, 'error'));
   return box;
 }
 function switchImpact(target) {
-  const current = configFor(status?.profile);
-  if (!target || !current) return 'Existing requests finish first. New requests pause during the switch.';
-  const second = !target.exclusive && !current.exclusive ? 'The Everyday model stays loaded.'
-    : target.exclusive && current.exclusive ? 'The Everyday model stays unloaded.'
-    : target.exclusive ? 'The Everyday model will be stopped while this configuration runs.'
-      : 'The Everyday model will be started again.';
-  const base = `Existing requests finish first. New requests pause during the switch. ${second}`;
+  if (!target) return 'Existing requests finish first. New requests pause during the switch.';
+  // A switch runs the models the target names and nothing else, so the models that are running now
+  // and are not in that list are the ones that stop — said by name, because "some of what is loaded
+  // goes away" is not a cost estimate.
+  const stopping = stopsOnSwitch(target).map(s => nameOf(ofModel(status?.profile, s)));
+  const base = 'Existing requests finish first. New requests pause during the switch.'
+    + (stopping.length ? ` ${stopping.join(', ')} ${stopping.length === 1 ? 'stops.' : 'stop.'}` : '');
   // What the selection will do, from the same read-only verdict the gate reports: a refusal is shown
   // instead of inviting a click that only fails, and a build is announced before it happens.
   if (target.reasons?.length) return `${base} ${target.reasons[0]}`;
@@ -337,8 +385,8 @@ function renderRegistry() {
   el('impact').textContent = active || blocked ? '' : switchImpact(configFor(selected));
   el('apply').disabled = blocked || active || !selected;
   el('apply').textContent = submitting ? 'Starting switch…' : running() ? 'Switch in progress'
-    : !connected ? 'Status unavailable' : active ? `${nameOf(configFor(selected))} is active`
-      : `Switch to ${nameOf(configFor(selected))}`;
+    : !connected ? 'Status unavailable' : active ? `${titleOf(configFor(selected))} is active`
+      : `Switch to ${titleOf(configFor(selected))}`;
   el('switch-reason').textContent = requestUnknown
     ? 'Checking whether the request was accepted. It will not be sent again automatically.'
     : running() ? '' : !connected ? 'Reconnect to view the current runtime before switching.'
@@ -354,10 +402,15 @@ function renderHeader() {
   const active = configFor(status?.profile);
   el('machine').textContent = `${status?.host?.id || 'This machine'} / AI Runtime`;
   el('active-name').textContent = connected
-    ? nameOf(active) || status?.profile || 'No configuration' : 'Status unavailable';
-  const detail = active
-    ? `${active.profile}${active.alias ? ` · ${defaultNameOf(active)}` : ''} · `
-      + (active.exclusive ? `one model, ${ownsTextGpus()}` : `two residents, ${gpuList(active)} and the second pair`)
+    ? titleOf(active) || status?.profile || 'No configuration' : 'Status unavailable';
+  // One line that says what the machine is doing with its cards, in the machine's own terms: which
+  // models, how many, and how much of the silicon they are using.
+  const models = modelsOf(active);
+  const whole = models.filter(m => m.exclusive).length;
+  const detail = models.length
+    ? `${active.profile} · ${models.length} model${models.length === 1 ? '' : 's'}`
+      + (whole ? ` · one of them uses ${ownsTextGpus()}`
+        : ` · ${models.map(m => gpuList(m)).filter((v, i, all) => all.indexOf(v) === i).join('; ')}`)
     : '';
   el('active-detail').textContent = connected ? detail : '';
   const health = el('health');
@@ -423,15 +476,15 @@ function renderProgress() {
   const panel = el('operation');
   panel.hidden = !operation;
   if (!operation) return;
-  const target = nameOf(configFor(operation.target_profile)) || operation.target_profile;
+  const target = titleOf(configFor(operation.target_profile)) || operation.target_profile;
   // A restoration is a different promise from a switch, so it is titled as one: nothing was chosen,
   // and the point is that the previous configuration is serving again.
   const titles = operation.kind === 'restore'
     ? {running: `Restoring ${target}`, succeeded: `${target} is serving`, recovered: `${target} is serving`,
       failed: 'Restoration did not begin', 'needs-attention': 'Restoration needs attention'}
-    : {running: operation.phase === 'restoring' ? `Restoring ${nameOf(configFor(operation.from_profile))}`
+    : {running: operation.phase === 'restoring' ? `Restoring ${titleOf(configFor(operation.from_profile))}`
         : `Switching to ${target}`, succeeded: `${target} is ready`, failed: 'Switch did not complete',
-      recovered: `Switch failed · ${nameOf(configFor(operation.from_profile))} restored`,
+      recovered: `Switch failed · ${titleOf(configFor(operation.from_profile))} restored`,
       'needs-attention': 'Recovery needs attention'};
   el('operation-title').textContent = titles[operation.status] || 'Result';
   const elapsed = Math.max(0, Math.floor(((operation.finished_at ? Date.parse(operation.finished_at)
@@ -480,7 +533,7 @@ function renderRestoration() {
   const visible = connected && (restoring || service.pending || (service.serving === false && !running()));
   section.hidden = !visible;
   if (!visible) return;
-  const name = nameOf(configFor(service.profile || status?.profile));
+  const name = titleOf(configFor(service.profile || status?.profile));
   const record = status?.restoration || {};
   const attempts = record.attempts || 1;
   el('restore-state').textContent = restoring ? `Restoring ${name}. New requests stay paused until it is serving.`
@@ -512,7 +565,7 @@ function renderDetails() {
     }
     add(article, facts); add(services, article);
   }
-  if (!status?.services?.length) add(services, node('p', 'No resident is loaded.', 'sub'));
+  if (!status?.services?.length) add(services, node('p', 'No model is loaded.', 'sub'));
   el('revision').textContent = status?.deployed_revision || 'Awaiting deployment';
   const note = status?.aliases?.note;
   el('diagnostics').hidden = !note;
@@ -644,13 +697,13 @@ el('restore').addEventListener('click', async () => {
    the same refusal to imagine what happened if the answer never arrives. A rename cannot drain or
    restart anything, so there is no receipt to survive — the next status either shows the name or it
    does not, and an error goes back into the editor that is still open. */
-async function saveAlias(profile, alias) {
+async function saveAlias(model, alias) {
   if (aliasSaving) return;
   aliasSaving = true; aliasError = ''; render();
   try {
     await getJSON('/api/alias', {method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
-      body: JSON.stringify({profile, alias})});
+      body: JSON.stringify({model, alias})});
     editing = null; aliasDraft = '';
     lastStatus = 0;   // Show the new name the moment the runtime has it, not on the next poll.
   } catch (error) {
@@ -665,12 +718,22 @@ el('switch-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (el('apply').disabled) return;
   const target = configFor(selected);
-  // What happens to the second resident is stated from the target's own service IDs, not from the
-  // word "exclusive": stopping a resident and stopping a service are different promises.
-  const stopped = answers(target, 'nighttime') ? `${nameOf(target)} answers its requests in the meantime`
-    : 'its requests will fail until you choose a configuration that loads it again';
-  if (target?.exclusive && !configFor(status?.profile)?.exclusive && pending?.profile !== selected &&
-      !confirm(`${nameOf(target)} uses ${ownsTextGpus()}, so the Everyday model will stop. ${stopped}. Continue?`)) return;
+  // A switch runs the models its configuration names and nothing else, so a model that is answering
+  // requests now and is not one of them stops when the switch does. That is the one part of the cost
+  // the cards cannot show — the card it frees may be taken by a model that is loading — so it is said
+  // by name and asked about before anything is drained.
+  const stopping = stopsOnSwitch(target).map(s => ofModel(status?.profile, s));
+  const named = stopping.map(model => nameOf(model));
+  // The service IDs worth warning about are the ones no model in the target answers; an ID the new
+  // configuration happens to answer as well is not lost, and saying it would be would teach an
+  // operator to distrust the warning.
+  const unanswered = [...new Set(stopping.flatMap(m => (m.service_ids || []).filter(id => !answeredBy(target, id))))];
+  const lost = unanswered.length
+    ? ` Nothing would answer ${unanswered.join(', ')} until a configuration that names them runs.`
+    : ` Every service ID they answer is answered by a model this switch loads.`;
+  if (named.length && pending?.profile !== selected &&
+      !confirm(`${titleOf(target)} takes the cards ${named.join(', ')} ${named.length === 1 ? 'is' : 'are'} `
+        + `on, so ${named.join(', ')} ${named.length === 1 ? 'stops' : 'stop'}.${lost} Continue?`)) return;
   submitting = true; actionError = ''; tellError(''); render(); clearTimeout(timer);
   const request = pending && pending.profile === selected && pending.expected_profile === status.profile &&
     pending.expected_revision === status.deployed_revision

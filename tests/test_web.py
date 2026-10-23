@@ -57,10 +57,20 @@ class StatusTests(unittest.TestCase):
         self.assertIn('config.variant_label', row,
             'the configuration list names a configuration by its model alone, and two configurations '
             'of one model share that name: the selection would be a coin toss')
-        # The same argument applies to a name an operator wrote: the row that offers the edit is the
-        # row that has to say which name it is, and which one clearing it would bring back.
-        self.assertIn('config.alias', row)
-        self.assertIn('defaultNameOf(config)', row)
+        # The same argument applies to a name an operator wrote. A name belongs to a model, and a row
+        # offers one editor per model it loads, so the row builder reads the names and the aliases off
+        # the models and never off the configuration.
+        editor = source.split('function editor(config, model) {')[1].split('\n}\n')[0]
+        self.assertIn('nameOf(model)', row)
+        self.assertIn('model.alias', row)
+        # The editor is where a name is written down, so it is where the name being covered over has
+        # to be visible: an operator who cannot see what clearing the field brings back cannot decide.
+        self.assertIn('defaultNameOf(model)', editor)
+        self.assertIn("saveAlias(model.model", editor)
+        # And the list of models comes from the registry, not from a count the page assumes: a machine
+        # that loads two models shows two lines and a machine that loads one shows one.
+        self.assertIn('modelsOf(config)', row)
+        self.assertNotIn('everyday', row)
 
     def test_an_alias_note_reaches_the_page_without_the_path_that_explained_it(self):
         # The note is a fact an operator needs — the names on this page are not the names they saved —

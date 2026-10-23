@@ -38,20 +38,17 @@
     <!-- One concept: the cards in this machine and what the configuration has each one doing. -->
     <section class="panel" aria-labelledby="running-title">
       <h2 id="running-title">Running now</h2>
-      <div id="residents" class="residents"><p class="sub">Loading runtime assignments…</p></div>
+      <div id="models" class="models"><p class="sub">Loading runtime assignments…</p></div>
 
       <h2 class="mt26" id="gpus-title">Physical GPUs</h2>
       <div id="gpus" class="board" aria-labelledby="gpus-title"></div>
-      <p class="legend">
-        <span><i></i>Coding resident</span>
-        <span><i class="n"></i>Everyday resident</span>
-        <span><i class="v"></i>Vision</span>
-        <span><i class="d"></i>Nothing placed</span>
-      </p>
+      <!-- Filled from the live registry: the colours belong to the models this machine loads, and a
+           machine that loads two of them has two swatches here and a machine that loads one has one. -->
+      <p class="legend" id="legend"></p>
 
       <div id="preview" class="would" hidden>
         <h2 class="subhead">If you switch to <span class="h3-inline" id="preview-name"></span></h2>
-        <div id="preview-residents" class="residents"></div>
+        <div id="preview-models" class="models"></div>
         <div id="preview-gpus" class="board mt12"></div>
         <p id="preview-note" class="note"></p>
       </div>
