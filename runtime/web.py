@@ -23,6 +23,9 @@ def public_status(state):
         status['ready'] = False
     if status.get('configurations', {}).get('error'):
         status['configurations']['error'] = 'The configuration registry could not be read.'
+    # A note about the alias file is a filesystem complaint, and it carries the state path with it.
+    if (status.get('aliases') or {}).get('note'):
+        status['aliases']['note'] = 'Saved aliases could not be read and are not in use.'
     for key in ('last_deployment', 'source_deployment'):
         if (status.get(key) or {}).get('error'):
             status[key]['error'] = 'Deployment did not complete. View the Service Portal deployment result.'
@@ -110,7 +113,7 @@ def handler(controller, state, operations=None):
 
         def do_POST(self):
             route = self.path.split('?', 1)[0]
-            if route not in ('/api/profile-switch', '/api/restore-last-known-good'):
+            if route not in ('/api/profile-switch', '/api/restore-last-known-good', '/api/alias'):
                 self.send(405, {'error': 'Method not allowed'})
                 return
             token = self.headers.get('X-Runtime-CSRF', '')
@@ -130,6 +133,32 @@ def handler(controller, state, operations=None):
                 request = json.loads(self.rfile.read(length))
             except (ValueError, UnicodeError, TimeoutError):
                 self.send(400, {'error': 'Invalid JSON request; maximum size is 4096 bytes'})
+                return
+            # Naming a configuration is not an operation: it drains nothing, restarts nothing and
+            # cannot leave a machine between two releases, so it does not queue behind a switch and
+            # has no receipt to survive a reload with. It shares the checks above, because a POST
+            # that changes what the household is told about this machine deserves them.
+            if route == '/api/alias':
+                if not controller:
+                    self.send(503, {'error': 'Runtime configuration is unavailable'})
+                elif not isinstance(request, dict) or 'profile' not in request:
+                    self.send(400, {'error': 'A configuration and an alias are required'})
+                else:
+                    try:
+                        reply = controller.set_alias(request.get('profile'), request.get('alias'))
+                    except RuntimeError as error:
+                        detail = str(error)
+                        # A refusal is the rule the alias broke, and the page shows it in the editor.
+                        # Inspection mode is the one that is not the caller's fault, so it is a 409.
+                        self.send(409 if 'inspection mode' in detail else 400, {'error': detail})
+                        return
+                    except Exception:
+                        # Anything else is this machine's fault, and like every other unexpected fault
+                        # it is reported as unavailable rather than in the words of a filesystem, which
+                        # are how a private path reaches a browser.
+                        self.send(503, {'error': 'The name could not be saved. Check it before trying again.'})
+                        return
+                    self.send(200, reply)
                 return
             if not operations:
                 self.send(503, {'error': 'Runtime switching is unavailable'})

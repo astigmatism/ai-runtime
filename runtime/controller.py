@@ -7,6 +7,7 @@ group the configurations that run alone are the only ones it has, and this is th
 over one backend instead of two.
 """
 import copy
+from contextlib import ExitStack
 import datetime
 import hashlib
 import json
@@ -18,9 +19,10 @@ import urllib.parse
 import uuid
 
 from . import provision as provision_tool
-from .config import (CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS, available_profiles,
-    configurations_for, default_profile, digest, gpu_architectures, host_id, read, render, require,
-    resolve_profile, router_target, service_engine)
+from .config import (ALIASES_FILE, CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS,
+    available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
+    gpu_architectures, host_id, read, read_aliases, render, require, resolve_profile, router_target,
+    service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # How long a router that was not listening has to stay not-listening before this machine offers it
@@ -386,7 +388,82 @@ class Controller:
         # its own selection.
         selected = profile or current.get('bundle', {}).get('profile') or (
             initial if initial in selectable else default_profile(self.config_dir, self.host))
-        return render(self.config_dir, self.host, selected)
+        return render(self.config_dir, self.host, selected, self.aliases()[0])
+
+    def aliases(self):
+        """What this machine's configurations are called, and any reason they are not being used.
+
+        Read on every use rather than once at startup: the page is where a name is edited, and a
+        controller that renamed a configuration at boot would show one name and publish another for
+        the length of a release.
+        """
+        return read_aliases(self.state / ALIASES_FILE)
+
+    def set_alias(self, profile, alias):
+        """Name one configuration, or clear the name and take the default back.
+
+        A name is not a release: nothing here drains, restarts or re-renders a launch, and the
+        model id and the service IDs a client sends are untouched. The one obligation it inherits
+        is the loud one -- a machine that changes what it is called has to say so, so a saved alias
+        is published unless something is already mid-flight and will publish it itself.
+        """
+        require(not self.system.readonly, 'State mutation is forbidden in inspection mode')
+        value = clean_alias(profile, alias)
+        # The file is written first and without the runtime lock, because a name is an operator
+        # preference kept in one atomic file, not a runtime transaction: it must survive and be
+        # readable even on a machine that is draining, loading, or refusing to start.
+        saved, _ = self.aliases()
+        if value is None:
+            saved.pop(profile, None)
+        else:
+            saved[profile] = value
+        self.save(ALIASES_FILE, {'version': 1, 'aliases': saved})
+        reply = {'saved': True, 'published': False}
+        if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
+            return {**reply, 'note': 'A switch or restoration is in flight; it publishes this name with its own catalog.'}
+        active = self.load('active.json')
+        if not active or active['revision'] != self.revision:
+            return {**reply, 'note': 'Nothing of this revision is serving, so there is no catalog to rename.'}
+        # The lock is taken for the publication and never waited for. What it protects is writing a
+        # catalog, and a rename that arrives while a switch holds it has nowhere to publish in front
+        # of that switch: the switch reads the aliases when it publishes, so it says the new name
+        # itself. Waiting would make a rename cost a drain, which is the thing to refuse here.
+        held = ExitStack()
+        try:
+            held.enter_context(lock(self.state / 'runtime.lock'))
+        except RuntimeError:
+            return {**reply, 'note': 'Another runtime operation holds the runtime lock; this name is published '
+                'with the next event, by whoever holds it.'}
+        with held:
+            try:
+                self.publish(active['bundle'])
+            except Exception:
+                # Saved either way: the publication record says what the router said, and the loop that
+                # reports health keeps offering the catalog until it lands.
+                return reply
+        return {**reply, 'published': True}
+
+    def gpu_inventory(self):
+        """This machine's cards as cards, in the order a configuration reserves them.
+
+        The map draws one tile per physical GPU, which needs the cards rather than a count: two cards
+        of the same model are two tiles. What a configuration reserves is a whole GPU group, so a
+        tile's owner is read off the group it belongs to and never off its name, which is decorative
+        and collides — one host's list carries `RTX 4080` and `RTX 4080 SUPER`.
+        """
+        declared = self.host.get('gpu_ids') or {}
+        named = self.host.get('gpu_names') or {}
+        text, order = [], 0
+        for group in [group for group in PAIR_GROUPS if group in declared]:
+            listed = named.get(group) or []
+            for position, gpu in enumerate(declared[group]):
+                text.append({'uuid': gpu, 'group': group, 'order': order, 'position': position,
+                    'name': listed[position] if position < len(listed)
+                        else 'Text GPU ' + str(position + 1)})
+                order += 1
+        vision = self.host.get('vision_gpu_id')
+        return {'text': text, 'vision': None if not vision else {'uuid': vision, 'order': order,
+            'name': self.host.get('vision_gpu_name') or 'Vision GPU'}}
 
     def backend_url(self, cfg):
         return 'http://' + cfg['container_name'] + ':8080'
@@ -1044,7 +1121,15 @@ class Controller:
         observed = self.observe(bundle)
         require(all(x['healthy'] for x in observed.values()), 'Refusing to publish an unverified backend catalog')
         catalog = copy.deepcopy(bundle['catalog'])
+        # The name is stamped here and not baked into the bundle: a restoration and a re-announcement
+        # publish the document they were handed, and a machine that had been renamed in the meantime
+        # would otherwise put the old name back and keep it, because publication is an event and a
+        # successful record of a stale name is never retried.
+        names = catalog_names(self.config_dir, self.host, self.aliases()[0])
+        for entry in catalog.get('offline_services', []):
+            entry['display_name'] = names.get(entry['model'], entry['display_name'])
         for entry in catalog['models']:
+            entry['display_name'] = names.get(entry['model'], entry['display_name'])
             service = next(x for x in bundle['manifest']['services'] if x['model_alias'] == entry['model'])
             ci = self.system.inspect(service['container_name'])
             entry['updated_at'] = now()
@@ -1792,9 +1877,13 @@ class Controller:
             host_report = {'id': None, 'error': str(error), 'text_gpu_groups': groups,
                 'text_gpus': sum(len(declared[g]) for g in groups),
                 'vision_gpu_id': self.host.get('vision_gpu_id')}
+        aliases, alias_note = self.aliases()
+        # `published_names` and not `names`: the loop below already has a `names`, and it maps GPU
+        # UUIDs to card names, which is a different question with a similar answer.
+        published_names = catalog_names(self.config_dir, self.host, aliases)
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
-            'host': host_report,
+            'host': {**host_report, 'gpu_inventory': self.gpu_inventory()},
             'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
             # Two different facts, and the page must not read one as the other: `offline_roles` is
             # placement (a resident this configuration does not load), `offline_services` is what a
@@ -1808,10 +1897,10 @@ class Controller:
         # switch to it would do (notes) and what would refuse it (reasons), so the page can
         # show the cost of a selection before the selection is made.
         try:
-            configurations = available_profiles(self.config_dir, self.host)
+            configurations = available_profiles(self.config_dir, self.host, aliases)
             for entry in configurations.get('selectable', []):
                 try:
-                    candidate = render(self.config_dir, self.host, entry['profile'])
+                    candidate = render(self.config_dir, self.host, entry['profile'], aliases)
                     entry['reasons'] = self.verdict(candidate)
                     entry['notes'] = self.verdict_notes(candidate)
                 except Exception as error:
@@ -1836,6 +1925,9 @@ class Controller:
         result['service'] = {'serving': self.serving(bundle), 'restorable': good is not None,
             'pending': self.restoration_pending(),
             'profile': (good or {}).get('bundle', {}).get('profile')}
+        # Names the operator chose, and the reason they might not be in use: a saved file that
+        # cannot be read is shown as that rather than quietly falling back to defaults nobody picked.
+        result['aliases'] = {'assignments': aliases, **({'note': alias_note} if alias_note else {})}
         try:
             observed = self.observe(bundle)
             names = {gpu: name for group, ids in self.host.get('gpu_ids', {}).items()
@@ -1843,7 +1935,12 @@ class Controller:
             for model, service in zip(bundle['catalog']['models'], bundle['manifest']['services']):
                 live = observed[service['role']]
                 text = model.get('text_gpu_uuids', model['gpu_uuids'])
-                result['services'].append({'role': service['role'], 'name': model['display_name'], 'model': model['model'],
+                result['services'].append({'role': service['role'],
+                    # The active bundle is the document this machine was switched with, so its names
+                    # are the names of that moment; an alias saved since then is what the operator is
+                    # reading now, and the page must not show a name it has already retired.
+                    'name': published_names.get(model['model'], model['display_name']),
+                    'model': model['model'],
                     'context_tokens': model['context_length'],
                     'gpu_ids': text,
                     'vision_gpu_id': model.get('vision_gpu_uuid'),

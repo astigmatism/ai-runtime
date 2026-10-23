@@ -3,48 +3,101 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AI Runtime · Rosalina</title>
+  <title>AI Runtime</title>
   <link rel="stylesheet" href="/style.css">
   <script defer src="/app.js"></script>
 </head>
 <body>
 <main>
   <header>
-    <div><p class="eyebrow">ROSALINA / INFERENCE</p><h1>AI Runtime</h1><p class="intro">Resident models and runtime health</p></div>
+    <div>
+      <p class="eyebrow" id="machine">AI Runtime</p>
+      <h1 id="active-name">Connecting</h1>
+      <p class="sub" id="active-detail"></p>
+    </div>
     <span id="health" class="badge">Connecting</span>
   </header>
+
   <div id="error" class="notice" role="alert" hidden></div>
-  <section class="running" aria-labelledby="running-title">
-    <div class="section-heading"><h2 id="running-title">Running now</h2><span id="requests" class="secondary">Requests unavailable</span></div>
-    <div id="topology" class="topology" aria-label="Model and GPU assignments"><p>Loading runtime assignments…</p></div>
-    <p class="diagram-key"><span class="key-line"></span> Text model <span class="key-line vision"></span> Vision <span class="secondary">Health refers to model services</span></p>
-    <p id="publication" class="secondary">Publication state unavailable</p>
+
+  <div class="strip" role="status" aria-live="polite">
+    <span class="fact" id="fact-health" hidden><i class="dot"></i><span></span></span>
+    <span class="fact" id="fact-requests" hidden><i class="dot"></i><span></span></span>
+    <span class="fact" id="fact-publication" hidden><i class="dot"></i><span></span></span>
+    <span class="fact" id="fact-updated" hidden><i class="dot mute"></i><span></span></span>
+  </div>
+
+  <section id="restoration" class="restore" aria-labelledby="restore-title" hidden>
+    <h2 id="restore-title">Service restoration</h2>
+    <p id="restore-state" role="status" aria-live="polite" aria-atomic="true"></p>
+    <button id="restore" type="button">Restore last-known-good now</button>
+    <p id="restore-reason" class="sub"></p>
   </section>
-  <section id="configurations" class="switch-section" aria-labelledby="switch-title">
-    <h2 id="switch-title">Choose a configuration</h2>
-    <p class="secondary">Each configuration names the model this runtime keeps loaded, and whether a second one runs beside it.</p>
-    <form id="switch-form">
-      <fieldset id="profile-options" disabled><legend class="sr-only">Configuration</legend><div id="config-list"></div></fieldset>
-      <p id="impact" class="impact"></p>
-      <button id="apply" type="submit" disabled>Connecting…</button>
-      <p id="switch-reason" class="secondary"></p>
-    </form>
-    <section id="operation" class="operation" aria-labelledby="operation-title" hidden>
-      <div class="section-heading"><h3 id="operation-title"></h3><span id="elapsed" class="secondary"></span></div>
+
+  <div class="grid">
+    <!-- One concept: the cards in this machine and what the configuration has each one doing. -->
+    <section class="panel" aria-labelledby="running-title">
+      <h2 id="running-title">Running now</h2>
+      <div id="residents" class="residents"><p class="sub">Loading runtime assignments…</p></div>
+
+      <h2 class="mt26" id="gpus-title">Physical GPUs</h2>
+      <div id="gpus" class="board" aria-labelledby="gpus-title"></div>
+      <p class="legend">
+        <span><i></i>Coding resident</span>
+        <span><i class="n"></i>Everyday resident</span>
+        <span><i class="v"></i>Vision</span>
+        <span><i class="d"></i>Nothing placed</span>
+      </p>
+
+      <div id="preview" class="would" hidden>
+        <h2 class="subhead">If you switch to <span class="h3-inline" id="preview-name"></span></h2>
+        <div id="preview-residents" class="residents"></div>
+        <div id="preview-gpus" class="board mt12"></div>
+        <p id="preview-note" class="note"></p>
+      </div>
+    </section>
+
+    <section class="panel" id="operation" aria-labelledby="operation-title" hidden>
+      <div class="section-heading"><h2 id="operation-title"></h2><span id="elapsed" class="sub"></span></div>
       <ol id="steps" class="steps" aria-label="Switch progress"></ol>
       <p id="operation-message" role="status" aria-live="polite" aria-atomic="true"></p>
-      <p id="admissions" class="secondary"></p>
+      <p id="admissions" class="sub"></p>
     </section>
-  </section>
-  <section id="restoration" class="restoration" aria-labelledby="restore-title" hidden>
-    <h2 id="restore-title">Service restoration</h2>
-    <p id="restore-state" class="secondary" role="status" aria-live="polite"></p>
-    <button id="restore" type="button">Restore last-known-good</button>
-    <p id="restore-reason" class="secondary"></p>
-  </section>
-  <details class="runtime-details"><summary>Runtime details</summary><div id="services"></div><p class="revision">Deployed revision <code id="revision">—</code></p></details>
-  <details class="deployment-details"><summary>Deployment details</summary><h3 id="deploy-state">No source deployment recorded</h3><p id="deploy-detail" class="secondary"></p><p class="secondary">Deploy source changes with <strong>Update and restart</strong> in Service Portal.</p></details>
-  <footer><span id="updated">Waiting for status</span><span>AI Runtime · Rosalina</span></footer>
+
+    <div class="column">
+      <section class="panel switch-section" id="configurations" aria-labelledby="switch-title">
+        <h2 id="switch-title">Configurations</h2>
+        <p class="sub" id="registry-error" hidden></p>
+        <form id="switch-form">
+          <fieldset id="profile-options" disabled>
+            <legend class="sr-only">Configuration</legend>
+            <div id="config-list" class="configs"></div>
+          </fieldset>
+          <p id="impact" class="impact"></p>
+          <button id="apply" class="wide" type="submit" disabled>Connecting…</button>
+          <p id="switch-reason" class="sub"></p>
+        </form>
+      </section>
+
+      <details class="runtime-details">
+        <summary>Runtime details</summary>
+        <div id="services"></div>
+        <p class="sub" id="diagnostics"></p>
+        <p class="sub">Deployed revision <code id="revision">—</code> · source changes go in with
+          <strong>Update and restart</strong> in Service Portal.</p>
+      </details>
+
+      <details class="deployment-details">
+        <summary>Source deployment</summary>
+        <p id="deploy-detail" class="sub">No source deployment recorded.</p>
+      </details>
+    </div>
+  </div>
+
+  <footer>
+    <span>The GPU map shows assignments and model-service health, not hardware telemetry.</span>
+    <span id="updated">Waiting for status</span>
+  </footer>
 </main>
 </body>
 </html>

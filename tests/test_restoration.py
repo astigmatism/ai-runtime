@@ -388,6 +388,20 @@ class RestorationTests(unittest.TestCase):
         self.assertEqual(self.c.load('active.json')['bundle']['profile'], 'qwen27b-q8-pair')
         self.assertFalse(self.c.restoration_pending())
 
+    def test_a_restoration_publishes_the_names_saved_while_it_was_broken(self):
+        # An alias is not part of what a restoration restores: the release comes back exactly as it
+        # was measured. It is part of what the household is told. A catalog rebuilt from the stored
+        # bundle would announce a name the operator retired while the machine was down, and a router
+        # that is never corrected is a name nobody can unsend.
+        self.strand_the_backend()
+        self.assertTrue(self.c.set_alias('qwen27b-q8-pair', 'Workhorse')['saved'])
+        result = self.c.restore_last_known_good()
+        self.assertTrue(result['restored'])
+        published = json.loads((self.state / 'router' / 'active-model.json').read_text())
+        self.assertEqual(published['configuration']['id'], 'qwen27b-q8-pair')
+        self.assertEqual(published['models'][0]['display_name'], 'Workhorse')
+        self.assertEqual(published['models'][0]['model'], 'qwen3.8-27b-q8_0-tensor-next')
+
     def test_a_drain_left_by_a_finished_attempt_is_released(self):
         """The drain outlives the transaction when the pass that would release it cannot reach the
         router: the machine is serving, the router is not handing anything out, and only the reason

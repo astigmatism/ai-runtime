@@ -6,10 +6,12 @@ import shutil
 import tempfile
 import unittest
 
-from runtime.config import (CONFIGURATIONS, CONTAINER_CONTRACT, DEFAULT_PROFILE, EVERYDAY_PROFILE,
-    EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES, available_profiles, belongs_to_host,
-    configurations_for, default_profile, digest, engine_interface, merge_settings, read, render,
-    resolve_profile, service_engine, text_gpus, unknown_profile)
+from runtime.system import atomic_json
+from runtime.config import (ALIAS_MAX, ALIAS_PROFILES, CONFIGURATIONS, CONTAINER_CONTRACT,
+    DEFAULT_PROFILE, EVERYDAY_PROFILE, EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES,
+    available_profiles, belongs_to_host, catalog_names, clean_alias, configurations_for,
+    default_name, default_profile, digest, display_name, engine_interface, merge_settings, read,
+    read_aliases, render, resolve_profile, service_engine, text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -1728,6 +1730,87 @@ class ConfigurationNamingTests(unittest.TestCase):
         self.assertEqual(set(engines) - used, rollback,
             'unreferenced engine: ' + str(set(engines) - used - rollback))
 
+
+    def test_a_configuration_is_called_by_its_model_and_its_session_length(self):
+        # One naming rule for every surface, because a person meets the name in the page, in a
+        # router's model list and in a terminal, and asks the same question each time: which window.
+        for name in CONFIGURATIONS + EVERYDAY_PROFILES:
+            with self.subTest(profile=name):
+                definition = read(ROOT / 'config' / 'profiles' / (name + '.json'))
+                self.assertEqual(default_name(definition),
+                    definition['display_name'] + ' (' + str(definition['context_tokens'] // 1024) + 'K)')
+                self.assertEqual(display_name(definition, {}), default_name(definition))
+
+    def test_an_alias_replaces_a_name_and_nothing_else_about_the_launch(self):
+        # The refusal this test protects: a rename that changed a launch would mean a machine had to
+        # be drained to be renamed, and an operator would stop renaming rather than drain for it.
+        plain = render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-pair')
+        named = render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-pair',
+            {'qwen27b-q8-pair': 'Workhorse', 'everyday': 'Night owl'})
+        self.assertEqual(named['compose'], plain['compose'])
+        self.assertEqual([x['recommended_argv'] for x in named['manifest']['services']],
+            [x['recommended_argv'] for x in plain['manifest']['services']])
+        self.assertEqual([(x['model'], x['aliases']) for x in named['catalog']['models']],
+            [(x['model'], x['aliases']) for x in plain['catalog']['models']])
+        self.assertEqual([(x['display_name'], x['model']) for x in named['catalog']['models']],
+            [('Workhorse', plain['catalog']['models'][0]['model']),
+             ('Night owl', plain['catalog']['models'][1]['model'])])
+        # The document as a whole does change, and that is right: a machine that says something
+        # different about itself has a different catalog, and it is the publish that carries it.
+        self.assertNotEqual(named['config_sha256'], plain['config_sha256'])
+
+    def test_an_alias_is_refused_with_the_rule_it_broke(self):
+        self.assertEqual(clean_alias('qwen27b-q8-pair', '  Workhorse  '), 'Workhorse')
+        self.assertIsNone(clean_alias('qwen27b-q8-pair', '   '))
+        self.assertIsNone(clean_alias('qwen27b-q8-pair', None))
+        for value, reason in [(42, 'must be text'), ('x' * (ALIAS_MAX + 1), 'at most ' + str(ALIAS_MAX)),
+                ('two\nlines', 'one printable line'), ('tab\there', 'one printable line')]:
+            with self.subTest(value=repr(value)), self.assertRaisesRegex(RuntimeError, reason):
+                clean_alias('qwen27b-q8-pair', value)
+        # Only a configuration this revision has can be named -- including the second resident, which
+        # is published and shown by name exactly like the first.
+        for name in ALIAS_PROFILES:
+            self.assertEqual(clean_alias(name, 'Any name'), 'Any name')
+        with self.assertRaisesRegex(RuntimeError, 'Unknown configuration'):
+            clean_alias('daytime-27b', 'Old habit')
+
+    def test_the_alias_file_is_read_tolerantly_and_says_what_it_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'aliases.json'
+            self.assertEqual(read_aliases(path), ({}, None))  # Absent is the ordinary state.
+            path.write_text('{not json')
+            aliases, note = read_aliases(path)
+            self.assertEqual(aliases, {}); self.assertIn('could not be read', note)
+            path.write_text('{"aliases": ["not", "a", "map"]}')
+            aliases, note = read_aliases(path)
+            self.assertEqual(aliases, {}); self.assertIn('malformed', note)
+            atomic_json(path, {'version': 1, 'aliases': {'qwen27b-q8-pair': '  Workhorse  ',
+                'gone-today': 'Ghost', 'everyday': '   '}})
+            aliases, note = read_aliases(path)
+            self.assertEqual(aliases, {'qwen27b-q8-pair': 'Workhorse'})
+            self.assertIn('gone-today', note)
+
+    def test_the_registry_shows_the_chosen_name_and_the_default_behind_it(self):
+        # The page needs both: the default is what clearing the name would bring back, and it is what
+        # the editor offers as its placeholder, so a person can see what they are covering over.
+        registry = available_profiles(ROOT / 'config', host_for('qwen27b-q8-pair'),
+            {'qwen27b-q8-pair': 'Workhorse'})
+        entry = next(x for x in registry['selectable'] if x['profile'] == 'qwen27b-q8-pair')
+        self.assertEqual((entry['display_name'], entry['default_name'], entry['alias']),
+            ('Workhorse', 'Qwen3.8 27B Q8 (160K)', 'Workhorse'))
+        other = next(x for x in registry['selectable'] if x['profile'] == 'qwen27b-q6k-pair')
+        self.assertEqual((other['display_name'], other['default_name']),
+            ('Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 27B Q6_K (160K)'))
+        self.assertNotIn('alias', other)
+        self.assertEqual(catalog_names(ROOT / 'config', host_for('qwen27b-q8-pair'),
+            {'everyday': 'Night owl'})['qwen3.8-27b-abliterated-q6_k'], 'Night owl')
+        # And the CLI says it too: `~/local-ai-config.sh list` and the page are two places a person
+        # reads the same name, and a rename that reached only one of them is a rename half done.
+        from runtime.__main__ import listed
+        named = listed(ROOT / 'config', host_for('qwen27b-q8-pair'), {'qwen27b-q8-pair': 'Workhorse'})
+        self.assertIn('Workhorse', named)
+        self.assertNotIn('Qwen3.8 27B Q8 (160K)', named)
+        self.assertIn('Qwen3.8 27B Q8 (160K)', listed(ROOT / 'config', host_for('qwen27b-q8-pair')))
 
 class MoreThanOneMachineTests(unittest.TestCase):
     """A second machine reading this source, and what a configuration of another machine is.

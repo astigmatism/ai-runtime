@@ -51,12 +51,25 @@ class StatusTests(unittest.TestCase):
         # `flash-next-strata-solo` and `flash-next-strata-solo-thinking` carry the same display name
         # because it is the same model, so the variant label the registry publishes is the only thing
         # an operator can select knowingly by. There is no JS harness here, so this reads the page's
-        # own title builder: the cheapest thing that fails if the label is dropped from it.
+        # own row builder: the cheapest thing that fails if the label is dropped from it.
         source = urllib.request.urlopen(self.base + '/app.js').read().decode()
-        title = source.split('function configTitle(config) {')[1].split('\n}')[0]
-        self.assertIn('config.variant_label', title,
-            'the configuration list titles an exclusive backend by display name alone, and two '
-            'configurations of one backend share that name: the radio would be a coin toss')
+        row = source.split('function rowOf(config) {')[1].split('\n}\n')[0]
+        self.assertIn('config.variant_label', row,
+            'the configuration list names a configuration by its model alone, and two configurations '
+            'of one model share that name: the selection would be a coin toss')
+        # The same argument applies to a name an operator wrote: the row that offers the edit is the
+        # row that has to say which name it is, and which one clearing it would bring back.
+        self.assertIn('config.alias', row)
+        self.assertIn('defaultNameOf(config)', row)
+
+    def test_an_alias_note_reaches_the_page_without_the_path_that_explained_it(self):
+        # The note is a fact an operator needs — the names on this page are not the names they saved —
+        # and the reason is a filesystem detail about this machine, which the page cannot act on.
+        self.state['status']['aliases'] = {'assignments': {},
+            'note': '/home/deploy/.state/aliases.json could not be read: Expecting , delimiter'}
+        note = json.load(urllib.request.urlopen(self.base + '/api/status'))['aliases']['note']
+        self.assertEqual(note, 'Saved aliases could not be read and are not in use.')
+        self.assertNotIn('.state', note)
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
         # The legacy home commands for retired configurations name the current ones instead of guessing.
@@ -166,3 +179,94 @@ class SwitchingHttpTests(OperationFixture, unittest.TestCase):
         self.assertTrue(self.web_state['started'])
         self.assertNotIn('startup_error', self.web_state)
         self.assertEqual(self.http('/healthz')[0], 200)
+
+class AliasHttpTests(OperationFixture, unittest.TestCase):
+    """Naming a configuration over the wire: the endpoint the page's editor posts to."""
+
+    def setUp(self):
+        super().setUp()
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(self.c, self.web_state, self.ops))
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
+        self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
+        self.base = 'http://127.0.0.1:' + str(self.server.server_address[1])
+        with urllib.request.urlopen(self.base + '/api/status') as response:
+            self.token = json.load(response)['csrf_token']
+
+    def http(self, path, body=None, headers=None):
+        actual = {'Content-Type': 'application/json', 'Origin': self.base, 'X-Runtime-CSRF': self.token}
+        if headers: actual.update(headers)
+        request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers=actual,
+            method='POST')
+        try:
+            with urllib.request.urlopen(request) as response: return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            with error: return error.code, json.load(error)
+
+    def status(self):
+        self.web_state['status'] = self.c.status()
+        return self.web_state['status']
+
+    def test_a_name_saved_here_is_the_name_the_page_shows_and_the_router_is_told(self):
+        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'Workhorse'})
+        self.assertEqual((code, reply), (200, {'saved': True, 'published': True}))
+        status = self.status()
+        self.assertEqual(status['aliases'], {'assignments': {'qwen27b-q8-pair': 'Workhorse'}})
+        self.assertEqual([x['name'] for x in status['services']][0], 'Workhorse')
+        entry = next(x for x in status['configurations']['selectable'] if x['profile'] == 'qwen27b-q8-pair')
+        self.assertEqual((entry['display_name'], entry['alias'], entry['default_name']),
+            ('Workhorse', 'Workhorse', 'Qwen3.8 27B Q8 (160K)'))
+        self.assertEqual(json.loads((self.state / 'router' / 'active-model.json').read_text())
+            ['models'][0]['display_name'], 'Workhorse')
+        # Clearing it is the same one call, and it says so rather than refusing an empty string.
+        self.assertEqual(self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': ''})[0], 200)
+        self.assertEqual(self.status()['aliases'], {'assignments': {}})
+
+    def test_the_name_is_refused_for_the_rule_it_broke_and_says_which(self):
+        for body, expected in [({'profile': 'qwen27b-q8-pair', 'alias': 'x' * 49}, '48'),
+                ({'profile': 'qwen27b-q8-pair', 'alias': 'two\nlines'}, 'one printable line'),
+                ({'profile': 'no-such-configuration', 'alias': 'Ghost'}, 'Unknown configuration'),
+                ({'profile': 'qwen27b-q8-pair', 'alias': 7}, 'text'),
+                ({'alias': 'nameless'}, 'configuration and an alias')]:
+            with self.subTest(body=body):
+                code, reply = self.http('/api/alias', body)
+                self.assertEqual(code, 400)
+                self.assertIn(expected, reply['error'])
+        self.assertFalse((self.state / 'aliases.json').exists())
+
+    def test_the_guard_that_protects_a_switch_protects_a_name(self):
+        # A name is a smaller change than a switch and the same kind of one: it changes what the rest
+        # of the household is told about this machine, by a browser, without a shell.
+        for headers, expected in [({'Origin': 'http://evil.example'}, 403), ({'X-Runtime-CSRF': ''}, 403),
+                ({'Content-Type': 'text/plain'}, 415)]:
+            with self.subTest(headers=headers):
+                self.assertEqual(self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'X'},
+                    headers)[0], expected)
+        self.assertFalse((self.state / 'aliases.json').exists())
+
+    def test_inspection_mode_refuses_a_name_as_a_conflict_not_a_mistake(self):
+        # The browser did nothing wrong and cannot fix it by re-sending, so it is not a 400: the
+        # editor keeps the draft open and says the machine is not taking changes.
+        self.system.readonly = True
+        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'Workhorse'})
+        self.assertEqual(code, 409)
+        self.assertIn('inspection mode', reply['error'])
+        self.assertFalse((self.state / 'aliases.json').exists())
+
+    def test_a_name_never_queues_behind_a_switch_and_a_switch_never_waits_for_one(self):
+        # A rename during a drain is still just a save: it cannot be the second hand on the catalog,
+        # so it returns without an operation, and the switch publishes it when it publishes.
+        entered = self.block_worker()
+        self.http('/api/profile-switch', self.request())     # switching to qwen27b-q6k-pair
+        self.assertTrue(entered.wait(1))
+        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q6k-pair', 'alias': 'Spare'})
+        self.assertEqual(code, 200)
+        self.assertEqual({'saved': reply['saved'], 'published': reply['published']},
+            {'saved': True, 'published': False})
+        self.assertIn('published with', reply['note'])
+        # The promise the note makes: the run that is holding the lock says the name itself, because
+        # it reads the names when it publishes rather than when it started.
+        self.release.set(); self.ops.worker.join(5)
+        self.assertEqual(self.ops.read(self.ops.latest()['id'])['status'], 'succeeded')
+        published = json.loads((self.state / 'router' / 'active-model.json').read_text())
+        self.assertEqual(published['configuration']['id'], 'qwen27b-q6k-pair')
+        self.assertEqual(published['models'][0]['display_name'], 'Spare')
