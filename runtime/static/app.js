@@ -34,12 +34,19 @@ const answers = (config, id) => !!config && (config.service_ids || []).includes(
 const nameOf = entry => entry?.display_name || entry?.profile || 'Unknown configuration';
 const defaultNameOf = entry => entry?.default_name || entry?.display_name || entry?.profile || '';
 const gpuList = entry => entry?.gpu_names?.length ? entry.gpu_names.join(' + ') : 'GPUs unavailable';
+// A machine with one resident is not "both residents ready", and a page that says it has read the
+// machine wrong: the second resident does not exist on every host.
+const readyLine = () => {
+  const loaded = (status?.services || []).length;
+  return loaded === 1 ? 'Resident ready' : loaded >= 2 ? 'Both residents ready' : 'Ready';
+};
 const serviceIds = entry => (entry?.service_ids || ['nighttime']).join(', ');
-// How a configuration that runs alone owns the machine, from this host's count: "all the text
-// cards" is a different number on a two-card machine than on a four-card one.
+// How a configuration that runs alone owns the machine, from the cards this host has: "all the text
+// cards" is a different number on a two-card machine than on a four-card one, and a count of two
+// reads better as a word than as a digit.
 const ownsTextGpus = () => {
-  const count = status?.host?.text_gpus;
-  return count ? `all ${count} text GPUs` : 'every text GPU of this host';
+  const count = (inventory().text || []).length || status?.host?.text_gpus || 0;
+  return !count ? 'every text GPU of this host' : count === 2 ? 'both text GPUs' : `all ${count} text GPUs`;
 };
 const context = tokens => Number.isFinite(tokens) ? `${tokens / 1024}K context` : 'Context unavailable';
 const residentRow = entry => entry ? `${nameOf(entry)} · ${gpuList(entry)}` : 'Unavailable';
@@ -111,7 +118,7 @@ function residentNode(entry, {service, everyday: second = false, state, detail, 
     node('p', 'role', 'role'),
     node('p', '', 'name'),
     node('p', '', 'alias'));
-  const role = entry?.role || (service ? service.role : 'resident');
+  const role = entry?.role || (service ? service.role : (second ? 'everyday' : 'coding'));
   card.querySelector('.role').textContent = `${role} resident`;
   // The house calls the second resident's service `nighttime` whether or not the registry had an
   // entry to say so, because that is what a client sends and what an operator is looking for.
@@ -155,20 +162,24 @@ function renderMap() {
       service, state: healthOf(service),
       detail: `${service.model} · ${context(service.context_tokens)}`}));
   }
-  // A resident that is not loaded is only worth a card when nothing answers its service ID either.
-  // A solo configuration that answers `nighttime` from its own model has the role offline and no
-  // offline service, and saying "off" there would be a lie about a model that is answering.
-  const stopped = (status?.offline_services || []).find(s => (s.aliases || []).includes('nighttime'));
-  if (status?.offline_roles?.includes('everyday')) {
+  // A resident that is not loaded is only worth a card when its service ID is this machine's
+  // business at all: either the live configuration answers it — a solo model that answers `nighttime`
+  // from its own backend has the role offline and no offline service, and "off" there would be a lie
+  // about a model that is answering — or the catalog publishes it as deliberately unanswered. A host
+  // whose configurations route to a service of their own, with no second resident in its registry,
+  // has no second resident to draw at all, and a card about one would be an invention.
+  const nighttime = everyday()?.service_ids?.[0] || 'nighttime';
+  const stopped = (status?.offline_services || []).find(s => (s.aliases || []).includes(nighttime));
+  if (status?.offline_roles?.includes('everyday') && (stopped || answers(configFor(status.profile), nighttime))) {
     // A second resident that is not loaded is only worth a card when nothing answers its service ID
     // either: a solo configuration that answers `nighttime` from its own model has the role offline
     // and no offline service, and "off" there would be a lie about a model that is answering. And
     // with nothing loaded at all, the claim that it answers is worse than a silence.
-    const answers = stopped || !services.length ? null : configFor(status.profile)?.model;
+    const answered_by = stopped || !services.length ? null : configFor(status.profile)?.model;
     add(residents, residentNode(stopped || everyday(), {
       everyday: true,
-      state: answers ? 'Answers its requests' : 'Not loaded',
-      detail: answers ? `Not a separate process · answered by ${answers}`
+      state: answered_by ? 'Answers its requests' : 'Not loaded',
+      detail: answered_by ? `Not a separate process · answered by ${answered_by}`
         : stopped ? `${gpuList(everyday())} are used by ${nameOf(configFor(status.profile))}`
           : `Nothing is loaded, so nothing answers ${serviceIds(everyday())}`}));
   }
@@ -361,7 +372,7 @@ function renderHeader() {
       : running() || status?.maintenance?.draining ? 'dot warn'
         : operation?.status === 'needs-attention' || status?.service?.serving === false ? 'dot bad' : 'dot warn')
     : 'dot mute',
-    !connected ? 'Status unavailable' : status?.ready ? 'Both residents ready'
+    !connected ? 'Status unavailable' : status?.ready ? readyLine()
       : running() ? (operation.kind === 'restore' ? 'Restoring the last known good release'
         : 'Switching configurations')
       : status?.maintenance?.draining ? 'Paused for maintenance'

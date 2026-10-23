@@ -23,6 +23,7 @@ reason — they already know how to be a machine that is not this one.
 """
 import argparse
 from http.server import ThreadingHTTPServer
+import json
 import os
 from pathlib import Path
 import shutil
@@ -49,15 +50,34 @@ ROUTER = 'http://192.168.1.23:11435'
 
 
 def machine(state, profile, arguments):
-    """A four-text-GPU host with a vision card, serving `profile`, with two names already saved."""
+    """A host that is serving `profile`, with two names already saved.
+
+    The default host is the four-text-GPU machine with a shared vision card; `--host-json` says which
+    machine to pretend to be instead, which is how a second machine's shape gets looked at before it
+    is asked to draw itself."""
     config = state / 'config'
     shutil.copytree(ROOT / 'config', config)
+    # `--host-json` takes another machine's `host.json` so the page can be looked at as that machine:
+    # two cards instead of four, no vision card, its own service IDs. Only what that machine *is* is
+    # taken from the file — its identity, its cards and their order, its architectures, its model root.
+    # The plumbing the fake host has to have to answer at all (a router to publish to, paths beside
+    # this temporary state) comes from the fixture, because a file copied off a live machine names
+    # directories that are not here.
     host = vision_host()
+    if arguments.host_json:
+        declared = json.loads(Path(arguments.host_json).read_text())
+        for key in ('vision_gpu_id', 'vision_gpu_name', 'vision_cuda_device'):
+            if key not in declared:
+                host.pop(key, None)
+        host.update({key: value for key, value in declared.items()
+            if key in ('host_id', 'model_root', 'gpu_ids', 'gpu_names', 'gpu_architectures',
+                'vision_gpu_id', 'vision_gpu_name', 'vision_cuda_device', 'cuda_order')})
     # The catalog goes to a directory beside this temporary state, the way it does on a machine that
     # runs its own router, because readiness asks that directory whether the models are there. Point
     # `--router` at the household's router instead and the page shows what a real deployment shows
     # when that router is unreachable, which is also worth looking at.
-    host.update(host_id='rosalina', router_state_dir=str(state / 'router'))
+    host.update(router_state_dir=str(state / 'router'))
+    host.setdefault('host_id', 'daisy' if arguments.host_json else 'rosalina')
     if arguments.router:
         host['router_target'] = {'url': arguments.router, 'token_env': 'PUBLISHER_TOKEN'}
         os.environ.setdefault('PUBLISHER_TOKEN', 'synthetic-publisher-token')
@@ -85,6 +105,9 @@ def main():
     parser.add_argument('--port', type=int, default=8899)
     parser.add_argument('--router', help='Publish to this router URL instead of a directory beside the '
         'temporary state, so the publication line can be looked at as it looks on a real host.')
+    parser.add_argument('--host-json', help='Path to another machine\'s host.json, so the page is '
+        'drawn for that machine (its cards, its service IDs, its one configuration) instead of the '
+        'four-GPU host this harness otherwise invents.')
     arguments = parser.parse_args()
 
     temporary = tempfile.TemporaryDirectory()
