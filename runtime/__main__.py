@@ -7,8 +7,8 @@ import sys
 
 from .controller import Controller
 from .system import System
-from .config import (CONFIGURATIONS, PROFILE_ALIASES, available_profiles, read, require,
-    resolve_profile, unknown_profile)
+from .config import (ALIASES_FILE, CONFIGURATIONS, PROFILE_ALIASES, available_profiles, read,
+    read_aliases, require, resolve_profile, unknown_profile)
 
 
 def describe(entry, note=''):
@@ -16,24 +16,27 @@ def describe(entry, note=''):
 
 
 def host_settings():
-    """This machine's settings, for the surfaces that show only this machine's share of the registry.
+    """This machine's settings and its operator names, for the surfaces that show only this machine's
+    share of the registry.
 
     `list` is also run against a bare source tree, where there is no host to ask, and then it lists
-    every configuration the revision has. With a state directory it must read: a deployment whose
-    host.json is missing or unreadable gets that said out loud rather than a listing of another
-    machine's configurations, which is what a silent fallback would hand back.
+    every configuration the revision has, each by its default name. With a state directory it must
+    read: a deployment whose host.json is missing or unreadable gets that said out loud rather than a
+    listing of another machine's configurations, which is what a silent fallback would hand back.
+    Aliases travel with the host because the listing and the page must never disagree about what a
+    configuration is called, which is the same fact stated in two places that people trust.
     """
     state = os.environ.get('RUNTIME_STATE_DIR')
     if not state:
-        return None
-    return read(Path(state) / 'host.json')
+        return None, {}
+    return (read(Path(state) / 'host.json'), read_aliases(Path(state) / ALIASES_FILE)[0])
 
 
-def listed(config_dir, host=None):
+def listed(config_dir, host=None, aliases=None):
     """The supported configurations straight from the profile registry, so the CLI, the
     container CLI consumers, and the status page can never disagree. With a host, the registry is
     that host's: a configuration of another machine is not a thing this host supports."""
-    registry = available_profiles(config_dir, host)
+    registry = available_profiles(config_dir, host, aliases)
     second = registry['always_included']
     # `always_included` is empty on a host whose every configuration runs alone; the listing has to
     # say that rather than reach for a second resident that no configuration loads.
@@ -64,7 +67,8 @@ def main():
             unknown_profile(args.profile))
         args.profile = resolve_profile(args.profile)
     if args.action == 'list':
-        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config'), host_settings()))
+        host, aliases = host_settings()
+        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config'), host, aliases))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')
     controller = Controller(system=System(readonly=readonly))

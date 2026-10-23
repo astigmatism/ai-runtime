@@ -342,9 +342,102 @@ def context_label(tokens):
     return f'{tokens // 1024}K'
 
 
-def display_name(definition):
-    """The published display identity; the launch catalog and the status listing share it."""
+def default_name(definition):
+    """What a configuration is called when nobody has renamed it: the model and its session length.
+
+    This is the whole naming rule, and it is one rule on purpose. The pair of parentheses is what a
+    person reads first when two configurations are the same model at two windows, which is a question
+    they ask from the page, the router's model list, and a terminal at the same rate.
+    """
     return f"{definition['display_name']} ({context_label(definition['context_tokens'])})"
+
+
+def display_name(definition, aliases=None):
+    """The published display identity; the launch catalog, the CLI listing and the status page share it.
+
+    An operator alias wins over the default, and nothing else about a configuration changes when one
+    is set. It is a name and not an identity: the model id, the service IDs a client sends, the
+    Compose project and the container names are untouched by it, so renaming never drains, restarts
+    or re-renders anything.
+    """
+    return (aliases or {}).get(definition['id']) or default_name(definition)
+
+
+# Operator names live with the rest of the machine's private state, not in a profile file: a profile
+# says what a configuration launches, and a name is what this house chose to call it. It is the same
+# line AGENTS.md draws for host.json, and it is why `aliases.json` is Git-excluded with the UUIDs.
+ALIASES_FILE = 'aliases.json'
+ALIAS_MAX = 48
+# What may be named: every selectable configuration and every second resident, since the second
+# resident is shown by name on the page and published to the router exactly like the first.
+ALIAS_PROFILES = CONFIGURATIONS + EVERYDAY_PROFILES
+
+
+def clean_alias(profile, value):
+    """One validated operator alias: a trimmed printable line, or None to say "use the default".
+
+    A refusal rather than a silent truncation, because the thing being typed is the label an
+    operator will later read in a hurry to decide what a machine is running.
+    """
+    require(profile in ALIAS_PROFILES, 'Unknown configuration ' + repr(profile) + '; nameable: '
+        + ', '.join(ALIAS_PROFILES))
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    require(isinstance(value, str), 'An alias must be text or null, not ' + type(value).__name__)
+    alias = value.strip()
+    require(len(alias) <= ALIAS_MAX, 'An alias is at most ' + str(ALIAS_MAX) + ' characters')
+    require(alias.isprintable() and '\n' not in alias and '\t' not in alias,
+        'An alias is one printable line, ' + repr(alias))
+    return alias
+
+
+def read_aliases(path):
+    """This machine's aliases, tolerantly: the page and the health poll read it every few seconds.
+
+    A missing file is the ordinary state and says nothing. A file that cannot be read or parsed, or
+    that names a configuration this revision does not have, is reported as a one-line note and the
+    rest is used: a typo in an operator preference must not turn a serving machine into a page that
+    does not load, and it must not be silently ignored either.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}, None
+    try:
+        stored = read(path)
+    except Exception as error:
+        return {}, 'Saved aliases could not be read and are not in use: ' + str(error)
+    if not isinstance(stored, dict) or not isinstance(stored.get('aliases'), dict):
+        return {}, 'Saved aliases are malformed and are not in use'
+    unknown = [name for name in stored['aliases'] if name not in ALIAS_PROFILES]
+    aliases = {}
+    for name, value in stored['aliases'].items():
+        if name not in ALIAS_PROFILES or not isinstance(value, str) or not value.strip():
+            continue
+        aliases[name] = value.strip()[:ALIAS_MAX]
+    note = None
+    if unknown:
+        note = 'Ignored aliases for unknown configurations: ' + ', '.join(sorted(unknown))
+    return aliases, note
+
+
+def catalog_names(config_dir, host=None, aliases=None):
+    """{model id: display name} for every configuration of this host, as published today.
+
+    Read back at publish time rather than baked into a stored bundle, because a restoration and a
+    re-announcement publish the bundle they were handed and a name is not part of what they restore:
+    a machine that comes back from a failed switch would otherwise republish a name it stopped using
+    and stay that way, since publication is an event and a stale-but-successful record is not retried.
+    """
+    config_dir = Path(config_dir)
+    shared = read(config_dir / 'shared.json')
+    names = {}
+    for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS):
+        definition = read(config_dir / 'profiles' / (name + '.json'))
+        if not belongs_to_host(definition, host):
+            continue
+        summary = profile_summary(config_dir, name, shared, host, aliases)
+        names[summary['model']] = summary['display_name']
+    return names
 
 
 def digest(value):
@@ -783,7 +876,8 @@ def require_container_contract(role, cfg):
     require(not missing, 'Service {} is missing container settings: {}'.format(role, ', '.join(missing)))
 
 
-def environment_service(name, definition, engine, shared, host, root, ctx, slots, exclusive):
+def environment_service(name, definition, engine, shared, host, root, ctx, slots, exclusive,
+        aliases=None):
     """One service, its catalog entry, and its mounts for an engine configured from the environment.
 
     The profile still states its settings in the house's "--flag value" form, so a profile reads the
@@ -929,7 +1023,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     entry.update(model=options['--alias'], context_length=ctx,
         total_context_length=ctx * slots, max_active_requests=slots, gpu_uuids=text_devices,
         model_path=targets[model_target], backend_revision=engine['revision'],
-        display_name=display_name(definition), gpu_names=gpu_names(host, definition),
+        display_name=display_name(definition, aliases), gpu_names=gpu_names(host, definition),
         source='local-ai-runtime', updated_at=None)
     # What the profile declares is what this configuration is for; what the host has is what it
     # delivers, and the router is published the second. A profile that promises pictures on a host
@@ -955,7 +1049,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     return cfg, entry, mounts, targets, reserved, text_devices
 
 
-def profile_summary(config_dir, name, shared, host=None):
+def profile_summary(config_dir, name, shared, host=None, aliases=None):
     """Public facts about one profile, derived without Docker, network, or artifact I/O.
 
     Host paths, mount targets, and artifact checksums are deliberately absent: this is
@@ -975,7 +1069,9 @@ def profile_summary(config_dir, name, shared, host=None):
     # Resolved for a solo configuration too, and then dropped: naming a second resident you will
     # never load is a configuration lying about what it launches, and everyday_for refuses it.
     second = everyday_for(definition) if definition['role'] == 'coding' else None
-    return {'profile': definition['id'], 'role': definition['role'], 'display_name': display_name(definition),
+    return {'profile': definition['id'], 'role': definition['role'],
+        'display_name': display_name(definition, aliases), 'default_name': default_name(definition),
+        **({'alias': aliases[definition['id']]} if (aliases or {}).get(definition['id']) else {}),
         'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
@@ -983,12 +1079,19 @@ def profile_summary(config_dir, name, shared, host=None):
         # including the ones not running, because "what would answer" is a different question from
         # "what is loaded" and the status page has to be able to tell them apart.
         'service_ids': sorted(definition['catalog'].get('aliases', [])),
+        # Whether a switch to this configuration would put anything on the shared vision card, which
+        # is what the page needs to draw that card's owner before the switch happens. Declared twice
+        # on purpose, the way `render` reads it: a llama.cpp profile says so by shipping a projector,
+        # an environment-configured engine by claiming images as an input modality. And a host with no
+        # vision card has none, however the profile feels about it.
+        'vision_gpu': bool(host and host.get('vision_gpu_id') and (
+            options.get('--mmproj') or 'image' in definition['catalog'].get('input_modalities', []))),
         'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1),
         **({'everyday': second} if second is not None and not is_exclusive(definition) else {}),
         **({'variant_label': definition['variant_label']} if definition.get('variant_label') else {})}
 
 
-def available_profiles(config_dir, host=None):
+def available_profiles(config_dir, host=None, aliases=None):
     """The configurations this host can select, plus the second resident a paired one loads.
 
     The host is not a display nicety. A row on the status page is read as a decision the operator
@@ -1003,7 +1106,7 @@ def available_profiles(config_dir, host=None):
     definitions = {}
     def describe(name):
         definitions[name] = read(config_dir / 'profiles' / (name + '.json'))
-        return profile_summary(config_dir, name, shared, host)
+        return profile_summary(config_dir, name, shared, host, aliases)
     residents = {name: describe(name) for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS)}
     offered = {name for name, definition in definitions.items() if belongs_to_host(definition, host)}
     selectable = [residents[name] for name in CONFIGURATIONS if name in offered]
@@ -1023,7 +1126,7 @@ def available_profiles(config_dir, host=None):
         'always_included': [residents[name] for name in EVERYDAY_PROFILES if name in used]}
 
 
-def offline_services(config_dir, shared, host, loaded):
+def offline_services(config_dir, shared, host, loaded, operator_aliases=None):
     """Service IDs this configuration deliberately does not run, so the router can report them as
     temporarily offline rather than unknown.
 
@@ -1047,10 +1150,11 @@ def offline_services(config_dir, shared, host, loaded):
         aliases = [alias for alias in definition['catalog'].get('aliases', []) if alias not in published]
         if not aliases:
             continue
-        summary = profile_summary(config_dir, name, shared, host)
+        summary = profile_summary(config_dir, name, shared, host, operator_aliases)
         offline.append({'model': summary['model'], 'aliases': aliases,
-            'display_name': summary['display_name'], 'role': definition['role'],
-            'reason': 'exclusive_configuration'})
+            'display_name': summary['display_name'], 'default_name': summary['default_name'],
+            **({'alias': summary['alias']} if 'alias' in summary else {}),
+            'role': definition['role'], 'reason': 'exclusive_configuration'})
     return offline
 
 
@@ -1070,7 +1174,7 @@ def require_open_generation_policy(name, entry):
         for level in entry['reasoning_policy']['levels'].values()), 'Catalog reasoning policy differs')
 
 
-def render(config_dir, host, profile):
+def render(config_dir, host, profile, aliases=None):
     config_dir = Path(config_dir)
     profile = resolve_profile(profile)
     require(profile in CONFIGURATIONS, unknown_profile(profile))
@@ -1120,7 +1224,7 @@ def render(config_dir, host, profile):
             # image identity, mounts, ports, the GPU reservation, the discovery entry — is stated here
             # in the same shape as the llama.cpp path.
             cfg, entry, mounts, targets, devices, text = environment_service(name, definition, engine, shared,
-                host, root, ctx, slots, exclusive_profile)
+                host, root, ctx, slots, exclusive_profile, aliases)
             for artifact in definition['artifacts']:
                 source = str(root / Path(artifact['path']))
                 artifacts[source] = {**artifact, 'source': source}
@@ -1227,7 +1331,7 @@ def render(config_dir, host, profile):
             backend_revision=engine['revision'], fit_target=options['--fit'],
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
             kv_cache={'unified': False, 'key_type': options['--cache-type-k'], 'value_type': options['--cache-type-v']},
-            display_name=display_name(definition),
+            display_name=display_name(definition, aliases),
             # Card names of the text GPUs, in the same order as text_gpu_uuids/gpu_uuids; the
             # router publishes names and counts but never UUIDs.
             gpu_names=gpu_names(host, definition),
@@ -1268,7 +1372,7 @@ def render(config_dir, host, profile):
     catalog = {**copy.deepcopy(models[0]), 'schema_version': 3,
         'default_model': models[0]['model'], 'models': models,
         'configuration': {'id': profile, 'exclusive': exclusive_profile},
-        'offline_services': offline_services(config_dir, shared, host, loaded)}
+        'offline_services': offline_services(config_dir, shared, host, loaded, aliases)}
     bundle = {'schema_version': 1, 'profile': profile, 'compose': compose, 'catalog': catalog,
         'manifest': {'schema_version': 2, 'services': manifests},
         'artifacts': list(artifacts.values())}
