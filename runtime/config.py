@@ -342,8 +342,18 @@ def context_label(tokens):
     return f'{tokens // 1024}K'
 
 
+def model_id(definition):
+    """The id a client routes on, which is the only thing a name can sensibly be attached to.
+
+    A configuration is not an identity: two configurations can load the same model at two windows, and
+    a machine can load several models at once. What the router addresses, what a request names, and
+    what an operator means when they say "that model" is this string, so it is the key for a name too.
+    """
+    return definition['arguments']['--alias']
+
+
 def default_name(definition):
-    """What a configuration is called when nobody has renamed it: the model and its session length.
+    """What a model is called when nobody has renamed it: the model and its session length.
 
     This is the whole naming rule, and it is one rule on purpose. The pair of parentheses is what a
     person reads first when two configurations are the same model at two windows, which is a question
@@ -355,32 +365,51 @@ def default_name(definition):
 def display_name(definition, aliases=None):
     """The published display identity; the launch catalog, the CLI listing and the status page share it.
 
-    An operator alias wins over the default, and nothing else about a configuration changes when one
-    is set. It is a name and not an identity: the model id, the service IDs a client sends, the
-    Compose project and the container names are untouched by it, so renaming never drains, restarts
-    or re-renders anything.
+    An operator alias wins over the default, and nothing else about the launch changes when one is
+    set. It is a name and not an identity: the model id, the service IDs a client sends, the Compose
+    project and the container names are untouched by it, so renaming never drains, restarts or
+    re-renders anything.
     """
-    return (aliases or {}).get(definition['id']) or default_name(definition)
+    return (aliases or {}).get(model_id(definition)) or default_name(definition)
 
 
 # Operator names live with the rest of the machine's private state, not in a profile file: a profile
-# says what a configuration launches, and a name is what this house chose to call it. It is the same
-# line AGENTS.md draws for host.json, and it is why `aliases.json` is Git-excluded with the UUIDs.
+# says what a model launches, and a name is what this house chose to call it. It is the same line
+# AGENTS.md draws for host.json, and it is why `aliases.json` is Git-excluded with the UUIDs. Version
+# 2 keys the names by model id; the version that keyed them by configuration id is read as a file of
+# names for models this machine does not serve, which is what it is.
 ALIASES_FILE = 'aliases.json'
+ALIASES_VERSION = 2
 ALIAS_MAX = 48
-# What may be named: every selectable configuration and every second resident, since the second
-# resident is shown by name on the page and published to the router exactly like the first.
-ALIAS_PROFILES = CONFIGURATIONS + EVERYDAY_PROFILES
 
 
-def clean_alias(profile, value):
+def nameable_models(config_dir, host=None):
+    """{model id: [configurations of this host that load it]} -- what may be given a name.
+
+    Models are nameable and configurations are not, because a configuration is a placement decision
+    and a model is the thing a person, a client, and a router all refer to. A model two configurations
+    share gets one name, said the same way whichever of them is loaded.
+    """
+    config_dir = Path(config_dir)
+    shared = read(config_dir / 'shared.json')
+    found = {}
+    for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS):
+        definition = read(config_dir / 'profiles' / (name + '.json'))
+        if not belongs_to_host(definition, host):
+            continue
+        found.setdefault(model_id(definition), []).append(name)
+    return {model: sorted(where) for model, where in found.items()}
+
+
+def clean_alias(model, value, nameable=None):
     """One validated operator alias: a trimmed printable line, or None to say "use the default".
 
     A refusal rather than a silent truncation, because the thing being typed is the label an
     operator will later read in a hurry to decide what a machine is running.
     """
-    require(profile in ALIAS_PROFILES, 'Unknown configuration ' + repr(profile) + '; nameable: '
-        + ', '.join(ALIAS_PROFILES))
+    if nameable is not None:
+        require(model in nameable, 'Unknown model ' + repr(model) + '; nameable: '
+            + ', '.join(sorted(nameable)))
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     require(isinstance(value, str), 'An alias must be text or null, not ' + type(value).__name__)
@@ -391,13 +420,13 @@ def clean_alias(profile, value):
     return alias
 
 
-def read_aliases(path):
+def read_aliases(path, nameable=None):
     """This machine's aliases, tolerantly: the page and the health poll read it every few seconds.
 
     A missing file is the ordinary state and says nothing. A file that cannot be read or parsed, or
-    that names a configuration this revision does not have, is reported as a one-line note and the
-    rest is used: a typo in an operator preference must not turn a serving machine into a page that
-    does not load, and it must not be silently ignored either.
+    that names a model this machine does not serve, is reported as a one-line note and the rest is
+    used: a typo in an operator preference must not turn a serving machine into a page that does not
+    load, and it must not be silently ignored either.
     """
     path = Path(path)
     if not path.exists():
@@ -408,15 +437,16 @@ def read_aliases(path):
         return {}, 'Saved aliases could not be read and are not in use: ' + str(error)
     if not isinstance(stored, dict) or not isinstance(stored.get('aliases'), dict):
         return {}, 'Saved aliases are malformed and are not in use'
-    unknown = [name for name in stored['aliases'] if name not in ALIAS_PROFILES]
+    keys = list(stored['aliases'])
+    unknown = sorted(key for key in keys if nameable is not None and key not in nameable)
     aliases = {}
-    for name, value in stored['aliases'].items():
-        if name not in ALIAS_PROFILES or not isinstance(value, str) or not value.strip():
+    for key, value in stored['aliases'].items():
+        if (nameable is not None and key not in nameable) or not isinstance(value, str) or not value.strip():
             continue
-        aliases[name] = value.strip()[:ALIAS_MAX]
+        aliases[key] = value.strip()[:ALIAS_MAX]
     note = None
     if unknown:
-        note = 'Ignored aliases for unknown configurations: ' + ', '.join(sorted(unknown))
+        note = 'Ignored aliases for models this machine does not serve: ' + ', '.join(unknown)
     return aliases, note
 
 
@@ -428,16 +458,25 @@ def catalog_names(config_dir, host=None, aliases=None):
     a machine that comes back from a failed switch would otherwise republish a name it stopped using
     and stay that way, since publication is an event and a stale-but-successful record is not retried.
     """
+    return {summary['model']: summary['display_name']
+        for summary in registry_summaries(config_dir, host, aliases)}
+
+
+def registry_summaries(config_dir, host=None, aliases=None):
+    """Every model this host serves or could serve, with the names it is published by.
+
+    One pass for the whole registry, because three surfaces -- the page, the CLI listing, and the
+    catalog about to be published -- must not each walk the profile files and reach their own opinion.
+    """
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
-    names = {}
+    summaries = []
     for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS):
         definition = read(config_dir / 'profiles' / (name + '.json'))
         if not belongs_to_host(definition, host):
             continue
-        summary = profile_summary(config_dir, name, shared, host, aliases)
-        names[summary['model']] = summary['display_name']
-    return names
+        summaries.append(profile_summary(config_dir, name, shared, host, aliases))
+    return summaries
 
 
 def digest(value):
@@ -1071,8 +1110,9 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
     second = everyday_for(definition) if definition['role'] == 'coding' else None
     return {'profile': definition['id'], 'role': definition['role'],
         'display_name': display_name(definition, aliases), 'default_name': default_name(definition),
-        **({'alias': aliases[definition['id']]} if (aliases or {}).get(definition['id']) else {}),
-        'model': options['--alias'], 'context_tokens': tokens, 'engine': definition['engine'],
+        **({'alias': aliases[model_id(definition)]}
+            if (aliases or {}).get(model_id(definition)) else {}),
+        'model': model_id(definition), 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
         # The service IDs a client sends to reach this resident. Listed for every configuration,

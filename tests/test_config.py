@@ -7,9 +7,10 @@ import tempfile
 import unittest
 
 from runtime.system import atomic_json
-from runtime.config import (ALIAS_MAX, ALIAS_PROFILES, CONFIGURATIONS, CONTAINER_CONTRACT,
+from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT,
     DEFAULT_PROFILE, EVERYDAY_PROFILE, EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES,
-    available_profiles, belongs_to_host, catalog_names, clean_alias, configurations_for,
+    ALIASES_VERSION, available_profiles, belongs_to_host, catalog_names, clean_alias,
+    configurations_for, model_id, nameable_models,
     default_name, default_profile, digest, display_name, engine_interface, merge_settings, read,
     read_aliases, render, resolve_profile, service_engine, text_gpus, unknown_profile)
 
@@ -1731,7 +1732,7 @@ class ConfigurationNamingTests(unittest.TestCase):
             'unreferenced engine: ' + str(set(engines) - used - rollback))
 
 
-    def test_a_configuration_is_called_by_its_model_and_its_session_length(self):
+    def test_a_model_is_called_by_its_model_and_its_session_length(self):
         # One naming rule for every surface, because a person meets the name in the page, in a
         # router's model list and in a terminal, and asks the same question each time: which window.
         for name in CONFIGURATIONS + EVERYDAY_PROFILES:
@@ -1740,13 +1741,17 @@ class ConfigurationNamingTests(unittest.TestCase):
                 self.assertEqual(default_name(definition),
                     definition['display_name'] + ' (' + str(definition['context_tokens'] // 1024) + 'K)')
                 self.assertEqual(display_name(definition, {}), default_name(definition))
+                # And a name hangs on the id a client routes on, never on the file that launches it:
+                # the same model in two configurations is one thing to name.
+                self.assertEqual(model_id(definition), definition['arguments']['--alias'])
 
     def test_an_alias_replaces_a_name_and_nothing_else_about_the_launch(self):
         # The refusal this test protects: a rename that changed a launch would mean a machine had to
         # be drained to be renamed, and an operator would stop renaming rather than drain for it.
         plain = render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-pair')
         named = render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-pair',
-            {'qwen27b-q8-pair': 'Workhorse', 'everyday': 'Night owl'})
+            {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse',
+                'qwen3.8-27b-abliterated-q6_k': 'Night owl'})
         self.assertEqual(named['compose'], plain['compose'])
         self.assertEqual([x['recommended_argv'] for x in named['manifest']['services']],
             [x['recommended_argv'] for x in plain['manifest']['services']])
@@ -1760,19 +1765,27 @@ class ConfigurationNamingTests(unittest.TestCase):
         self.assertNotEqual(named['config_sha256'], plain['config_sha256'])
 
     def test_an_alias_is_refused_with_the_rule_it_broke(self):
-        self.assertEqual(clean_alias('qwen27b-q8-pair', '  Workhorse  '), 'Workhorse')
-        self.assertIsNone(clean_alias('qwen27b-q8-pair', '   '))
-        self.assertIsNone(clean_alias('qwen27b-q8-pair', None))
+        nameable = nameable_models(ROOT / 'config')
+        coding = 'qwen3.8-27b-q8_0-tensor-next'
+        self.assertEqual(clean_alias(coding, '  Workhorse  ', nameable), 'Workhorse')
+        self.assertIsNone(clean_alias(coding, '   ', nameable))
+        self.assertIsNone(clean_alias(coding, None, nameable))
         for value, reason in [(42, 'must be text'), ('x' * (ALIAS_MAX + 1), 'at most ' + str(ALIAS_MAX)),
                 ('two\nlines', 'one printable line'), ('tab\there', 'one printable line')]:
             with self.subTest(value=repr(value)), self.assertRaisesRegex(RuntimeError, reason):
-                clean_alias('qwen27b-q8-pair', value)
-        # Only a configuration this revision has can be named -- including the second resident, which
-        # is published and shown by name exactly like the first.
-        for name in ALIAS_PROFILES:
-            self.assertEqual(clean_alias(name, 'Any name'), 'Any name')
-        with self.assertRaisesRegex(RuntimeError, 'Unknown configuration'):
-            clean_alias('daytime-27b', 'Old habit')
+                clean_alias(coding, value, nameable)
+        # Every model any configuration of this revision loads can be named, and nothing else: the
+        # list is the registry's, so a model retired in a release cannot keep a name nobody can serve.
+        self.assertGreaterEqual(set(nameable), {coding, 'qwen3.8-27b-abliterated-q6_k'})
+        for model in nameable:
+            self.assertEqual(clean_alias(model, 'Any name', nameable), 'Any name')
+        self.assertIn('qwen27b-q8-pair', {c for where in nameable.values() for c in where})
+        with self.assertRaisesRegex(RuntimeError, 'Unknown model'):
+            clean_alias('daytime-27b', 'Old habit', nameable)
+        # A configuration is not nameable, because it is a placement decision and not a thing a client
+        # asks for by name.
+        with self.assertRaisesRegex(RuntimeError, 'Unknown model'):
+            clean_alias('qwen27b-q8-pair', 'The pair', nameable)
 
     def test_the_alias_file_is_read_tolerantly_and_says_what_it_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1784,17 +1797,25 @@ class ConfigurationNamingTests(unittest.TestCase):
             path.write_text('{"aliases": ["not", "a", "map"]}')
             aliases, note = read_aliases(path)
             self.assertEqual(aliases, {}); self.assertIn('malformed', note)
-            atomic_json(path, {'version': 1, 'aliases': {'qwen27b-q8-pair': '  Workhorse  ',
-                'gone-today': 'Ghost', 'everyday': '   '}})
-            aliases, note = read_aliases(path)
-            self.assertEqual(aliases, {'qwen27b-q8-pair': 'Workhorse'})
+            nameable = nameable_models(ROOT / 'config')
+            atomic_json(path, {'version': ALIASES_VERSION, 'aliases': {
+                'qwen3.8-27b-q8_0-tensor-next': '  Workhorse  ', 'gone-today': 'Ghost',
+                'qwen3.8-27b-abliterated-q6_k': '   '}})
+            aliases, note = read_aliases(path, nameable)
+            self.assertEqual(aliases, {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'})
             self.assertIn('gone-today', note)
+            # A file from the release that keyed names by configuration is a file of names for models
+            # this machine does not serve, which is what it is told.
+            atomic_json(path, {'version': 1, 'aliases': {'qwen27b-q8-pair': 'The pair'}})
+            ignored, note = read_aliases(path, nameable)
+            self.assertEqual(ignored, {})
+            self.assertIn('qwen27b-q8-pair', note)
 
     def test_the_registry_shows_the_chosen_name_and_the_default_behind_it(self):
         # The page needs both: the default is what clearing the name would bring back, and it is what
         # the editor offers as its placeholder, so a person can see what they are covering over.
         registry = available_profiles(ROOT / 'config', host_for('qwen27b-q8-pair'),
-            {'qwen27b-q8-pair': 'Workhorse'})
+            {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'})
         entry = next(x for x in registry['selectable'] if x['profile'] == 'qwen27b-q8-pair')
         self.assertEqual((entry['display_name'], entry['default_name'], entry['alias']),
             ('Workhorse', 'Qwen3.8 27B Q8 (160K)', 'Workhorse'))
@@ -1803,11 +1824,12 @@ class ConfigurationNamingTests(unittest.TestCase):
             ('Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 27B Q6_K (160K)'))
         self.assertNotIn('alias', other)
         self.assertEqual(catalog_names(ROOT / 'config', host_for('qwen27b-q8-pair'),
-            {'everyday': 'Night owl'})['qwen3.8-27b-abliterated-q6_k'], 'Night owl')
+            {'qwen3.8-27b-abliterated-q6_k': 'Night owl'})['qwen3.8-27b-abliterated-q6_k'], 'Night owl')
         # And the CLI says it too: `~/local-ai-config.sh list` and the page are two places a person
         # reads the same name, and a rename that reached only one of them is a rename half done.
         from runtime.__main__ import listed
-        named = listed(ROOT / 'config', host_for('qwen27b-q8-pair'), {'qwen27b-q8-pair': 'Workhorse'})
+        named = listed(ROOT / 'config', host_for('qwen27b-q8-pair'),
+            {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'})
         self.assertIn('Workhorse', named)
         self.assertNotIn('Qwen3.8 27B Q8 (160K)', named)
         self.assertIn('Qwen3.8 27B Q8 (160K)', listed(ROOT / 'config', host_for('qwen27b-q8-pair')))

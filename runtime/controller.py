@@ -19,10 +19,10 @@ import urllib.parse
 import uuid
 
 from . import provision as provision_tool
-from .config import (ALIASES_FILE, CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS,
+from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS,
     available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
-    gpu_architectures, host_id, read, read_aliases, render, require, resolve_profile, router_target,
-    service_engine)
+    gpu_architectures, host_id, nameable_models, read, read_aliases, render, require, resolve_profile,
+    router_target, service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # How long a router that was not listening has to stay not-listening before this machine offers it
@@ -390,34 +390,44 @@ class Controller:
             initial if initial in selectable else default_profile(self.config_dir, self.host))
         return render(self.config_dir, self.host, selected, self.aliases()[0])
 
+    def nameable_models(self):
+        """{model id: configurations of this machine that load it} -- what may be given a name.
+
+        Names attach to models and not to configurations, because a configuration is where the models
+        go and a model is what a client, a router, and a person mean by "that thing". A model shared
+        by two configurations is named once and said that way by both.
+        """
+        return nameable_models(self.config_dir, self.host)
+
     def aliases(self):
-        """What this machine's configurations are called, and any reason they are not being used.
+        """What this machine's models are called, and any reason they are not being used.
 
         Read on every use rather than once at startup: the page is where a name is edited, and a
-        controller that renamed a configuration at boot would show one name and publish another for
-        the length of a release.
+        controller that renamed a model at boot would show one name and publish another for the
+        length of a release.
         """
-        return read_aliases(self.state / ALIASES_FILE)
+        return read_aliases(self.state / ALIASES_FILE, self.nameable_models())
 
-    def set_alias(self, profile, alias):
-        """Name one configuration, or clear the name and take the default back.
+    def set_alias(self, model, alias):
+        """Name one model, or clear the name and take the default back.
 
-        A name is not a release: nothing here drains, restarts or re-renders a launch, and the
-        model id and the service IDs a client sends are untouched. The one obligation it inherits
-        is the loud one -- a machine that changes what it is called has to say so, so a saved alias
-        is published unless something is already mid-flight and will publish it itself.
+        A name is not a release: nothing here drains, restarts or re-renders a launch, and the model
+        id and the service IDs a client sends are untouched. The one obligation it inherits is the
+        loud one -- a machine that changes what it is called has to say so, so a saved alias is
+        published unless something is already mid-flight and will publish it itself.
         """
         require(not self.system.readonly, 'State mutation is forbidden in inspection mode')
-        value = clean_alias(profile, alias)
+        value = clean_alias(model, alias, self.nameable_models())
         # The file is written first and without the runtime lock, because a name is an operator
         # preference kept in one atomic file, not a runtime transaction: it must survive and be
         # readable even on a machine that is draining, loading, or refusing to start.
-        saved, _ = self.aliases()
+        stored = self.load(ALIASES_FILE, {})
+        saved = dict(stored.get('aliases') or {}) if isinstance(stored, dict) else {}
         if value is None:
-            saved.pop(profile, None)
+            saved.pop(model, None)
         else:
-            saved[profile] = value
-        self.save(ALIASES_FILE, {'version': 1, 'aliases': saved})
+            saved[model] = value
+        self.save(ALIASES_FILE, {'version': ALIASES_VERSION, 'aliases': saved})
         reply = {'saved': True, 'published': False}
         if self.load('transaction.json', {}).get('phase') in PENDING_PHASES:
             return {**reply, 'note': 'A switch or restoration is in flight; it publishes this name with its own catalog.'}

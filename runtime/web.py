@@ -134,18 +134,18 @@ def handler(controller, state, operations=None):
             except (ValueError, UnicodeError, TimeoutError):
                 self.send(400, {'error': 'Invalid JSON request; maximum size is 4096 bytes'})
                 return
-            # Naming a configuration is not an operation: it drains nothing, restarts nothing and
+            # Naming a model is not an operation: it drains nothing, restarts nothing and
             # cannot leave a machine between two releases, so it does not queue behind a switch and
             # has no receipt to survive a reload with. It shares the checks above, because a POST
             # that changes what the household is told about this machine deserves them.
             if route == '/api/alias':
                 if not controller:
                     self.send(503, {'error': 'Runtime configuration is unavailable'})
-                elif not isinstance(request, dict) or 'profile' not in request:
-                    self.send(400, {'error': 'A configuration and an alias are required'})
+                elif not isinstance(request, dict) or 'model' not in request:
+                    self.send(400, {'error': 'A model and an alias are required'})
                 else:
                     try:
-                        reply = controller.set_alias(request.get('profile'), request.get('alias'))
+                        reply = controller.set_alias(request.get('model'), request.get('alias'))
                     except RuntimeError as error:
                         detail = str(error)
                         # A refusal is the rule the alias broke, and the page shows it in the editor.

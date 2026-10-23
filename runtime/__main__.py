@@ -8,14 +8,14 @@ import sys
 from .controller import Controller
 from .system import System
 from .config import (ALIASES_FILE, CONFIGURATIONS, PROFILE_ALIASES, available_profiles, read,
-    read_aliases, require, resolve_profile, unknown_profile)
+    nameable_models, read_aliases, require, resolve_profile, unknown_profile)
 
 
 def describe(entry, note=''):
     return f"{entry['profile']}: {entry['display_name']} - {entry['model']}{note}"
 
 
-def host_settings():
+def host_settings(config_dir):
     """This machine's settings and its operator names, for the surfaces that show only this machine's
     share of the registry.
 
@@ -23,13 +23,14 @@ def host_settings():
     every configuration the revision has, each by its default name. With a state directory it must
     read: a deployment whose host.json is missing or unreadable gets that said out loud rather than a
     listing of another machine's configurations, which is what a silent fallback would hand back.
-    Aliases travel with the host because the listing and the page must never disagree about what a
-    configuration is called, which is the same fact stated in two places that people trust.
+    Names travel with the host because the listing and the page must never disagree about what a
+    model is called, which is the same fact stated in two places that people trust.
     """
     state = os.environ.get('RUNTIME_STATE_DIR')
     if not state:
         return None, {}
-    return (read(Path(state) / 'host.json'), read_aliases(Path(state) / ALIASES_FILE)[0])
+    host = read(Path(state) / 'host.json')
+    return host, read_aliases(Path(state) / ALIASES_FILE, nameable_models(config_dir, host))[0]
 
 
 def listed(config_dir, host=None, aliases=None):
@@ -67,8 +68,9 @@ def main():
             unknown_profile(args.profile))
         args.profile = resolve_profile(args.profile)
     if args.action == 'list':
-        host, aliases = host_settings()
-        print(listed(os.environ.get('RUNTIME_CONFIG_DIR', '/app/config'), host, aliases))
+        config_dir = os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')
+        host, aliases = host_settings(config_dir)
+        print(listed(config_dir, host, aliases))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')
     controller = Controller(system=System(readonly=readonly))

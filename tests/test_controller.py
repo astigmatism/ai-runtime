@@ -223,10 +223,10 @@ class ControllerTests(unittest.TestCase):
         # One name, said the same way by the page, the CLI listing and the catalog this machine
         # publishes: three surfaces that disagree about what a machine is running is the bug, and an
         # alias that only reached the page would be exactly that bug with an extra step.
-        self.assertEqual(self.c.set_alias('qwen27b-q8-pair', 'Workhorse'), {'saved': True, 'published': True})
-        self.assertEqual(self.c.set_alias('everyday', 'Night owl'), {'saved': True, 'published': True})
+        self.assertEqual(self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', 'Workhorse'), {'saved': True, 'published': True})
+        self.assertEqual(self.c.set_alias('qwen3.8-27b-abliterated-q6_k', 'Night owl'), {'saved': True, 'published': True})
         self.assertEqual(json.loads((self.state / 'aliases.json').read_text()),
-            {'version': 1, 'aliases': {'qwen27b-q8-pair': 'Workhorse', 'everyday': 'Night owl'}})
+            {'version': 2, 'aliases': {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse', 'qwen3.8-27b-abliterated-q6_k': 'Night owl'}})
         status = self.c.status()
         self.assertEqual([x['name'] for x in status['services']], ['Workhorse', 'Night owl'])
         entry = next(x for x in status['configurations']['selectable'] if x['profile'] == 'qwen27b-q8-pair')
@@ -234,19 +234,19 @@ class ControllerTests(unittest.TestCase):
             ('Workhorse', 'Qwen3.8 27B Q8 (160K)', 'Workhorse'))
         self.assertEqual([x['display_name'] for x in self.published()['models']], ['Workhorse', 'Night owl'])
         self.assertEqual(status['aliases'],
-            {'assignments': {'qwen27b-q8-pair': 'Workhorse', 'everyday': 'Night owl'}})
+            {'assignments': {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse', 'qwen3.8-27b-abliterated-q6_k': 'Night owl'}})
         # Clearing one name takes back the default and leaves the other standing.
-        self.c.set_alias('qwen27b-q8-pair', None)
+        self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', None)
         self.assertEqual([x['display_name'] for x in self.published()['models']],
             ['Qwen3.8 27B Q8 (160K)', 'Night owl'])
-        self.assertEqual(json.loads((self.state / 'aliases.json').read_text())['aliases'], {'everyday': 'Night owl'})
+        self.assertEqual(json.loads((self.state / 'aliases.json').read_text())['aliases'], {'qwen3.8-27b-abliterated-q6_k': 'Night owl'})
 
-    def test_naming_a_configuration_touches_no_launch_and_needs_no_drain(self):
+    def test_naming_a_model_touches_no_launch_and_needs_no_drain(self):
         # A name is not a release. The launch this machine is serving with stays the byte-for-byte
         # document it was switched with, and no container is asked to do anything about a rename.
         before = json.loads((self.state / 'active.json').read_text())
         events = len([e for e in self.system.events if e[0] == 'docker' and e[1][:1] == ('compose',)])
-        self.c.set_alias('qwen27b-q8-pair', 'Workhorse')
+        self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', 'Workhorse')
         active = json.loads((self.state / 'active.json').read_text())
         self.assertEqual(active['bundle']['config_sha256'], before['bundle']['config_sha256'])
         self.assertEqual(active['bundle']['compose'], before['bundle']['compose'])
@@ -261,33 +261,33 @@ class ControllerTests(unittest.TestCase):
     def test_a_name_is_refused_with_the_rule_it_broke(self):
         for value, reason in [('nope/' * 20, 'at most 48'), ('two\nlines', 'one printable line')]:
             with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, reason):
-                self.c.set_alias('qwen27b-q8-pair', value)
-        with self.assertRaisesRegex(RuntimeError, 'Unknown configuration'):
-            self.c.set_alias('flash-next-strata-160k', 'Retired')
+                self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', value)
+        with self.assertRaisesRegex(RuntimeError, 'Unknown model'):
+            self.c.set_alias('qwen3.8-27b-retired-q8', 'Retired')
         self.assertFalse((self.state / 'aliases.json').exists())
 
     def test_a_name_saved_while_a_switch_is_in_flight_is_published_by_that_switch(self):
         # The switch owns the drain and the publication; a rename that barged in mid-flight would be
         # a second hand on the same catalog, so it saves and lets the run say the name instead.
         atomic_json(self.state / 'transaction.json', {'phase': 'draining'})
-        self.assertEqual(self.c.set_alias('qwen27b-q8-pair', 'Workhorse'),
+        self.assertEqual(self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', 'Workhorse'),
             {'saved': True, 'published': False,
                 'note': 'A switch or restoration is in flight; it publishes this name with its own catalog.'})
         self.assertEqual(json.loads((self.state / 'aliases.json').read_text())['aliases'],
-            {'qwen27b-q8-pair': 'Workhorse'})
+            {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'})
         self.assertFalse((self.state / 'router' / 'active-model.json').exists())
 
     def test_the_page_survives_an_alias_file_it_cannot_read(self):
         # A typo in an operator preference must not turn a serving machine into a page that does not
         # load, and must not be swallowed either: the page says the names are not in use.
-        (self.state / 'aliases.json').write_text('{"aliases": {"qwen27b-q8-pair"')
+        (self.state / 'aliases.json').write_text('{"aliases": {"qwen3.8-27b-q8_0-tensor-next"')
         status = self.c.status()
         self.assertTrue(status['ready'])
         self.assertEqual([x['name'] for x in status['services']],
             [x['display_name'] for x in self.bundle['catalog']['models']])
         self.assertIn('could not be read', status['aliases']['note'])
-        # An alias for a configuration this revision does not have is ignored, and said.
-        atomic_json(self.state / 'aliases.json', {'version': 1, 'aliases': {'gone-today': 'Ghost'}})
+        # An alias for a model this revision does not serve is ignored, and said.
+        atomic_json(self.state / 'aliases.json', {'version': 2, 'aliases': {'gone-today': 'Ghost'}})
         status = self.c.status()
         self.assertIn('gone-today', status['aliases']['note'])
         self.assertEqual([x['name'] for x in status['services']],

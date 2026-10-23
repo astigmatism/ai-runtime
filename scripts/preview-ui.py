@@ -38,7 +38,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
 
 from test_controller import FakeSystem, vision_host  # noqa: E402
-from runtime.config import render  # noqa: E402
+from runtime.config import ALIASES_VERSION, render  # noqa: E402
 from runtime.controller import Controller  # noqa: E402
 from runtime.operations import Operations  # noqa: E402
 from runtime.system import atomic_json  # noqa: E402
@@ -88,13 +88,15 @@ def machine(state, profile, arguments):
     controller = Controller(config, state, 'a' * 40, system)
     atomic_json(state / 'active.json', {'revision': controller.revision, 'image': 'sha256:preview',
         'bundle': bundle})
+    # One name for the model in service and one for the second model on the machine, because the point
+    # of a name is that it is said everywhere, and a preview where only one surface has it proves
+    # nothing. They are written before the first publication so the catalog on disk carries them too.
+    named = {bundle['catalog']['models'][0]['model']: 'House standard'}
+    if len(bundle['catalog']['models']) > 1:
+        named[bundle['catalog']['models'][1]['model']] = 'Night owl'
+    atomic_json(state / 'aliases.json', {'version': ALIASES_VERSION, 'aliases': named})
     controller.publish(bundle)
     atomic_json(state / 'previous.json', {'revision': 'b' * 40, 'profile': profile, 'bundle': bundle})
-    # One alias for the configuration in service and one for the second resident, because the point
-    # of an alias is that it is said everywhere, and a preview where only one surface has it proves
-    # nothing. The third configuration is left unnamed on purpose: that is the state to compare to.
-    atomic_json(state / 'aliases.json', {'version': 1, 'aliases': {profile: 'House standard',
-        'everyday': 'Night owl'}})
     return controller, system, bundle
 
 

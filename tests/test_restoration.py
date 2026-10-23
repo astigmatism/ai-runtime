@@ -394,7 +394,7 @@ class RestorationTests(unittest.TestCase):
         # bundle would announce a name the operator retired while the machine was down, and a router
         # that is never corrected is a name nobody can unsend.
         self.strand_the_backend()
-        self.assertTrue(self.c.set_alias('qwen27b-q8-pair', 'Workhorse')['saved'])
+        self.assertTrue(self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', 'Workhorse')['saved'])
         result = self.c.restore_last_known_good()
         self.assertTrue(result['restored'])
         published = json.loads((self.state / 'router' / 'active-model.json').read_text())

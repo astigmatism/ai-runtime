@@ -207,10 +207,10 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         return self.web_state['status']
 
     def test_a_name_saved_here_is_the_name_the_page_shows_and_the_router_is_told(self):
-        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'Workhorse'})
+        code, reply = self.http('/api/alias', {'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 'Workhorse'})
         self.assertEqual((code, reply), (200, {'saved': True, 'published': True}))
         status = self.status()
-        self.assertEqual(status['aliases'], {'assignments': {'qwen27b-q8-pair': 'Workhorse'}})
+        self.assertEqual(status['aliases'], {'assignments': {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'}})
         self.assertEqual([x['name'] for x in status['services']][0], 'Workhorse')
         entry = next(x for x in status['configurations']['selectable'] if x['profile'] == 'qwen27b-q8-pair')
         self.assertEqual((entry['display_name'], entry['alias'], entry['default_name']),
@@ -218,15 +218,15 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         self.assertEqual(json.loads((self.state / 'router' / 'active-model.json').read_text())
             ['models'][0]['display_name'], 'Workhorse')
         # Clearing it is the same one call, and it says so rather than refusing an empty string.
-        self.assertEqual(self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': ''})[0], 200)
+        self.assertEqual(self.http('/api/alias', {'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': ''})[0], 200)
         self.assertEqual(self.status()['aliases'], {'assignments': {}})
 
     def test_the_name_is_refused_for_the_rule_it_broke_and_says_which(self):
-        for body, expected in [({'profile': 'qwen27b-q8-pair', 'alias': 'x' * 49}, '48'),
-                ({'profile': 'qwen27b-q8-pair', 'alias': 'two\nlines'}, 'one printable line'),
-                ({'profile': 'no-such-configuration', 'alias': 'Ghost'}, 'Unknown configuration'),
-                ({'profile': 'qwen27b-q8-pair', 'alias': 7}, 'text'),
-                ({'alias': 'nameless'}, 'configuration and an alias')]:
+        for body, expected in [({'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 'x' * 49}, '48'),
+                ({'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 'two\nlines'}, 'one printable line'),
+                ({'model': 'no-such-model', 'alias': 'Ghost'}, 'Unknown model'),
+                ({'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 7}, 'text'),
+                ({'alias': 'nameless'}, 'model and an alias')]:
             with self.subTest(body=body):
                 code, reply = self.http('/api/alias', body)
                 self.assertEqual(code, 400)
@@ -239,7 +239,7 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         for headers, expected in [({'Origin': 'http://evil.example'}, 403), ({'X-Runtime-CSRF': ''}, 403),
                 ({'Content-Type': 'text/plain'}, 415)]:
             with self.subTest(headers=headers):
-                self.assertEqual(self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'X'},
+                self.assertEqual(self.http('/api/alias', {'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 'X'},
                     headers)[0], expected)
         self.assertFalse((self.state / 'aliases.json').exists())
 
@@ -247,7 +247,7 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         # The browser did nothing wrong and cannot fix it by re-sending, so it is not a 400: the
         # editor keeps the draft open and says the machine is not taking changes.
         self.system.readonly = True
-        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q8-pair', 'alias': 'Workhorse'})
+        code, reply = self.http('/api/alias', {'model': 'qwen3.8-27b-q8_0-tensor-next', 'alias': 'Workhorse'})
         self.assertEqual(code, 409)
         self.assertIn('inspection mode', reply['error'])
         self.assertFalse((self.state / 'aliases.json').exists())
@@ -258,7 +258,7 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         entered = self.block_worker()
         self.http('/api/profile-switch', self.request())     # switching to qwen27b-q6k-pair
         self.assertTrue(entered.wait(1))
-        code, reply = self.http('/api/alias', {'profile': 'qwen27b-q6k-pair', 'alias': 'Spare'})
+        code, reply = self.http('/api/alias', {'model': 'qwen3.8-27b-ud-q6_k_xl-tensor-next', 'alias': 'Spare'})
         self.assertEqual(code, 200)
         self.assertEqual({'saved': reply['saved'], 'published': reply['published']},
             {'saved': True, 'published': False})
