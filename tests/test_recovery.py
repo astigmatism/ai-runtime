@@ -103,7 +103,7 @@ class RecoveryTests(unittest.TestCase):
     def test_all_profiles_have_unique_artifact_inventory(self):
         artifacts = model_inventory(ROOT)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
-        # The Strata resident adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all,
+        # The Strata model adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all,
         # and the two-card 3-bit arm adds ISTA-DASLab's GSQ-RCO IQ3_S: two shards, 83,617,662,656 bytes.
         # Both quants are mounted by exactly one configuration each, which is the only reason both are
         # inventory items at all; a pack no configuration runs is a disk problem, not an artifact.

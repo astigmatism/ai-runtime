@@ -50,7 +50,10 @@ ROUTER = 'http://192.168.1.23:11435'
 
 
 def machine(state, profile, arguments):
-    """A host that is serving `profile`, with two names already saved.
+    """A host that is serving `profile`, with a saved name for each model it loads.
+
+    A one-model configuration therefore comes up with one name and `qwen27b-q8-pair` with two: the
+    names belong to models, so how many this machine has to say is a fact about the configuration.
 
     The default host is the four-text-GPU machine with a shared vision card; `--host-json` says which
     machine to pretend to be instead, which is how a second machine's shape gets looked at before it
@@ -88,12 +91,12 @@ def machine(state, profile, arguments):
     controller = Controller(config, state, 'a' * 40, system)
     atomic_json(state / 'active.json', {'revision': controller.revision, 'image': 'sha256:preview',
         'bundle': bundle})
-    # One name for the model in service and one for the second model on the machine, because the point
-    # of a name is that it is said everywhere, and a preview where only one surface has it proves
-    # nothing. They are written before the first publication so the catalog on disk carries them too.
-    named = {bundle['catalog']['models'][0]['model']: 'House standard'}
-    if len(bundle['catalog']['models']) > 1:
-        named[bundle['catalog']['models'][1]['model']] = 'Night owl'
+    # A name for every model this configuration loads — the first, and the second when there is one —
+    # because the point of a name is that it is said everywhere, and a preview where only one surface
+    # has it proves nothing. They are written before the first publication so the catalog on disk
+    # carries them too, and a name given to a model two configurations share is read by both of them.
+    named = {model['model']: name for model, name in
+        zip(bundle['catalog']['models'], ('House standard', 'Night owl'))}
     atomic_json(state / 'aliases.json', {'version': ALIASES_VERSION, 'aliases': named})
     controller.publish(bundle)
     atomic_json(state / 'previous.json', {'revision': 'b' * 40, 'profile': profile, 'bundle': bundle})
@@ -154,7 +157,7 @@ def main():
                 # A look, not a fact — see the module docstring. The controller is serving; this is
                 # the payload the page has to make sense of when it is not.
                 status = web_state.get('status') or {}
-                status.update(ready=False, services=[], offline_roles=['coding', 'everyday'])
+                status.update(ready=False, services=[], offline_services=[])
                 status['service'] = {'serving': False, 'restorable': True, 'pending': True,
                     'profile': bundle['profile']}
                 status['restoration'] = {'attempts': 3, 'reason': 'Model failed to load',

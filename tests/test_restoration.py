@@ -22,6 +22,7 @@ import uuid
 from unittest.mock import patch
 
 import test_controller as fixture
+from models import CODING_Q6K, STRATA_DAISY, STRATA_SOLO
 from runtime.config import read, render
 from runtime.controller import Controller
 from runtime.operations import Operations, OperationError, public_operation
@@ -35,8 +36,8 @@ BOTH = ['qwen38-daytime', 'qwen38-nighttime']
 
 
 class RemoteRouterRestorationTests(unittest.TestCase):
-    # Reuse the fixture, not its tests. Its router reports the real role "primary" and
-    # the configuration separately, as the production router did during the October 21 outage.
+    # Reuse the fixture, not its tests. Its router reports the model it serves and the
+    # configuration separately, as the production router did during the October 21 outage.
     build = publication_fixture.PublisherTests.build
     PROFILE = publication_fixture.PublisherTests.PROFILE
 
@@ -52,10 +53,10 @@ class RemoteRouterRestorationTests(unittest.TestCase):
         self.assertEqual(self.router.drain, {})
         self.assertFalse(self.c.restoration_pending())
 
-    def test_controller_deployment_verifies_configuration_separately_from_model_role(self):
+    def test_controller_deployment_verifies_the_configuration_apart_from_the_models_it_loads(self):
         self.c.revision = 'b' * 40
         result = self.c.transition(deploy=True)
-        self.assertEqual(result['changed_roles'], [])
+        self.assertEqual(result['changed_services'], [])
         self.assertEqual(self.c.load('transaction.json')['phase'], 'succeeded')
         self.assert_serving()
 
@@ -72,9 +73,9 @@ class RemoteRouterRestorationTests(unittest.TestCase):
     def test_lan_migration_verifies_the_requested_binding_and_reopens_both_routers(self):
         self.c.host['backend_address'] = '192.168.1.4'
         result = self.c.transition()
-        self.assertEqual(result['changed_roles'], ['coding'])
+        self.assertEqual(result['changed_services'], [STRATA_SOLO])
         active = self.c.load('active.json')['bundle']
-        name = active['compose']['services']['coding']['container_name']
+        name = active['compose']['services'][STRATA_SOLO]['container_name']
         self.assertEqual(self.system.containers[name]['HostConfig']['PortBindings'],
             {'8080/tcp': [{'HostIp': '192.168.1.4', 'HostPort': '18080'}]})
         self.assertEqual(self.router.catalogs['rosalina']['models'][0]['backend_url'],
@@ -95,7 +96,7 @@ class RemoteRouterRestorationTests(unittest.TestCase):
             self.c.transition()
         self.assertEqual(self.c.load('active.json'), previous)
         self.assertEqual(self.c.load('transaction.json')['phase'], 'recovered')
-        name = previous['bundle']['compose']['services']['coding']['container_name']
+        name = previous['bundle']['compose']['services'][STRATA_SOLO]['container_name']
         self.assertEqual(self.system.containers[name]['HostConfig']['PortBindings'][
             '8080/tcp'][0]['HostIp'], '127.0.0.1')
         self.assert_serving()
@@ -253,17 +254,17 @@ class RestorationTests(unittest.TestCase):
         tx = {'id': str(uuid.uuid4()), 'started_at': '2000-01-01T00:00:00+00:00', 'phase': 'verifying',
             'intent': 'switch', 'previous': self.active,
             'target': {'revision': 'a' * 40, 'image': 'old-image', 'bundle': target},
-            'changed_roles': ['coding'], 'revision': 'a' * 40, 'profile': target_profile,
+            'changed_services': [STRATA_SOLO], 'revision': 'a' * 40, 'profile': target_profile,
             'config_sha256': target['config_sha256'],
             'error': 'Update failed: HTTP Error 503: Service Unavailable; recovery failed: HTTP Error 503: Service Unavailable'}
         atomic_json(self.state / 'transaction.json', tx)
         return tx
 
     def switch_to_other_daytime(self):
-        """The alias the other Daytime launches on, to make one backend of it refuse readiness."""
+        """The alias the other Daytime launch runs under, to make one backend of it refuse readiness."""
         target = render(ROOT / 'config', fixture.HOST, 'qwen27b-q6k-pair')
         self.assertNotEqual(target['config_sha256'], self.bundle['config_sha256'])
-        argv = target['compose']['services']['coding']['command']
+        argv = target['compose']['services'][CODING_Q6K]['command']
         return argv[argv.index('--alias') + 1]
 
     def strand_the_backend(self, drained=True):
@@ -792,7 +793,7 @@ if __name__ == '__main__':
 class OnePairHostRestorationTests(unittest.TestCase):
     """The same promise on a host with one text pair, where one backend is the whole service.
 
-    A second machine is not a Rosalina with two cards taken away. With a single resident running, the
+    A second machine is not a Rosalina with two cards taken away. With a single model running, the
     drain check has no second backend to lean on and the restoration has one container to bring back,
     so the 2026-10-12 failures have to be re-fought on that shape as well -- it is the shape a two-card
     host actually has, and it is the shape the release that first runs there will be restored into.
@@ -810,19 +811,20 @@ class OnePairHostRestorationTests(unittest.TestCase):
         self.state = Path(self.tmp.name)
         self.config = self.state / 'config'
         shutil.copytree(ROOT / 'config', self.config)
-        # Two configurations of this machine, each running alone across its two cards.
+        # Two configurations of this machine, each running alone across its two cards. As a model
+        # that owns every card it loads nothing else, so its list is just itself.
         for name in self.PAIR:
             path = self.config / 'profiles' / (name + '.json')
             definition = read(path)
-            definition.update(hosts=['daisy'], exclusive=True, gpu_group='all')
+            definition.update(hosts=['daisy'], exclusive=True, gpu_group='all', models=[name])
             path.write_text(json.dumps(definition))
         host = copy.deepcopy(self.HOST)
         host['router_state_dir'] = str(self.state / 'router')
         atomic_json(self.state / 'host.json', host)
         (self.state / 'router-token').write_text('synthetic-token')
         self.bundle = render(self.config, host, self.PAIR[0])
-        self.name = self.bundle['compose']['services']['coding']['container_name']
-        self.assertEqual(list(self.bundle['compose']['services']), ['coding'],
+        self.name = self.bundle['compose']['services'][STRATA_SOLO]['container_name']
+        self.assertEqual(list(self.bundle['compose']['services']), [STRATA_SOLO],
             'a host with one text pair runs one backend, which is what these tests are about')
         self.system = fixture.FakeSystem(self.bundle)
         self.c = Controller(self.config, self.state, 'a' * 40, self.system)
@@ -855,12 +857,13 @@ class OnePairHostRestorationTests(unittest.TestCase):
         self.assertTrue(self.c.serving())
         self.assertFalse(self.system.draining, 'the router was left drained with nothing serving')
         self.assertFalse(self.c.restoration_pending())
-        # What the page can honestly say about a host that has no second resident: the role is not
-        # placed, and no service ID is offline, because `nighttime` is not a service of this machine.
+        # What the page can honestly say about a host that has no second model: `nighttime` is not
+        # a service of this machine at all, and the only offline service is the ID another of this
+        # host's configurations offers and the running one does not load the model for.
         status = self.c.status()
         self.assertTrue(status['service']['serving'])
-        self.assertEqual(status['offline_roles'], ['everyday'])
-        self.assertEqual(status['offline_services'], [])
+        self.assertEqual([(x['model'], x['aliases'], x['reason']) for x in status['offline_services']],
+            [(STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
         self.assertEqual(status['host']['text_gpus'], 2)
 
     def test_a_switch_that_never_becomes_healthy_leaves_this_host_serving(self):

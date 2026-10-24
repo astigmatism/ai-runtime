@@ -1,7 +1,6 @@
 {
   "id": "everyday",
   "hosts": ["rosalina"],
-  "role": "everyday",
   "display_name": "Qwen3.8 27B Abliterated Q6_K",
   "draft_on_vision_gpu": true,
   "engine": "qwen38-dual-836d571",
@@ -122,8 +121,7 @@
       }
     },
     "labels": {
-      "local-ai.profile": "primary",
-      "local-ai.role": "everyday"
+      "local-ai.profile": "primary"
     }
   },
   "catalog": {

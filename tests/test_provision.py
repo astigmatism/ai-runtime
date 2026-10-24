@@ -24,6 +24,7 @@ except ModuleNotFoundError:
     # Run as `python3 -m unittest tests.test_provision` from the repository root, the fixtures are
     # reached through the package instead of the tests directory, which is not on the import path.
     from tests import test_controller as fixture
+from models import STRATA_SOLO
 from runtime.config import read, render
 from runtime.controller import Controller
 from runtime.provision import (PROJECT, matching, measurement, ready_files, throwaway, workspace_ready,
@@ -69,8 +70,7 @@ class ProvisioningSystem(fixture.FakeSystem):
             self.events.append(('docker', args))
             spec = read(args[args.index('-f') + 1])
             if 'up' in args:
-                role = args[-1]
-                service = spec['services'][role]
+                service = spec['services'][args[-1]]
                 # The daemon's own rule, learned from the failure it produced on 2026-10-20: a bind
                 # whose source is missing refuses the container, and the message names the path without
                 # saying who was expected to create it. Only the workspace bind is checked, because the
@@ -143,8 +143,12 @@ class ProvisionTests(unittest.TestCase):
         atomic_json(self.state / 'active.json',
             {'revision': 'a' * 40, 'image': 'old-image', 'bundle': self.serving})
         self.bundle = render(fixture.ROOT / 'config', host, PROFILE)
-        self.workspace = workspace_target(self.bundle['compose']['services']['coding'],
-            self.c.provisioning(self.bundle)[2])
+        # Provisioning is a property of one service -- the one whose engine builds its own state -- and
+        # a service is filed under the model it loads. The workspace comes from that service's own
+        # bind; nothing here follows the container name, which stays `qwen38-daytime` however the
+        # model on those cards is named.
+        self.service, _, self.provision = self.c.provisioning(self.bundle)
+        self.workspace = workspace_target(self.bundle['compose']['services'][self.service], self.provision)
         # The tool's polls and the switch's waits share the time module, so this is one patch:
         # the side effect plays the engine packing the workspace a couple of polls in, and the
         # call record doubles as the switch's wait clock, whose readiness cadence the tests
@@ -269,18 +273,18 @@ class ProvisionTests(unittest.TestCase):
         says on its entry that it runs as its image's user, and that grant is stated rather than
         assumed — the other engines keep the unprivileged house user they have always had.
         """
-        cfg = self.bundle['compose']['services']['coding']
+        cfg = self.bundle['compose']['services'][STRATA_SOLO]
         self.assertNotIn('user', cfg)
         for service in self.serving['compose']['services'].values():
             self.assertEqual(service['user'], f"{self.HOST['uid']}:{self.HOST['gid']}")
 
-    def test_the_resident_asks_for_the_quant_its_files_are(self):
+    def test_the_model_asks_for_the_quant_its_files_are(self):
         """The staged files are Unsloth's UD-IQ4_XS; naming the other family makes the engine refuse.
 
         This is not a style point: with the wrong family the engine stops at its second step saying
         the quant does not exist, which reads as a slow model and cost a whole idle window.
         """
-        environment = self.bundle['compose']['services']['coding']['environment']
+        environment = self.bundle['compose']['services'][STRATA_SOLO]['environment']
         self.assertEqual(environment['FAMILY'], 'unsloth')
         self.assertEqual(environment['MODEL'], 'UD-IQ4_XS')
 
@@ -341,10 +345,12 @@ class ProvisionTests(unittest.TestCase):
 
     def test_the_throwaway_project_asks_for_the_same_machine_the_switch_would(self):
         """Anything less and the measurement is about a different container than the one to come."""
-        cfg = self.bundle['compose']['services']['coding']
-        spec = throwaway(self.bundle, 'coding', cfg['container_name'] + '-provision', 18081)
-        service = spec['services']['coding']
-        self.assertEqual(list(spec['services']), ['coding'])
+        cfg = self.bundle['compose']['services'][STRATA_SOLO]
+        spec = throwaway(self.bundle, STRATA_SOLO, cfg['container_name'] + '-provision', 18081)
+        service = spec['services'][STRATA_SOLO]
+        # One service, filed under the model it loads: the throwaway measures the launch the switch
+        # would start, and a launch is named by what it loads.
+        self.assertEqual(list(spec['services']), [STRATA_SOLO])
         self.assertEqual(spec['name'], 'ai-runtime-provision')
         self.assertEqual(service['container_name'], 'qwen38-daytime-provision')
         self.assertEqual(service['ports'], ['127.0.0.1:18081:8080'])
@@ -556,7 +562,7 @@ class ProvisionTests(unittest.TestCase):
         self.system.slot_context = 131072
         with self.assertRaisesRegex(RuntimeError,
                 r'slot window.*"reported_context": \[131072\].*"loaded": true'):
-            self.c.reconcile(self.bundle, ['coding'])
+            self.c.reconcile(self.bundle, [STRATA_SOLO])
         # No readiness wait on a fault: the loop never ran on its own cadence.
         self.assertFalse(any(call.args == (15,) for call in self.controller_sleeps.call_args_list))
 
@@ -826,7 +832,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
             self.start(device=None, extra={'VISION': 'no', 'SAMPLING': 'off'}).stdout)
 
     def test_a_preset_this_entry_point_does_not_know_fails_the_boot(self):
-        # The engine refuses to start on a sampling value it does not understand, and this resident is
+        # The engine refuses to start on a sampling value it does not understand, and this model is
         # exclusive, so a name outside the table fails here rather than after the drain -- and it
         # fails without touching the file, so the boot that follows is the one that was already there.
         self.given({'model': 'UD-IQ4_XS', 'sampling': {'temperature': 0.6}})
@@ -867,7 +873,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
     def test_tool_call_recovery_on_writes_the_boolean_the_engine_reads(self):
         # serve/server.py reads the run config's top-level key and raises SystemExit unless it is a
         # JSON boolean, so what this writes is `true` and not "true": a string the engine will not read
-        # is nothing serving, on the one resident that is exclusive.
+        # is nothing serving, on the one model that is exclusive.
         self.given({'model': 'UD-IQ4_XS', 'context': 163840, 'allowed_hosts': ['qwen38-daytime']})
         run = self.start(device=None, extra={'VISION': 'no', 'TOOL_CALL_RECOVERY': 'on'})
         cfg = json.loads(self.config.read_text())
@@ -939,7 +945,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         # The window a profile states is rendered into the catalog, shown in the portal, and verified
         # against the engine's own /slots before the switch is allowed to publish it. So the number in
         # this file has to be the number the engine boots on, and a file that keeps the window the
-        # workspace was born with is a resident refused for reporting another context -- after the
+        # workspace was born with is a model refused for reporting another context -- after the
         # drain, which is the expensive place to discover it.
         self.given({'model': 'UD-IQ4_XS', 'context': 163840,
             'args': ['--serve', '--model', '/weights/shard-00001-of-00003.gguf', '--max-context',
@@ -949,7 +955,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         self.assertEqual(args.count('--max-context'), 1)
         self.assertEqual(args[args.index('--max-context') + 1], '196608')
         # Every other argument the engine is started from goes back exactly as it was read: the window
-        # is the one thing this boot was told to change, and a resident that lost --kv-resident on the
+        # is the one thing this boot was told to change, and a launch that lost --kv-resident on the
         # way would pay for it in VRAM it no longer has.
         self.assertEqual([a for a in args if a.startswith('--') and a != '--max-context'],
             ['--serve', '--model', '--kv', '--kv-resident'])
@@ -1002,7 +1008,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
 
     def test_a_window_that_is_not_a_token_count_fails_the_boot_before_the_file(self):
         # A window the engine cannot parse is nothing serving, and a window quietly dropped is a
-        # resident refused after the drain for a context nobody asked for. Either way the boot does
+        # model refused after the drain for a context nobody asked for. Either way the boot does
         # not happen, and it does not happen with the workspace left as it was.
         self.given({'model': 'UD-IQ4_XS', 'args': ['--serve', '--max-context', '163840']})
         before = self.config.read_text()

@@ -142,10 +142,10 @@ function modelNode(model, {service, index = 0, state, detail, tag} = {}) {
   const left = node('div');
   add(card, left);
   add(left,
-    node('p', '', 'role'),
+    node('p', '', 'ids'),
     node('p', '', 'name'),
     node('p', '', 'alias'));
-  card.querySelector('.role').textContent = (model?.service_ids || []).join(' · ') || 'no service ID';
+  card.querySelector('.ids').textContent = (model?.service_ids || []).join(' · ') || 'no service ID';
   card.querySelector('.name').textContent = model ? nameOf(model) : 'Nothing';
   card.querySelector('.alias').textContent = detail || '';
   add(card, node('span', state || 'Unavailable', 'state'));
@@ -220,9 +220,9 @@ function renderPreview() {
   if (!show) return;
   el('preview-name').textContent = titleOf(target);
   const before = placementNow(), after = placementOf(target);
-  const residents = el('preview-models'), board = el('preview-gpus');
-  residents.replaceChildren(); board.replaceChildren();
-  modelsOf(target).forEach((model, index) => add(residents,
+  const listing = el('preview-models'), board = el('preview-gpus');
+  listing.replaceChildren(); board.replaceChildren();
+  modelsOf(target).forEach((model, index) => add(listing,
     modelNode(model, {index, state: 'Would load', detail: details(model)})));
   // A model running now that the target does not name is drawn in the same shape as the models it
   // would load, in the colour it has while it runs: what a switch stops is the part of the cost the
@@ -234,7 +234,7 @@ function renderPreview() {
     const ids = model.service_ids || [];
     const taken_by = ids.filter(id => answeredBy(target, id));
     const unanswered = ids.filter(id => !answeredBy(target, id));
-    add(residents, modelNode(model, {index: indexFor(status.profile, service.model), state: 'Stops',
+    add(listing, modelNode(model, {index: indexFor(status.profile, service.model), state: 'Stops',
       detail: [unanswered.length ? `nothing would answer ${unanswered.join(', ')}` : '',
         taken_by.length ? `${taken_by.join(', ')} answered by a model this configuration names` : '']
         .filter(Boolean).join(' · ') || 'no service IDs'}));
@@ -299,14 +299,19 @@ function rowOf(config) {
   for (const [label, value, model] of rows) {
     const line = add(node('p', '', 'row'), node('span', label), node('span', value));
     if (model) {
-      if (model.alias) add(line, node('span', 'Renamed', 'pill'));
+      // The name's own two controls are one column at the right of the line, not two loose elements:
+      // the line wraps when a model's name and cards are long, and a control centred against a
+      // three-line sentence reads as part of it.
+      const controls = add(node('span', '', 'controls'));
+      if (model.alias) add(controls, node('span', 'Renamed', 'pill'));
       const name = editingKey(config.profile, model.model);
       const rename = node('button', editing === name ? 'Close' : 'Rename', 'ghost tiny');
       rename.type = 'button';
       rename.addEventListener('click', () => {
         editing = editing === name ? null : name; aliasError = ''; aliasDraft = model.alias || ''; render();
       });
-      add(line, rename);
+      add(controls, rename);
+      add(line, controls);
       if (editing === name) add(body, editor(config, model));
     }
     add(body, line);
@@ -367,7 +372,7 @@ function switchImpact(target) {
 }
 function renderRegistry() {
   const configs = configurations();
-  const signature = JSON.stringify([configs, registry().always_included, editing, aliasDraft, aliasError,
+  const signature = JSON.stringify([configs, editing, aliasDraft, aliasError,
     running() ? operation.target_profile : null, status?.profile, selected, connected]);
   if (signature !== registrySignature) {
     registrySignature = signature;

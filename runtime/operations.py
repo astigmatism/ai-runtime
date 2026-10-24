@@ -4,7 +4,7 @@ import re
 import threading
 import uuid
 
-from .config import (CONFIGURATIONS, configurations_for, everyday_for, is_exclusive, read,
+from .config import (CONFIGURATIONS, configurations_for, model_id, models_of, read,
     resolve_profile)
 from .controller import PENDING_PHASES
 from .system import lock, now
@@ -15,14 +15,11 @@ PENDING = PENDING_PHASES
 MESSAGES = {
     'checking': 'Checking the configuration, model files, and runtime.',
     'draining': 'Waiting for existing requests to finish. New requests are paused.',
-    'loading': 'Loading the selected model. The Everyday resident stays loaded; new requests remain paused.',
-    'loading-stops-everyday': ('Stopping the Everyday resident, then loading the selected model across '
-        "every text GPU this host has; new requests remain paused."),
-    'loading-starts-everyday': ('Loading the selected model, then starting the Everyday resident again; new '
+    # One message, because a switch does one thing whatever the two configurations are: it loads the
+    # models the selected configuration names and stops the ones it does not. Which models those are
+    # is said below it, per switch, rather than being baked into five sentences about roles.
+    'loading': ('Loading the models of the selected configuration; anything it does not name stops. New '
         'requests remain paused.'),
-    'loading-everyday-off': 'Loading the selected model. The Everyday resident stays off; new requests remain paused.',
-    'loading-changes-everyday': ('Restarting the Everyday resident with the selected variant, and the model '
-        'beside it if that changed; new requests remain paused.'),
     'verifying': 'Checking generation and model discovery before reopening requests.',
     'restoring': 'The switch did not complete. Restoring the previous configuration.',
     'succeeded': 'The selected configuration is ready. Requests are open.',
@@ -42,7 +39,7 @@ MESSAGES = {
         'transaction, and the button runs the same restoration again.'),
 }
 PUBLIC_FIELDS = ('id', 'kind', 'trigger', 'from_profile', 'target_profile', 'revision', 'status', 'phase',
-                 'started_at', 'updated_at', 'finished_at', 'error_code', 'already_active')
+                 'started_at', 'updated_at', 'finished_at', 'error_code', 'already_active', 'stops_models')
 
 
 def public_operation(operation):
@@ -50,15 +47,16 @@ def public_operation(operation):
         return None
     result = {k: operation[k] for k in PUBLIC_FIELDS if k in operation}
     key = operation.get('error_code') or (operation['phase'] if operation['status'] == 'running' else operation['status'])
-    if key == 'loading' and operation.get('everyday') in ('stops', 'starts', 'off', 'changes'):
-        key = {'stops': 'loading-stops-everyday', 'starts': 'loading-starts-everyday',
-            'off': 'loading-everyday-off', 'changes': 'loading-changes-everyday'}[operation['everyday']]
     if operation.get('kind') == 'restore':
         # A restoration is a different promise from a switch, so it is described in its own words
         # even when it ends in a phase a switch would also have used.
         named = 'restore-' + (operation['phase'] if operation['status'] == 'running' else operation['status'])
         key = named if named in MESSAGES else key
-    result['message'] = MESSAGES.get(key, MESSAGES.get(operation['status'], 'Runtime status unavailable.'))
+    message = MESSAGES.get(key, MESSAGES.get(operation['status'], 'Runtime status unavailable.'))
+    stopping = operation.get('stops_models') or []
+    if key == 'loading' and stopping:
+        message += ' Stops: ' + ', '.join(stopping) + '.'
+    result['message'] = message
     return result
 
 
@@ -157,15 +155,16 @@ class Operations:
                         or self.controller.revision != request['expected_revision']
                         or active.get('bundle', {}).get('profile') != expected):
                     raise OperationError(409, 'stale-selection', 'The active profile or revision changed. Refresh before switching.')
-                # What the switch does to the second resident, so progress says it truthfully: a solo
-                # configuration stops it, and leaving one starts it again.
-                definitions = [read(self.controller.config_dir / 'profiles' / (name + '.json'))
-                    for name in (expected, profile)]
-                solo = [is_exclusive(definition) for definition in definitions]
-                everyday = {(False, False): 'stays', (False, True): 'stops', (True, False): 'starts', (True, True): 'off'}[tuple(solo)]
-                if everyday == 'stays' and everyday_for(definitions[0]) != everyday_for(definitions[1]):
-                    everyday = 'changes'
-                operation = {'id': request['request_id'], 'request': dict(request), 'everyday': everyday,
+                # What the switch stops, recorded before anything is drained: the models running now
+                # that the target does not name. A switch runs the models its configuration names and
+                # nothing else, so this list is the whole cost of the switch, and it is worth saying
+                # by model because "some of what is loaded goes away" is not an estimate.
+                named = {model_id(model) for model in models_of(self.controller.config_dir,
+                    read(self.controller.config_dir / 'profiles' / (profile + '.json')))}
+                operation = {'id': request['request_id'], 'request': dict(request),
+                    'stops_models': [model for model in
+                        (active.get('bundle', {}).get('compose', {}).get('services') or {})
+                        if model not in named],
                     'from_profile': expected, 'target_profile': profile,
                     'revision': request['expected_revision'], 'status': 'running', 'phase': 'checking', 'started_at': now()}
                 self.save(operation)
@@ -326,7 +325,7 @@ class Operations:
             if not c.status()['ready']:
                 raise RuntimeError('Runtime is no longer ready')
             result = c._transition_locked(operation['target_profile'], operation_id=operation['id'],
-                progress=progress, keep_everyday=True)
+                progress=progress)
             operation['already_active'] = result.get('already_active', False)
             self.publish_status(c.status())
             self.complete(operation, 'succeeded')

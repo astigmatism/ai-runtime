@@ -38,14 +38,18 @@ def listed(config_dir, host=None, aliases=None):
     container CLI consumers, and the status page can never disagree. With a host, the registry is
     that host's: a configuration of another machine is not a thing this host supports."""
     registry = available_profiles(config_dir, host, aliases)
-    second = registry['always_included']
-    # `always_included` is empty on a host whose every configuration runs alone; the listing has to
-    # say that rather than reach for a second resident that no configuration loads.
-    rows = ['primary: the selected configuration' +
-        (f" + {second[0]['display_name']}" if second else ' (no second resident in any configuration)')]
-    rows += [describe(entry, ' (owns every text GPU of this host; runs without a second resident)'
-        if entry['exclusive'] else '') for entry in registry['selectable']]
-    rows += [describe(entry, ' (the second resident a paired configuration loads beside it)') for entry in second]
+    # Each configuration is listed with the models it loads, indented under it, because that is what
+    # it is. `list` is the command an operator runs to ask what this machine could be doing, and the
+    # answer is models per configuration -- one, two, or as many as its cards hold -- not a
+    # configuration with a footnote about whatever runs beside it.
+    rows = []
+    for entry in registry['selectable']:
+        rows.append(describe(entry))
+        for model in entry['models']:
+            rows.append('    %s · %s · %s' % (model['display_name'],
+                'every text GPU of this host' if model['exclusive']
+                else ' + '.join(model['gpu_names']) or 'cards unknown',
+                ', '.join(model['service_ids']) or 'no service ID'))
     return '\n'.join(rows)
 
 

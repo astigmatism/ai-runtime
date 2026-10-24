@@ -19,6 +19,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
+from models import STRATA_SOLO
 from runtime.config import read, render
 from runtime.controller import Controller
 from runtime.system import atomic_json
@@ -381,7 +382,8 @@ class PublisherTests(unittest.TestCase):
         # router" stops being an expected transition and becomes a publication that would serve
         # nothing — which is exactly the moment it should stop being a warning.
         controller = self.build(host_changes={'backend_address': '192.168.1.4'})
-        allowed = self.bundle['compose']['services']['coding']['environment']['STRATA_ALLOWED_HOSTS'].split(',')
+        allowed = self.bundle['compose']['services'][STRATA_SOLO]['environment'][
+            'STRATA_ALLOWED_HOSTS'].split(',')
         self.assertIn('192.168.1.4', allowed)
         self.assertIn('qwen38-daytime', allowed)
         self.assertNotIn('*', allowed)

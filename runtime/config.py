@@ -2,14 +2,15 @@
 
 Three words carry the whole model, and none of them is a time of day:
 
-* a **configuration** is one selectable set of launch definitions -- what this module used to call a
-  "Daytime profile", because it named the resident that happened to be loaded on the first GPU pair;
-* a **resident** is one model a configuration keeps loaded, identified by its `role` (`coding`,
-  `everyday`), which is also its Compose service key. Two configurations load two residents on two
-  GPU pairs; one loads a single resident across all four;
+* a **configuration** is one selectable decision: the models this machine loads and the cards they
+  load on. It names them in its own `models` list, and how many there are is a fact about that file;
+* a **model** is one thing loaded on one set of cards, identified by the id a client routes on
+  (`qwen3.8-27b-q8_0-tensor-next`), which is also its Compose service key. One model on two cards, one
+  model across all four, and two models with the cards divided between them are three configurations,
+  not three kinds of anything;
 * a **service ID** is the name a client sends. It belongs to the LLM Router contract, not to this
   vocabulary: `daytime` and `nighttime` are service IDs, and a configuration may point any of them at
-  whichever residents it actually runs. `nighttime` answering from the same backend as `daytime` is a
+  whichever models it actually runs. `nighttime` answering from the same backend as `daytime` is a
   placement fact, not a contradiction.
 
 GPU group keys in `.state/host.json` (`gpu_ids`, `gpu_names`, `cuda_order`), the shared vision GPU
@@ -30,9 +31,9 @@ import os
 import re
 from pathlib import Path
 
-# Selectable configurations. A paired configuration runs its own resident beside the Everyday
-# resident; a solo configuration holds every text GPU and runs the Everyday resident's service ID from
-# its own backend instead. Display names come from each profile file.
+# Selectable configurations. Each one names the models it loads in its own `models` list: a
+# configuration with two entries runs two models on two GPU pairs, one with `exclusive: true` holds
+# every text GPU and loads nothing beside it. Display names come from each profile file.
 #
 # This is the whole registry of the revision, which is not the same thing as what any one machine can
 # select: read configurations_for(host) for that, and read this only when the question is "does this
@@ -84,20 +85,16 @@ RETIRED_PROFILES = {
 }
 # Renamed configurations: old id -> new id. Resolved by render() before a file is read, accepted by
 # update.target_profiles() so a rename cannot refuse its own release, and honoured by the home
-# wrappers and the status page. Because Compose services are keyed by role and the canonical model id
-# is the model alias, a rename launches byte-identical backends; tests/fixtures/renamed-profiles.json
+# wrappers and the status page. Because Compose services are keyed by the model id, and the canonical
+# model id is the model alias, a rename launches byte-identical backends; tests/fixtures/renamed-profiles.json
 # is what proves it, and it is the reason a rename is a naming change and not a redeploy.
 PROFILE_ALIASES = {
     'qwen27b-q8-with-nighttime': 'qwen27b-q8-pair',
     'qwen27b-q6k-with-nighttime': 'qwen27b-q6k-pair',
 }
-# The second resident: the model a paired configuration loads on the other GPU pair.
-EVERYDAY_PROFILE = 'everyday'
-# Everyday-resident variants a paired configuration may name with "everyday"; EVERYDAY_PROFILE is the
-# default.
-EVERYDAY_PROFILES = ('everyday',)
 PAIR_GROUPS = ('daytime', 'nighttime')
-# A solo configuration reserves both text pairs, in this order, and runs no second resident.
+# The GPU group an exclusive model reserves: every text GPU this host declares, in this order, with
+# nothing else loaded to share them.
 EXCLUSIVE_GROUP = 'all'
 GPU_UUID = r'GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
 # LLM Router's resident-catalog ceiling (RESIDENT_CONTEXT_LIMIT in the router's model-catalog.js;
@@ -254,7 +251,7 @@ def require_engine_architecture(name, host, engine):
 
     An engine built for another architecture is not a slow start: the container loads, answers the
     health check its own entry point writes, and dies at its first kernel launch -- for an exclusive
-    resident that is nothing serving, after the drain. Checked against what the engine entry states
+    model is nothing serving, after the drain. Checked against what the engine entry states
     it was built for, which is the same declaration a person reads to decide what to build.
     """
     built = tuple(str(arch) for arch in engine.get('cuda_architectures', []))
@@ -390,15 +387,8 @@ def nameable_models(config_dir, host=None):
     and a model is the thing a person, a client, and a router all refer to. A model two configurations
     share gets one name, said the same way whichever of them is loaded.
     """
-    config_dir = Path(config_dir)
-    shared = read(config_dir / 'shared.json')
-    found = {}
-    for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS):
-        definition = read(config_dir / 'profiles' / (name + '.json'))
-        if not belongs_to_host(definition, host):
-            continue
-        found.setdefault(model_id(definition), []).append(name)
-    return {model: sorted(where) for model, where in found.items()}
+    return {model: summary['configurations']
+        for model, summary in registry_summaries(config_dir, host).items()}
 
 
 def clean_alias(model, value, nameable=None):
@@ -458,8 +448,8 @@ def catalog_names(config_dir, host=None, aliases=None):
     a machine that comes back from a failed switch would otherwise republish a name it stopped using
     and stay that way, since publication is an event and a stale-but-successful record is not retried.
     """
-    return {summary['model']: summary['display_name']
-        for summary in registry_summaries(config_dir, host, aliases)}
+    return {model: summary['display_name']
+        for model, summary in registry_summaries(config_dir, host, aliases).items()}
 
 
 def registry_summaries(config_dir, host=None, aliases=None):
@@ -470,13 +460,15 @@ def registry_summaries(config_dir, host=None, aliases=None):
     """
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
-    summaries = []
-    for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS):
+    models = {}
+    for name in configurations_for(config_dir, host):
         definition = read(config_dir / 'profiles' / (name + '.json'))
-        if not belongs_to_host(definition, host):
-            continue
-        summaries.append(profile_summary(config_dir, name, shared, host, aliases))
-    return summaries
+        for model in models_of(config_dir, definition):
+            entry = models.setdefault(model_id(model), {'configurations': [], 'definition': model})
+            entry['configurations'].append(name)
+    return {model_id(entry['definition']): {**model_summary(config_dir, entry['definition'], shared, host,
+            aliases), 'configurations': sorted(entry['configurations'])}
+        for entry in models.values()}
 
 
 def digest(value):
@@ -488,20 +480,24 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def service_engine(bundle, role):
+def service_engine(bundle, service):
     """Read both current per-service pins and previous single-engine release state."""
     manifest = bundle['manifest']
-    service = next(s for s in manifest['services'] if s['role'] == role)
-    return service.get('engine') or manifest['engine']
+    entry = next(s for s in manifest['services'] if s['service'] == service)
+    return entry.get('engine') or manifest['engine']
 
 
 def is_exclusive(definition):
-    """A solo configuration owns every text GPU this host declares; no second resident runs beside it."""
+    """Whether this model owns every text GPU this host declares.
+
+    It is a fact about one model and its memory, not about a configuration: a model that needs the
+    whole machine cannot share it, and the configuration that loads it loads nothing else.
+    """
     exclusive = definition.get('exclusive', False)
     require(exclusive is True or exclusive is False, definition['id'] + ': exclusive must be true or false')
     if exclusive:
-        require(definition['role'] == 'coding' and definition['gpu_group'] == EXCLUSIVE_GROUP,
-            definition['id'] + ': a solo configuration is a coding configuration on the "all" GPU group')
+        require(definition['gpu_group'] == EXCLUSIVE_GROUP,
+            definition['id'] + ': an exclusive model must name the "' + EXCLUSIVE_GROUP + '" GPU group')
     else:
         require(definition['gpu_group'] in PAIR_GROUPS, definition['id'] + ': unknown GPU group')
     return exclusive
@@ -561,13 +557,15 @@ def gpu_names(host, definition):
     return [name for group in groups for name in names.get(group, [])]
 
 
-def everyday_for(definition):
-    """The resident a paired configuration loads on the other GPU pair beside its own."""
-    name = definition.get('everyday', EVERYDAY_PROFILE)
-    require(name in EVERYDAY_PROFILES, definition['id'] + ': unknown everyday resident profile ' + str(name))
-    require(not is_exclusive(definition) or 'everyday' not in definition,
-        definition['id'] + ': a solo configuration runs no second resident')
-    return name
+def service_key(definition):
+    """The key this model's Compose service and manifest entry are filed under.
+
+    It is the model id, because a launch is identified by what it loads: two models on one machine are
+    two services, and a machine that later loads a different model has a different service rather than
+    the same slot refilled. Container names, ports and GPU reservations come from the profile and are
+    unaffected by any of this.
+    """
+    return model_id(definition)
 
 
 def vision_devices(host, group, options, draft_on_vision=False):
@@ -608,7 +606,7 @@ def vision_devices(host, group, options, draft_on_vision=False):
 def exclusive_devices(host, options, text):
     """CUDA order for a solo configuration: the four text GPUs, then the vision GPU.
 
-    No second resident is running, so the vision GPU is not shared: it carries the projector and
+    Nothing else is loaded to share the vision GPU, so it carries the projector and
     may also carry the MTP draft. The language model itself stays on the four text GPUs.
     """
     vision = host.get('vision_gpu_id')
@@ -702,7 +700,7 @@ def engine_sampling_preset(name, engine, options):
     never writes the run config's optional sampling block, so the only way a routed client that
     omits sampling gets anything else is a preset the profile states and this house's entry point
     writes into that config on every start. A preset is a name and not a set of numbers, because the
-    engine refuses to start on a sampling value it does not understand, and for an exclusive resident
+    engine refuses to start on a sampling value it does not understand, and for an exclusive model
     a config it refuses is nothing serving; the numbers behind the names live in the entry point,
     next to the code that writes them. An engine whose image runs upstream's entry point has no map
     entry for this argument at all, and such a profile is refused here rather than rendered into a
@@ -727,7 +725,7 @@ def engine_tool_call_recovery(name, engine, options):
     never writes it - so the only way this house's agent gets the other answer is a switch the profile
     states and this house's entry point writes on every start. And the value is one of two words
     rather than anything a profile can think of, because serve/server.py raises SystemExit unless that
-    key is a JSON boolean: for an exclusive resident, a value the engine will not read is nothing
+    key is a JSON boolean: for an exclusive model, a value the engine will not read is nothing
     serving. An engine whose image runs upstream's entry point maps this argument to no variable at
     all, and a profile that states it there is refused when it renders.
     """
@@ -754,7 +752,7 @@ def engine_conversation_cache(name, engine, options):
     Slots and minimum tokens refine a cache that is on and are refused on one that is off, where they
     are a statement about nothing; unstated, the entry point writes the engine's own defaults, so an
     older profile's number cannot survive a switch in silence. Checked here rather than at boot for
-    the standing reason: an exclusive resident whose engine refuses to start is nothing serving, and
+    the standing reason: an exclusive model whose engine refuses to start is nothing serving, and
     a drain already spent cannot be unspent.
     """
     if engine['environment'].get('--conversation-cache-mib') is None:
@@ -834,7 +832,7 @@ def engine_rope_scaling(name, engine, options, context_tokens):
     cannot survive a switch back to its 256K sibling in silence), and the engine fixes the ring at
     startup because cached keys are post-RoPE. Checked here rather than at boot for the standing
     reason: yarn without a scale, or a scale that is not a positive number, or a yarn window that does
-    not exceed the trained one, is an engine that refuses to start -- and for an exclusive resident
+    not exceed the trained one, is an engine that refuses to start -- and for an exclusive model
     that is nothing serving on a drain already spent. A float validator lives here now too, because
     --rope-scale is the first decimal the house states and every other argument is an integer.
     """
@@ -910,9 +908,9 @@ CONTAINER_CONTRACT = ('pull_policy', 'entrypoint', 'restart', 'read_only', 'init
     'healthcheck', 'logging')
 
 
-def require_container_contract(role, cfg):
+def require_container_contract(service, cfg):
     missing = [key for key in CONTAINER_CONTRACT if cfg.get(key) is None]
-    require(not missing, 'Service {} is missing container settings: {}'.format(role, ', '.join(missing)))
+    require(not missing, 'Service {} is missing container settings: {}'.format(service, ', '.join(missing)))
 
 
 def environment_service(name, definition, engine, shared, host, root, ctx, slots, exclusive,
@@ -1105,22 +1103,21 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
     # environment, so it is only merged for the engines that actually receive it.
     options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
         else dict(definition['arguments'])
-    # Resolved for a solo configuration too, and then dropped: naming a second resident you will
-    # never load is a configuration lying about what it launches, and everyday_for refuses it.
-    second = everyday_for(definition) if definition['role'] == 'coding' else None
-    return {'profile': definition['id'], 'role': definition['role'],
-        'models': [model_summary(config_dir, model, shared, host, aliases)
-            for model in models_of(config_dir, definition)],
+    models = [model_summary(config_dir, model, shared, host, aliases)
+        for model in models_of(config_dir, definition)]
+    return {'profile': definition['id'],
+        'models': models,
+        'service_ids': sorted({sid for model in models for sid in model['service_ids']}),
         'display_name': display_name(definition, aliases), 'default_name': default_name(definition),
         **({'alias': aliases[model_id(definition)]}
             if (aliases or {}).get(model_id(definition)) else {}),
         'model': model_id(definition), 'context_tokens': tokens, 'engine': definition['engine'],
         'engine_tag': engine['tag'], 'backend_revision': engine['revision'],
         'gpu_group': definition['gpu_group'], 'gpu_names': gpu_names(host, definition),
-        # The service IDs a client sends to reach this resident. Listed for every configuration,
-        # including the ones not running, because "what would answer" is a different question from
-        # "what is loaded" and the status page has to be able to tell them apart.
-        'service_ids': sorted(definition['catalog'].get('aliases', [])),
+        # The service IDs of the model this configuration is named after. `service_ids` above is the
+        # whole configuration; this is the one half of it, and both are published because "what would
+        # answer" is a different question from "what is loaded" and neither answers the other.
+        'model_service_ids': sorted(definition['catalog'].get('aliases', [])),
         # Whether a switch to this configuration would put anything on the shared vision card, which
         # is what the page needs to draw that card's owner before the switch happens. Declared twice
         # on purpose, the way `render` reads it: a llama.cpp profile says so by shipping a projector,
@@ -1129,12 +1126,11 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
         'vision_gpu': bool(host and host.get('vision_gpu_id') and (
             options.get('--mmproj') or 'image' in definition['catalog'].get('input_modalities', []))),
         'exclusive': is_exclusive(definition), 'parallel_slots': definition.get('parallel_slots', 1),
-        **({'everyday': second} if second is not None and not is_exclusive(definition) else {}),
         **({'variant_label': definition['variant_label']} if definition.get('variant_label') else {})}
 
 
 def available_profiles(config_dir, host=None, aliases=None):
-    """The configurations this host can select, plus the second resident a paired one loads.
+    """The configurations this host can select, each with the models it loads.
 
     The host is not a display nicety. A row on the status page is read as a decision the operator
     could make, and on a machine with one GPU pair the configurations of a four-GPU machine are not
@@ -1145,41 +1141,45 @@ def available_profiles(config_dir, host=None, aliases=None):
     config_dir = Path(config_dir)
     shared = read(config_dir / 'shared.json')
     require(shared['schema_version'] == 2, 'Unsupported configuration version')
-    definitions = {}
-    def describe(name):
-        definitions[name] = read(config_dir / 'profiles' / (name + '.json'))
-        return profile_summary(config_dir, name, shared, host, aliases)
-    residents = {name: describe(name) for name in (*EVERYDAY_PROFILES, *CONFIGURATIONS)}
-    offered = {name for name, definition in definitions.items() if belongs_to_host(definition, host)}
-    selectable = [residents[name] for name in CONFIGURATIONS if name in offered]
-    for entry in selectable:
-        # What a client can ask for while this configuration is selected. For a paired configuration
-        # that is the two residents together: `nighttime` is answered by the second one, and a page
-        # that read only the first resident's aliases would report a service as missing while it was
-        # answering. A second resident this host does not run is not an alias it answers either.
-        second = residents.get(entry.get('everyday'))
-        if second and entry.get('everyday') in offered:
-            entry['service_ids'] = sorted(set(entry['service_ids']) | set(second['service_ids']))
-    used = {entry['everyday'] for entry in selectable if 'everyday' in entry}
-    return {'selectable': selectable,
-        # A second resident is listed because some configuration this host offers loads it. The
-        # Everyday resident being in the registry is not that: on a host whose every configuration
-        # runs alone, naming one would have the CLI and the page describe a resident nothing starts.
-        'always_included': [residents[name] for name in EVERYDAY_PROFILES if name in used]}
+    return {'selectable': [profile_summary(config_dir, name, shared, host, aliases)
+        for name in configurations_for(config_dir, host)]}
 
 
 def models_of(config_dir, definition):
-    """The models a configuration loads.
+    """The models a configuration loads, in the order it names them.
 
-    A configuration is a placement decision, and the only thing worth saying about its models is which
-    ones they are: one model on two cards, one model on every card, or several models with the cards
-    divided between them. Nothing here says how many there are supposed to be.
+    A configuration is the decision about which models run on this machine and which of its cards they
+    run on, so it says so in one list: one entry for a machine that runs one model, two or more when
+    the cards are divided between them. Nothing in this function knows what a configuration is
+    *supposed* to load -- there is no default second half of a pair, and a file that names one model
+    means one model.
+
+    A profile with no list is a model on its own, which is what the files named by a list are.
     """
     config_dir = Path(config_dir)
-    found = [definition]
-    second = everyday_for(definition) if definition['role'] == 'coding' else None
-    if second is not None and not is_exclusive(definition):
-        found.append(read(config_dir / 'profiles' / (second + '.json')))
+    names = definition.get('models')
+    if names is None:
+        require(definition['id'] not in CONFIGURATIONS, definition['id']
+            + ': a configuration must name the models it loads ("models": ["…"])')
+        return [definition]
+    require(isinstance(names, list) and names and all(isinstance(n, str) and n.strip() for n in names),
+        definition['id'] + ': "models" must be a non-empty list of profile ids')
+    require(len(set(names)) == len(names), definition['id'] + ': loads '
+        + ', '.join(sorted(n for n in names if list(names).count(n) > 1)) + ' twice')
+    require(definition['id'] in names, definition['id'] + ': a configuration must name itself among the '
+        'models it loads -- this file is both the decision and one of the things decided')
+    found = []
+    for name in names:
+        model = read(config_dir / 'profiles' / (name + '.json'))
+        require(model.get('id') == name, name + ': profile file id differs from its filename')
+        if name != definition['id']:
+            require('models' not in model, name + ' is a configuration and cannot be loaded as a model; '
+                + definition['id'] + ' must name the models themselves')
+        found.append(model)
+    alone = [model['id'] for model in found if is_exclusive(model)]
+    if len(found) > 1 and alone:
+        require(False, definition['id'] + ': ' + alone[0]
+            + ' owns every text GPU of this host, so no other model can be loaded beside it')
     return found
 
 
@@ -1209,32 +1209,41 @@ def offline_services(config_dir, shared, host, loaded, operator_aliases=None):
     """Service IDs this configuration deliberately does not run, so the router can report them as
     temporarily offline rather than unknown.
 
-    The rule is about service IDs, not about roles: a service ID is offline here when the resident
-    that normally carries it publishes it somewhere in this house and nothing loaded by *this*
-    configuration publishes it. A solo configuration that answers `nighttime` from its own backend
-    therefore declares nothing offline, and one that stopped offering it would. Roles and service IDs
-    are separate facts -- `offline_roles` says what is loaded, this says what answers -- and
-    conflating them is how a status page comes to tell you a model is off while it is answering.
+    The rule is about service IDs: an ID is offline here when some configuration of *this* machine
+    publishes it and the models the running configuration loads do not. A configuration that answers
+    `nighttime` from a model it loads therefore declares nothing offline, and one that stopped
+    offering it does. Which models are loaded is a separate fact, and the services list states it;
+    conflating the two is how a status page comes to tell you a model is off while it is answering.
 
-    A resident that belongs to another machine publishes nothing here at all, so it makes nothing
+    A model that belongs to another machine publishes nothing here at all, so it makes nothing
     offline: the honest answer for a service this host never offered is that it does not know it,
     not that it is temporarily down.
     """
+    config_dir = Path(config_dir)
+    shared = read(config_dir / 'shared.json')
     published = {alias for definition in loaded for alias in definition['catalog'].get('aliases', [])}
-    offline = []
-    for name in EVERYDAY_PROFILES:
-        definition = read(Path(config_dir) / 'profiles' / (name + '.json'))
-        if not belongs_to_host(definition, host):
-            continue
-        aliases = [alias for alias in definition['catalog'].get('aliases', []) if alias not in published]
-        if not aliases:
-            continue
-        summary = profile_summary(config_dir, name, shared, host, operator_aliases)
-        offline.append({'model': summary['model'], 'aliases': aliases,
-            'display_name': summary['display_name'], 'default_name': summary['default_name'],
-            **({'alias': summary['alias']} if 'alias' in summary else {}),
-            'role': definition['role'], 'reason': 'exclusive_configuration'})
-    return offline
+    # Every service ID this machine's registry offers, whether or not the configuration that offers it
+    # is the one running: `nighttime` is offline while a configuration that does not load its model
+    # runs, and unknown to a router that never saw it otherwise.
+    #
+    # Collected per model across every configuration of this host that loads it, because one model id
+    # can be loaded by several configurations that publish different IDs (the 256K launch answers
+    # `nighttime`; the two-card launch of the same weights does not). The names come from the model's
+    # own definition -- an operator's alias above the name the profile states -- and the IDs are the
+    # union, so an ID offered only by a configuration that is not running is still reported.
+    offline = {}
+    for name in configurations_for(config_dir, host):
+        definition = read(config_dir / 'profiles' / (name + '.json'))
+        for model in models_of(config_dir, definition):
+            aliases = [alias for alias in model['catalog'].get('aliases', []) if alias not in published]
+            entry = offline.setdefault(model_id(model),
+                {**model_summary(config_dir, model, shared, host, operator_aliases), 'aliases': []})
+            entry['aliases'] = sorted(set(entry['aliases']) | set(aliases))
+    return [{'model': model, 'aliases': entry['aliases'], 'display_name': entry['display_name'],
+            'default_name': entry['default_name'],
+            **({'alias': entry['alias']} if 'alias' in entry else {}),
+            'reason': 'not_loaded_by_this_configuration'}
+        for model, entry in offline.items() if entry['aliases']]
 
 
 def require_open_generation_policy(name, entry):
@@ -1273,23 +1282,16 @@ def render(config_dir, host, profile, aliases=None):
         + ' or '.join(repr(name) for name in profile_hosts(selected)) + ', and this host is '
         + repr(host_id(host)) + '. Its cards, its memory sizing and its artifacts are that machine\'s; '
         'select a configuration of this host, or state this host on the profile if it really runs here')
-    exclusive_profile = is_exclusive(selected)
-    # Also refuses a second resident named by a solo configuration, which has no other GPU pair.
-    # Resolved before the exclusivity check for the same reason profile_summary resolves it: a solo
-    # configuration that names a second resident is refused, not quietly ignored.
-    second = everyday_for(selected)
-    if exclusive_profile:
-        second = None
-    loaded = [selected] if second is None else [selected,
-        read(config_dir / 'profiles' / (second + '.json'))]
-    for definition in loaded[1:]:
+    loaded = models_of(config_dir, selected)
+    for definition in loaded:
         require(belongs_to_host(definition, host), 'Configuration ' + profile + ' loads '
-            + definition['id'] + ' beside it, and that resident belongs to '
+            + definition['id'] + ', and that model belongs to '
             + ' or '.join(repr(name) for name in profile_hosts(definition))
-            + ' -- a configuration cannot bring another machine\'s second resident with it')
+            + ' -- a configuration cannot bring another machine\'s model onto these cards')
+    exclusive_profile = is_exclusive(selected)
     for definition in loaded:
         name = definition['id']
-        role = definition['role']
+        service = service_key(definition)
         engine = shared['engines'][definition['engine']]
         require_engine_architecture(name, host, engine)
         ctx = definition['context_tokens']
@@ -1303,15 +1305,15 @@ def render(config_dir, host, profile, aliases=None):
             # image identity, mounts, ports, the GPU reservation, the discovery entry — is stated here
             # in the same shape as the llama.cpp path.
             cfg, entry, mounts, targets, devices, text = environment_service(name, definition, engine, shared,
-                host, root, ctx, slots, exclusive_profile, aliases)
+                host, root, ctx, slots, is_exclusive(definition), aliases)
             for artifact in definition['artifacts']:
                 source = str(root / Path(artifact['path']))
                 artifacts[source] = {**artifact, 'source': source}
             gpu_ids.extend(text)
-            require_container_contract(role, cfg)
-            compose['services'][role] = cfg
+            require_container_contract(service, cfg)
+            compose['services'][service] = cfg
             models.append(entry)
-            manifests.append({'role': role, 'container_name': cfg['container_name'],
+            manifests.append({'service': service, 'container_name': cfg['container_name'],
                 'engine': copy.deepcopy(engine), 'model_alias': entry['model'], 'context_tokens': ctx,
                 'parallel_slots': slots, 'display_name': entry['display_name'],
                 'recommended_argv': [], 'recommended_environment': dict(cfg['environment']),
@@ -1393,8 +1395,8 @@ def render(config_dir, host, profile, aliases=None):
             require(int(first) == 1 and 0 < int(total) <= 99999, 'Split model must start at shard one')
             require(all(f'{prefix}-{i:05d}-of-{total}.gguf' in targets for i in range(1, int(total) + 1)),
                 'Split model is missing a declared shard mount')
-        require_container_contract(role, cfg)
-        compose['services'][role] = cfg
+        require_container_contract(service, cfg)
+        compose['services'][service] = cfg
         entry = {**copy.deepcopy(shared['catalog_defaults']), **copy.deepcopy(definition['catalog']),
             'backend_url': advertised_backend_url(host, definition)}
         # Router clients select models by this flag ("most capable NSFW model"); every profile
@@ -1432,7 +1434,7 @@ def render(config_dir, host, profile, aliases=None):
                 key_cache_type=options['--spec-draft-type-k'], value_cache_type=options['--spec-draft-type-v'])
         require_open_generation_policy(name, entry)
         models.append(entry)
-        manifests.append({'role': role, 'container_name': cfg['container_name'],
+        manifests.append({'service': service, 'container_name': cfg['container_name'],
             'engine': copy.deepcopy(engine),
             'model_alias': entry['model'], 'context_tokens': ctx, 'parallel_slots': slots,
             'display_name': entry['display_name'], 'recommended_argv': argv,
@@ -1446,7 +1448,7 @@ def render(config_dir, host, profile, aliases=None):
         'Backends require one reservation per text GPU; ' + ', '.join(gpu_ids) + ' reserves a card twice')
     require(set(gpu_ids) == declared, 'The selected configuration reserves ' + str(len(set(gpu_ids)))
         + ' text GPUs and this host declares ' + str(len(declared)) +
-        '. A configuration reserves every text GPU this host states, in one resident or in two; a card '
+        '. A configuration reserves every text GPU this host states, across one model or several; a card '
         'that belongs to neither is a card the operator believes is serving and nothing can be placed on')
     catalog = {**copy.deepcopy(models[0]), 'schema_version': 3,
         'default_model': models[0]['model'], 'models': models,
@@ -1455,7 +1457,5 @@ def render(config_dir, host, profile, aliases=None):
     bundle = {'schema_version': 1, 'profile': profile, 'compose': compose, 'catalog': catalog,
         'manifest': {'schema_version': 2, 'services': manifests},
         'artifacts': list(artifacts.values())}
-    if second not in (None, EVERYDAY_PROFILE):
-        bundle['everyday_profile'] = second
     bundle['config_sha256'] = digest(bundle)
     return bundle

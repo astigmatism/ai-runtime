@@ -1,10 +1,11 @@
 """Serialized, recoverable reconciliation of the existing backend containers.
 
-A configuration loads one resident, or two side by side on the two text GPU pairs. A solo
-configuration owns every text GPU this host declares, so selecting it stops and removes the second
-resident, and selecting a paired configuration again recreates it. On a host that declares one GPU
-group the configurations that run alone are the only ones it has, and this is the same reconciliation
-over one backend instead of two.
+A configuration loads the models it names: one across the machine, or two side by side on the two
+text GPU pairs. A model that owns every text GPU this host declares is loaded alone, and switching to
+a configuration that names two recreates the pair. A switch runs the models the target names and stops
+the ones it does not, whatever it was running before. On a host that declares one GPU group the
+configurations that run alone are the only ones it has, and this is the same reconciliation over one
+backend instead of two.
 """
 import copy
 from contextlib import ExitStack
@@ -19,10 +20,10 @@ import urllib.parse
 import uuid
 
 from . import provision as provision_tool
-from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, EVERYDAY_PROFILE, PAIR_GROUPS,
+from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, PAIR_GROUPS,
     available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
-    gpu_architectures, host_id, nameable_models, read, read_aliases, render, require, resolve_profile,
-    router_target, service_engine)
+    gpu_architectures, host_id, model_id, models_of, nameable_models, read, read_aliases, render,
+    require, resolve_profile, router_target, service_engine)
 from .system import System, atomic_json, future, lock, now
 
 # How long a router that was not listening has to stay not-listening before this machine offers it
@@ -478,29 +479,48 @@ class Controller:
     def backend_url(self, cfg):
         return 'http://' + cfg['container_name'] + ':8080'
 
-    def everyday_container(self):
-        """The container a second resident occupies, for the two callers that run only when this
-        configuration loads none.
+    def host_models(self):
+        """{model id: container name} for every model this machine's registry could start.
 
-        A paired bundle already carries its own variant's name, and `removed_backends` collects it
-        from the previous bundle; this fallback is reached only when nothing is loaded beside the
-        coding resident, where the question is not which variant was asked for but which container
-        could be holding these GPUs. That is the registered everyday profile, and there is one. A
-        solo configuration that wanted a differently named container would have to declare which,
-        and none does -- declaring one would also make it a paired configuration.
+        A switch runs the models its configuration names and stops the ones it does not, so the
+        runtime has to know which containers belong to this machine's models at all and not only to
+        the configuration currently loaded: a model that another of this host's configurations loads
+        is a container that can be found running with these cards on them, and that is a fault.
         """
-        return read(self.config_dir / 'profiles' / (EVERYDAY_PROFILE + '.json'))['container_name']
+        models = {}
+        for name in configurations_for(self.config_dir, self.host):
+            for model in models_of(self.config_dir, read(self.config_dir / 'profiles' / (name + '.json'))):
+                models[model_id(model)] = model['container_name']
+        return models
 
     def removed_backends(self, bundle, previous_bundle):
         """Existing containers that must not run beside `bundle`, so they release their GPUs first.
 
-        These are the previous release's services that the target omits, plus any leftover
-        second resident when the target is solo.
+        Two kinds. The previous release's launches whose model the target does not name are released
+        whatever their container is called: several of this host's models render into the same
+        container name -- every daytime launch is `qwen38-daytime` -- and a container named that and
+        belonging to a service the target no longer declares is not the container the target wants,
+        it is the one standing in its way. Compose tracks it as an orphan of a service that left the
+        file, and a launch asked to publish a fixed container name onto cards a live container is
+        still holding is a name conflict, not a reload.
+
+        The second kind is a leftover: a container of a model of this host the target does not name.
+        It counts only where nothing the target names starts a container of that name, because the
+        name is the identity Docker gave the running container -- when the target does start one under
+        that name, what is running under it is the launch this switch replaces, and Compose handles it
+        under the target's own service.
+
+        A leftover is matched by container, because that is all Docker reports: several of this host's
+        models render into one name, so a container this release did not start can hide behind a name
+        the target also starts. What it cannot hide from is the drift comparison in the transition,
+        which reads the running launch against the one the target renders for that name.
         """
         services = services_of(bundle)
-        names = [cfg['container_name'] for role, cfg in services_of(previous_bundle).items() if role not in services]
-        if 'everyday' not in services:
-            names.append(self.everyday_container())
+        names = [cfg['container_name'] for service, cfg in services_of(previous_bundle).items()
+            if service not in services]
+        wanted = {cfg['container_name'] for cfg in services.values()}
+        names += [name for model, name in self.host_models().items()
+            if model not in services and name not in wanted]
         return [name for name in dict.fromkeys(names) if self.system.inspect(name)]
 
     def release(self, names):
@@ -512,15 +532,15 @@ class Controller:
             require(not self.system.inspect(name), 'Backend could not be removed: ' + name)
 
     def provisioning(self, bundle):
-        """Return (role, engine, contract) for a service that builds its own state on first start.
+        """Return (service, engine, contract) for a service that builds its own state on first start.
 
         The switch now prepares such a workspace itself before it drains, so the readiness window
         only has to cover the load, and the load is waited on for the engine's actual answer.
         """
-        for role, cfg in bundle['compose']['services'].items():
-            engine = service_engine(bundle, role)
+        for service, cfg in bundle['compose']['services'].items():
+            engine = service_engine(bundle, service)
             if engine.get('provisioning'):
-                return role, engine, engine['provisioning']
+                return service, engine, engine['provisioning']
         return None, None, None
 
     def provisioned(self, bundle):
@@ -529,13 +549,13 @@ class Controller:
         A receipt only speaks for the engine image and the workspace directory it was taken with, so
         both have to match before it counts as evidence about the thing about to be switched to.
         """
-        role, engine, provision = self.provisioning(bundle)
+        service, engine, provision = self.provisioning(bundle)
         if engine is None:
             return None
         receipt = self.load('provisioning/' + bundle['profile'] + '.json')
         if not receipt:
             return None
-        source = next((v['source'] for v in bundle['compose']['services'][role]['volumes']
+        source = next((v['source'] for v in bundle['compose']['services'][service]['volumes']
                        if v['target'] == provision.get('workspace_target')), None)
         if (receipt.get('image_id') != engine['image_id'] or receipt.get('workspace') != source
                 or receipt.get('engine_tag') != engine['tag']):
@@ -543,13 +563,13 @@ class Controller:
         return receipt
 
     def preparation_state(self, bundle):
-        """(role, engine, contract, workspace, cfg) for the service that builds its own state,
+        """(service, engine, contract, workspace, cfg) for the service that builds its own state,
         read without touching anything, or None when the bundle has no such service."""
-        role, engine, contract = self.provisioning(bundle)
-        if role is None:
+        service, engine, contract = self.provisioning(bundle)
+        if service is None:
             return None
-        cfg = bundle['compose']['services'][role]
-        return role, engine, contract, provision_tool.workspace_target(cfg, contract), cfg
+        cfg = bundle['compose']['services'][service]
+        return service, engine, contract, provision_tool.workspace_target(cfg, contract), cfg
 
     def preparation_needed(self, bundle):
         """Whether the switch must build this bundle's workspace before it takes the drain.
@@ -560,7 +580,7 @@ class Controller:
         found = self.preparation_state(bundle)
         if found is None or found[3] is None:
             return False
-        role, engine, contract, workspace, cfg = found
+        service, engine, contract, workspace, cfg = found
         return not provision_tool.workspace_ready(provision_tool.ready_files(workspace, contract))
 
     def ensure_provisioned(self, bundle, log=lambda message: None):
@@ -577,7 +597,7 @@ class Controller:
         found = self.preparation_state(bundle)
         require(found is not None and found[3] is not None,
             'This bundle declares no provisionable workspace')
-        role, engine, contract, workspace, cfg = found
+        service, engine, contract, workspace, cfg = found
         name = cfg['container_name'] + '-provision'
         port = provision_tool.published_port(cfg, provision_tool.PORT_OFFSET)
         files = provision_tool.ready_files(workspace, contract)
@@ -586,8 +606,8 @@ class Controller:
         created = provision_tool.ensure_workspace(self, workspace)
         free_before = provision_tool.free_bytes(workspace)
         spec = self.state / 'provisioning' / (bundle['profile'] + '-compose.json')
-        provision_tool.atomic_json(spec, provision_tool.throwaway(bundle, role, name, port))
-        result = provision_tool.watch(self.system, spec, role, name, port, files,
+        provision_tool.atomic_json(spec, provision_tool.throwaway(bundle, service, name, port))
+        result = provision_tool.watch(self.system, spec, service, name, port, files,
             serving=provision_tool.serving_containers(self), goal='workspace',
             stop=provision_tool.stop_seconds(cfg), log=log)
         if result['reached'] != 'workspace':
@@ -595,11 +615,11 @@ class Controller:
             last_line = words[-1] if words else 'no output was captured from the container'
             raise RuntimeError(bundle['profile'] + ': the engine could not build its workspace '
                 '(' + result['reached'] + ' after ' + str(result['seconds']) + 's): ' + last_line)
-        self._record_provision_run(bundle, role, engine, contract, workspace, name, port, result,
+        self._record_provision_run(bundle, service, engine, contract, workspace, name, port, result,
             free_before, created)
         return result
 
-    def _record_provision_run(self, bundle, role, engine, contract, workspace, name, port, result,
+    def _record_provision_run(self, bundle, service, engine, contract, workspace, name, port, result,
             free_before, created=False):
         """The build the switch just did, in the same receipt the read-only measurement writes, so
         one file is the whole story of the workspace on this machine."""
@@ -628,7 +648,7 @@ class Controller:
         receipt['neighbour_samples'] = nearby[-8:]
         atomic_json(self.state / 'provisioning' / (bundle['profile'] + '.json'), receipt)
 
-    def _record_warm_boot(self, bundle, roles, seconds):
+    def _record_warm_boot(self, bundle, services, seconds):
         """The boot the switch just measured, where the next refusal can read it as evidence.
 
         A successful switch is the warm boot: the engine loaded from its own workspace with no
@@ -636,9 +656,9 @@ class Controller:
         waited is the number the window has to cover.
         """
         found = self.preparation_state(bundle)
-        if found is None or found[0] not in roles:
+        if found is None or found[0] not in services:
             return
-        role, engine, contract, workspace, cfg = found
+        service, engine, contract, workspace, cfg = found
         receipt = self.load('provisioning/' + bundle['profile'] + '.json') or {
             'profile': bundle['profile'], 'engine_tag': engine['tag'], 'image_id': engine['image_id'],
             'workspace': str(workspace), 'ready_files': list(contract.get('ready_files', [])), 'runs': []}
@@ -679,7 +699,7 @@ class Controller:
             reasons.append('This engine has never completed a warm boot from its own workspace on this '
                 'host (' + detail + '); the switch is refused until it does, or the profile is retired')
         if phase == 'provision' and reached.startswith('exited'):
-            role, engine, contract, workspace, cfg = self.preparation_state(bundle)
+            service, engine, contract, workspace, cfg = self.preparation_state(bundle)
             reasons.append('The ' + engine['tag'] + ' container stopped by itself at startup ' + reached +
                 '; its output is in the receipt. A switch would refuse to build the workspace for '
                 'this engine until that is fixed, and the profile is better retired if it cannot be')
@@ -754,7 +774,7 @@ class Controller:
         found = self.preparation_state(bundle)
         if found is None:
             return []
-        role, engine, contract, workspace, cfg = found
+        service, engine, contract, workspace, cfg = found
         notes = []
         receipt = self.provisioned(bundle)
         if workspace is None or not provision_tool.workspace_ready(
@@ -796,13 +816,13 @@ class Controller:
 
     def validate(self, bundle, full_hash=False):
         images = {}
-        for role, cfg in bundle['compose']['services'].items():
-            engine = service_engine(bundle, role)
-            require(cfg['image'] == engine['tag'], role + ': inference engine tag differs from manifest')
+        for service, cfg in bundle['compose']['services'].items():
+            engine = service_engine(bundle, service)
+            require(cfg['image'] == engine['tag'], service + ': inference engine tag differs from manifest')
             image = json.loads(self.system.docker('image', 'inspect', engine['tag']))[0]
             require(image['Id'] == engine['image_id'] and (image['Config'].get('Labels') or {}).get(
-                'org.opencontainers.image.revision') == engine['revision'], role + ': pinned inference engine identity changed')
-            images[role] = image['Id']
+                'org.opencontainers.image.revision') == engine['revision'], service + ': pinned inference engine identity changed')
+            images[service] = image['Id']
         network = bundle['compose']['networks']['router']['name']
         self.system.docker('network', 'inspect', network)
         cache = self.load('artifact-receipts.json', {})
@@ -836,15 +856,15 @@ class Controller:
     def observe(self, bundle):
         observed = {}
         network = bundle['compose']['networks']['router']['name']
-        for role, cfg in bundle['compose']['services'].items():
-            engine = service_engine(bundle, role)
+        for service, cfg in bundle['compose']['services'].items():
+            engine = service_engine(bundle, service)
             ci = self.system.inspect(cfg['container_name'])
             reasons = []
             result = {'container_name': cfg['container_name'], 'healthy': False,
                 'running': bool(ci and ci['State']['Running']), 'differences': reasons}
             if not ci:
                 reasons.append('container missing')
-                observed[role] = result
+                observed[service] = result
                 continue
             result.update(id=ci['Id'], started_at=ci['State']['StartedAt'],
                 restart_count=ci['RestartCount'], image_id=ci['Image'])
@@ -903,11 +923,11 @@ class Controller:
                 try:
                     health = self.system.http(self.backend_url(cfg) + '/health', timeout=3)
                     slots = self.system.http(self.backend_url(cfg) + '/slots', timeout=3)
-                    service = next(x for x in bundle['manifest']['services'] if x['role'] == role)
+                    entry = next(x for x in bundle['manifest']['services'] if x['service'] == service)
                     if engine.get('interface') == 'environment':
                         # Both /health and /slots answer in llama.cpp's shape, but there is no argument
                         # vector to read the window from: the published configuration is the reference.
-                        expected_ctx, expected_slots = service['context_tokens'], service['parallel_slots']
+                        expected_ctx, expected_slots = entry['context_tokens'], entry['parallel_slots']
                     else:
                         argv = cfg['command']
                         expected_ctx = int(argv[argv.index('--kv-unified-per-slot') + 1])
@@ -929,12 +949,21 @@ class Controller:
                         x.get('is_processing', False) for x in slots if isinstance(x, dict))
                 except Exception:
                     result['health_error'] = 'Backend readiness unavailable'
-            observed[role] = result
-        if 'everyday' not in bundle['compose']['services'] and 'coding' in observed:
-            night = self.system.inspect(self.everyday_container())
-            if night and night['State']['Running']:
-                observed['coding']['differences'].append('competing everyday backend running')
-                observed['coding']['healthy'] = False
+            observed[service] = result
+        # A model this configuration does not name, running on this machine's cards, is competing for
+        # memory with every model that is named: it is not a second half of anything, it is a leftover.
+        # Compared by container, because several of this host's models share one container name across
+        # configurations -- the question is whether a container is standing that this launch did not
+        # start, not which model id it is filed under.
+        started = {cfg['container_name'] for cfg in bundle['compose']['services'].values()}
+        for model, container in self.host_models().items():
+            if container in started:
+                continue
+            stray = self.system.inspect(container)
+            if stray and stray['State']['Running']:
+                for entry in observed.values():
+                    entry['differences'].append('competing backend running: ' + container)
+                    entry['healthy'] = False
         legacy = self.system.inspect('local-ai-llama-cpp')
         require(not legacy or not legacy['State']['Running'], 'Legacy inference backend is running; refusing competing GPU ownership')
         return observed
@@ -1026,22 +1055,33 @@ class Controller:
         path = self.compose_path(bundle)
         self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path), 'config', '--quiet')
 
-    def reconcile(self, bundle, roles, sequential=False):
-        """Start the changed roles; across a topology change the coding resident starts first and the
-        everyday resident after it, so the outgoing coding backend has released every GPU before the
-        second one loads."""
-        if roles:
+    def reconcile(self, bundle, services, sequential=False, recreate=False):
+        """Start the named services; across a switch they come up one at a time, in the order the
+        configuration names its models, so a launch takes the memory it was sized for before the next
+        one asks for cards that may still be busy.
+
+        `recreate` forces a container away even where Compose would keep the running one, which is
+        what a switch asks for: a model whose launch is byte-identical in both configurations is
+        still stopped and loaded again, because the machine is being told to run this configuration
+        and a process quietly carried over from another one is precisely what this runtime exists not
+        to have to reason about later. Recovery leaves it false -- bringing the previous release back
+        serving is the whole job there, and an untouched healthy container is the fastest right answer
+        as long as it is the right container."""
+        if services:
             path = self.compose_path(bundle)
-            batches = [[role] for role in sorted(roles, key=lambda role: role != 'coding')] if sequential else [roles]
+            order = [entry['service'] for entry in bundle['manifest']['services']]
+            batches = [[service] for service in order if service in services] if sequential \
+                else [services]
             for batch in batches:
                 # Engines that prepare their own state before they answer the first health check
                 # (Strata builds its expert pack and installs its draft layer on a fresh workspace)
                 # name their own bounded readiness window; everything else keeps the usual one.
-                wait = max([service_engine(bundle, role).get('readiness_wait_seconds', 450)
-                    for role in batch])
+                wait = max([service_engine(bundle, service).get('readiness_wait_seconds', 450)
+                    for service in batch])
                 self.system.docker('compose', '-p', bundle['compose']['name'], '-f', str(path),
-                    'up', '-d', '--no-deps', '--pull', 'never', '--wait', '--wait-timeout', str(wait), *batch,
-                    timeout=wait + 60)
+                    'up', '-d', '--no-deps', '--pull', 'never',
+                    *(('--force-recreate',) if recreate else ()),
+                    '--wait', '--wait-timeout', str(wait), *batch, timeout=wait + 60)
         observed = self.observe(bundle)
         # Docker's health state is the engine's own /health, and an engine whose server answers
         # before the model is resident (Strata's /health says status ok from server start, carries
@@ -1051,15 +1091,15 @@ class Controller:
         # declared readiness window is the bound on waiting for the controller's own view. A
         # backend that loaded with the wrong window, or drifted in any other way, is not waited
         # out: the window would only turn the fault into a delay.
-        if roles:
-            wait = max([service_engine(bundle, role).get('readiness_wait_seconds', 450) for role in roles])
+        if services:
+            wait = max([service_engine(bundle, service).get('readiness_wait_seconds', 450) for service in services])
             deadline = time.monotonic() + wait
             while not all(s['healthy'] for s in observed.values()) and self.still_loading(observed) \
                     and time.monotonic() < deadline:
                 time.sleep(READINESS_POLL_SECONDS)
                 observed = self.observe(bundle)
-        bad = [(role, s) for role, s in observed.items() if not s['healthy']]
-        for role, s in bad:
+        bad = [(service, s) for service, s in observed.items() if not s['healthy']]
+        for service, s in bad:
             # The record must carry the witness while the container still exists: restoration
             # removes it, and an engine that stopped by itself has no health and no slots left to
             # explain why. Its exit code and its own last words are the only account of the
@@ -1074,13 +1114,13 @@ class Controller:
                     s['last_words'] = [line[:180] for line in lines[-10:]]
                 except Exception:
                     pass
-        detail = '; '.join(role + ': ' + ', '.join(
+        detail = '; '.join(service + ': ' + ', '.join(
             s['differences']
             + (['slot window ' + json.dumps(s['slot_window'])] if s.get('slot_window') else [])
             + (['health: ' + s['health_error']] if s.get('health_error') else [])
             + (['exit ' + str(s['exit_code'])] if s.get('exit_code') is not None else [])
             + (['last words: ' + ' | '.join(s['last_words'])] if s.get('last_words') else []))
-            for role, s in bad)
+            for service, s in bad)
         require(not bad, 'Backend identity/readiness verification failed' + (': ' + detail if detail else ''))
         return observed
 
@@ -1105,10 +1145,10 @@ class Controller:
                 return False
         return bool(observed)
 
-    def acceptance(self, bundle, roles):
-        for role in roles:
-            cfg = bundle['compose']['services'][role]
-            if service_engine(bundle, role).get('interface') == 'environment':
+    def acceptance(self, bundle, services):
+        for service in services:
+            cfg = bundle['compose']['services'][service]
+            if service_engine(bundle, service).get('interface') == 'environment':
                 # The native /completion probe belongs to llama.cpp; the same bounded-generation check
                 # runs against the OpenAI chat dialect every engine in this house has to serve. A
                 # reasoning model may spend its whole budget on thinking, so either channel counts.
@@ -1118,13 +1158,13 @@ class Controller:
                 choices = answer.get('choices') or []
                 message = (choices[0].get('message') or {}) if choices else {}
                 said = ' '.join(message.get(key) or '' for key in ('content', 'reasoning_content')).strip()
-                require(bool(said), 'Bounded generation acceptance failed for ' + role)
+                require(bool(said), 'Bounded generation acceptance failed for ' + service)
                 continue
             answer = self.system.http(self.backend_url(cfg) + '/completion', {
                 'prompt': 'Complete the word: O', 'n_predict': 8, 'temperature': 0,
                 'stream': False, 'cache_prompt': False}, timeout=90)
             require(isinstance(answer.get('content'), str) and bool(answer['content'].strip()),
-                'Bounded generation acceptance failed for ' + role)
+                'Bounded generation acceptance failed for ' + service)
         self.wait_idle([bundle])
 
     def publish(self, bundle):
@@ -1143,7 +1183,7 @@ class Controller:
             service = next(x for x in bundle['manifest']['services'] if x['model_alias'] == entry['model'])
             ci = self.system.inspect(service['container_name'])
             entry['updated_at'] = now()
-            if service_engine(bundle, service['role']).get('interface') == 'environment':
+            if service_engine(bundle, service['service']).get('interface') == 'environment':
                 # No argument vector to read an output ceiling from: this engine has none, and what
                 # was inspected is its environment, so the record says so instead of naming argv.
                 entry['runtime_output_policy'] = {'verification': 'docker-inspect-env',
@@ -1159,7 +1199,7 @@ class Controller:
         # Identify the live configuration for router clients. Bundles rendered before this field
         # existed (a recovered previous release) still get an accurate id and exclusivity.
         configuration = catalog.get('configuration') or {'id': bundle['profile'],
-            'exclusive': 'everyday' not in bundle['compose']['services']}
+            'exclusive': any(model.get('exclusive') for model in catalog['models'])}
         catalog['configuration'] = {**configuration, 'runtime_revision': self.revision, 'published_at': now()}
         require(not self.system.readonly, 'Publication forbidden in inspection mode')
         # Publication is per sink, and so is the receipt. Each sink records the document accepted
@@ -1356,7 +1396,7 @@ class Controller:
             'serve nothing is not worth switching to')
         roster = self.remote_call('hosts') or {}
         accepted = next((h for h in roster.get('hosts', []) if h['id'] == self.target['host']), {})
-        # active_model.profile is the model's role ("primary"), not configuration.id.
+        # active_model.profile is the model's own label ("primary"), not configuration.id.
         # The per-host roster carries both the configuration and the stored revision, including
         # for a non-default host. Compare the receipt to what the router actually serves.
         require(accepted.get('published') and accepted.get('revision') == revision
@@ -1445,7 +1485,7 @@ class Controller:
         # this was: a failed switch and the restoration that put the machine back afterwards
         # otherwise look identical in this file.
         record = {k: transaction.get(k) for k in
-            ('id', 'intent', 'phase', 'profile', 'started_at', 'finished_at', 'error', 'changed_roles', 'revision', 'config_sha256')}
+            ('id', 'intent', 'phase', 'profile', 'started_at', 'finished_at', 'error', 'changed_services', 'revision', 'config_sha256')}
         record['intent'] = transaction.get('intent') or 'deployment'
         self.save('last-deployment.json', record)
         if state in ('succeeded', 'recovered'):
@@ -1581,7 +1621,7 @@ class Controller:
             return {'profile': good['bundle']['profile'], 'restored': True, 'already_serving': True, 'serving': True}
         transaction = {'id': operation_id or str(uuid.uuid4()), 'started_at': now(), 'phase': 'prepared',
             'intent': 'restore-last-known-good', 'previous': good, 'target': copy.deepcopy(good),
-            'changed_roles': [], 'revision': self.revision, 'profile': good['bundle']['profile'],
+            'changed_services': [], 'revision': self.revision, 'profile': good['bundle']['profile'],
             'config_sha256': good['bundle']['config_sha256'],
             'restoration': {'operation': operation_id, 'phases': []}}
         self.save('transaction.json', transaction)
@@ -1602,21 +1642,18 @@ class Controller:
         # the router already rejects everything, so there is nothing left to be polite to.
         self.wait_idle([old, target], force_on_deadline=force_on_deadline)
         self.mark(transaction, 'restoring', 'draining')
-        protected = transaction.get('protected_services', {})
         topology = set(services_of(old)) != set(services_of(target))
-        # Leaving a solo target frees the GPUs it took before the paired release returns; restoring a
-        # solo release first removes the second resident the failed target started.
+        # Every model of the release being restored is asked for, not only the ones found unhealthy:
+        # the failed switch stopped, freed, or half-started them all, and Compose recreates only what
+        # is not already the right container. Nothing the failed target started is left standing beside
+        # them, because a model the restored configuration does not name would be holding memory the
+        # restored models were sized for.
         extra = self.removed_backends(old, target)
-        require(not extra or not protected, 'Recovery would replace a protected backend; operator attention required')
         self.release(extra)
         self.mark(transaction, 'restoring', 'recreating')
-        observed = self.observe(old)
-        roles = [role for role, s in observed.items() if not s['healthy']]
-        require(not set(roles).intersection(protected), 'Recovery would replace a protected backend; operator attention required')
-        after = self.reconcile(old, roles, sequential=topology)
-        require(all(after[r].get('id') == cid for r, cid in protected.items()),
-            'A protected backend changed during recovery')
-        self.acceptance(old, roles)
+        services = list(services_of(old))
+        after = self.reconcile(old, services, sequential=topology)
+        self.acceptance(old, services)
         self.mark(transaction, 'restoring', 'verifying')
         self.publish(old)
         self.save('active.json', previous)
@@ -1647,7 +1684,7 @@ class Controller:
             return self._transition_locked(profile, deploy=deploy, adopt=adopt, install=install)
 
     def _transition_locked(self, profile=None, deploy=False, adopt=False, install=False, *,
-                           operation_id=None, progress=lambda phase: None, keep_everyday=False):
+                           operation_id=None, progress=lambda phase: None):
         """Caller must hold runtime.lock for the entire transaction, including recovery."""
         require(not self.system.readonly, 'Mutation forbidden in inspection mode')
         require(not self.load('router-maintenance.json', {}).get('reserved'),
@@ -1676,33 +1713,41 @@ class Controller:
             'An install is a machine with no active release and no healthy backend: adopt a migrated '
             'host instead')
         prior = services_of(previous['bundle']) if previous else {}
-        roles = [role for role, s in observed.items() if not s['healthy'] or (previous and
-            prior.get(role) != bundle['compose']['services'][role])]
-        # Selecting or leaving a solo configuration deliberately removes or restores the second resident.
-        topology = bool(previous) and set(prior) != set(bundle['compose']['services'])
-        # So does choosing a paired configuration that names a different second resident.
-        night_change = bool(previous) and not topology and 'everyday' in bundle['compose']['services'] and (
-            previous['bundle'].get('everyday_profile', EVERYDAY_PROFILE) != bundle.get('everyday_profile', EVERYDAY_PROFILE))
+        drift = [service for service, s in observed.items() if not s['healthy'] or (previous and
+            prior.get(service) != bundle['compose']['services'][service])]
+        # A switch runs the models the target configuration names and nothing else. It is not a patch
+        # applied to whatever happens to be loaded: a model that is identical in both bundles is still
+        # stopped and started by a switch to a different configuration, because the cards under it are
+        # being redistributed and a process that survived that would be surviving a lie about where it
+        # runs. Nothing moves when the target launches what is already launched: the machine is left
+        # alone and a redeploy of a revision that is serving costs nothing.
+        #
+        # The comparison is the Compose document -- the launch itself -- and not the bundle hash,
+        # because a bundle also carries what things are called. An operator renaming a model changes
+        # the hash, and a rename must never be a reason to stop a serving model and load it again.
+        replacing = bool(previous) and previous['bundle']['compose'] != bundle['compose']
+        services = list(bundle['compose']['services']) if replacing else drift
+        # Cards move between models across a switch, so the models come up one at a time, in the order
+        # the configuration names them: a launch takes the memory it was sized for before the next one
+        # asks for cards that may still be busy.
+        topology = set(prior) != set(bundle['compose']['services'])
         removed = self.removed_backends(bundle, previous['bundle'] if previous else None)
-        require(not adopt or not (roles or removed), 'Adoption requires an exact match to healthy existing backends')
-        require(not keep_everyday or topology or night_change or 'everyday' not in roles,
-            'The switch would replace the second resident; operator attention required')
+        require(not adopt or not (drift or removed), 'Adoption requires an exact match to healthy existing backends')
         require(not self.draining_for_me(),
             'A router this machine publishes to is drained for this machine by another operation')
-        if previous and previous['revision'] == self.revision and previous['bundle'] == bundle and not roles and not removed:
+        if previous and previous['revision'] == self.revision and previous['bundle'] == bundle \
+                and not drift and not removed:
             return {'already_active': True, 'profile': bundle['profile']}
-        unchanged = {role: s['id'] for role, s in observed.items() if role not in roles}
+        unchanged = {service: s['id'] for service, s in observed.items() if service not in services}
         target = {'revision': self.revision, 'image': self.image, 'bundle': bundle, 'applied_at': now()}
         # Adoption's prior runtime is already known healthy and can be restored by this image.
         if adopt:
             previous = copy.deepcopy(target)
         tx = {'id': operation_id or str(uuid.uuid4()), 'started_at': now(), 'phase': 'prepared', 'previous': previous,
-            'target': target, 'changed_roles': roles, 'revision': self.revision, 'profile': bundle['profile'],
+            'target': target, 'changed_services': services, 'revision': self.revision, 'profile': bundle['profile'],
             'config_sha256': bundle['config_sha256']}
         if removed:
             tx['removed_backends'] = removed
-        if keep_everyday and not topology and not night_change and 'everyday' in observed:
-            tx['protected_services'] = {'everyday': observed['everyday']['id']}
         self.save('transaction.json', tx)
         changed = False
         try:
@@ -1721,18 +1766,19 @@ class Controller:
             changed = True
             self.release(removed)
             load_started = time.monotonic()
-            after = self.reconcile(bundle, roles, sequential=topology)
+            after = self.reconcile(bundle, services, sequential=topology or replacing,
+                recreate=replacing)
             require(all(after[r]['id'] == cid for r, cid in unchanged.items()), 'An unchanged backend was unexpectedly recreated')
             self.mark(tx, 'verifying')
             progress('verifying')
-            self.acceptance(bundle, roles)
-            self._record_warm_boot(bundle, roles, round(time.monotonic() - load_started, 1))
+            self.acceptance(bundle, services)
+            self._record_warm_boot(bundle, services, round(time.monotonic() - load_started, 1))
             self.publish(bundle)
             self.save('previous.json', previous)
             self.save('active.json', target)
             self.set_drain(False, tx)
             self.finish(tx, 'succeeded')
-            return {'profile': bundle['profile'], 'changed_roles': roles, 'revision': self.revision}
+            return {'profile': bundle['profile'], 'changed_services': services, 'revision': self.revision}
         except BaseException as error:
             tx['error'] = str(error)
             if changed:
@@ -1894,11 +1940,10 @@ class Controller:
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
             'host': {**host_report, 'gpu_inventory': self.gpu_inventory()},
-            'offline_roles': [role for role in ('coding', 'everyday') if role not in services_of(bundle)],
-            # Two different facts, and the page must not read one as the other: `offline_roles` is
-            # placement (a resident this configuration does not load), `offline_services` is what a
-            # client can ask for (a service ID nothing answers). A solo configuration that answers
-            # `nighttime` from its own backend has the role offline and no offline service.
+            # What a client can still ask for out of this machine's catalog and nothing answers,
+            # because the configuration that runs does not load the model that answers it. There is no
+            # second fact about placement: a configuration loads models, a model it does not load is
+            # not running, and the services list above already says which is which.
             'offline_services': copy.deepcopy(bundle['catalog'].get('offline_services', [])),
             'last_deployment': self.load('last-deployment.json'), 'updated_at': now()}
         # Read-only presentation of the profile registry. It is reported before the live
@@ -1919,7 +1964,7 @@ class Controller:
             result['configurations'] = {'active': bundle['profile'], **configurations}
         except Exception as error:
             result['configurations'] = {'active': bundle['profile'], 'selectable': [],
-                'always_included': [], 'error': str(error)}
+     'error': str(error)}
         update = self.load('update-job.json')
         result['source_deployment'] = {k: update.get(k) for k in
             ('phase', 'started_at', 'finished_at', 'error', 'revision')} if update else None
@@ -1943,9 +1988,9 @@ class Controller:
             names = {gpu: name for group, ids in self.host.get('gpu_ids', {}).items()
                 for gpu, name in zip(ids, self.host.get('gpu_names', {}).get(group, []))}
             for model, service in zip(bundle['catalog']['models'], bundle['manifest']['services']):
-                live = observed[service['role']]
+                live = observed[service['service']]
                 text = model.get('text_gpu_uuids', model['gpu_uuids'])
-                result['services'].append({'role': service['role'],
+                result['services'].append({'service': service['service'],
                     # The active bundle is the document this machine was switched with, so its names
                     # are the names of that moment; an alias saved since then is what the operator is
                     # reading now, and the page must not show a name it has already retired.

@@ -1,7 +1,7 @@
 {
   "id": "flash-next-strata-solo-thinking-recovery",
   "hosts": ["rosalina"],
-  "role": "coding",
+  "models": ["flash-next-strata-solo-thinking-recovery"],
   "display_name": "Qwen3.8 Flash-Next",
   "variant_label": "card sampling + call recovery",
   "engine": "strata-vision-296b59d2f73c",
@@ -108,7 +108,6 @@
     },
     "labels": {
       "local-ai.profile": "primary",
-      "local-ai.role": "coding",
       "local-ai.retention": "reference-aware: tag, model revision and workspace are released with the profile"
     }
   },

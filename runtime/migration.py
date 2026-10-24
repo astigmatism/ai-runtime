@@ -86,8 +86,12 @@ class Migration:
             'router_admin_url': 'http://local-ai-ollama-router:11435',
             'router_admin_header': environment.get('ADMIN_SESSION_HEADER', 'X-Admin-Token'),
             'uid': os.getuid(), 'gid': os.getgid(), 'initial_profile': selected,
-            'gpu_ids': {group: compose['services'][role]['deploy']['resources']['reservations']['devices'][0]['device_ids']
-                for group, role in [('daytime', 'coding'), ('nighttime', 'everyday')]},
+            # `coding` and `everyday` are the legacy stack's own Compose service names in the
+            # `compose.json` it published; this runtime has never keyed a service by anything but the
+            # model it loads. They are read here to learn which cards the old pair was on, which is a
+            # fact about that document.
+            'gpu_ids': {group: compose['services'][service]['deploy']['resources']['reservations']['devices'][0]['device_ids']
+                for group, service in [('daytime', 'coding'), ('nighttime', 'everyday')]},
             'gpu_names': {'daytime': ['RTX 3090', 'RTX 4080 SUPER'], 'nighttime': ['RTX 4080', 'RTX 3080 Ti']}}
         desired = render(self.root / 'config', host, selected)
         require(desired['compose'] == compose, 'Published configuration differs from the live source; merge changes before migration')

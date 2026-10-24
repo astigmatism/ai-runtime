@@ -92,7 +92,7 @@ def published_port(cfg, offset=0):
     return int(cfg['ports'][0].split(':')[1]) + offset
 
 
-def throwaway(bundle, role, name, port):
+def throwaway(bundle, service, name, port):
     """The one-off compose project the measurement runs in.
 
     It is the profile's own rendered service, so what gets measured is the container the switch
@@ -111,14 +111,14 @@ def throwaway(bundle, role, name, port):
     """
     compose = copy.deepcopy(bundle['compose'])
     compose['name'] = PROJECT
-    compose['services'] = {role: compose['services'][role]}
-    service = compose['services'][role]
-    service.update(container_name=name, restart='no', ports=[f'127.0.0.1:{port}:8080'],
+    compose['services'] = {service: compose['services'][service]}
+    entry = compose['services'][service]
+    entry.update(container_name=name, restart='no', ports=[f'127.0.0.1:{port}:8080'],
         # No aliases: on this network the profile's names belong to the container that is serving,
         # and nothing may resolve the trial to this one. The container's own name still resolves,
         # which is how the health answer below gets read.
         networks={'router': {}},
-        labels={**(service.get('labels') or {}), 'local-ai.provisioning': 'throwaway'})
+        labels={**(entry.get('labels') or {}), 'local-ai.provisioning': 'throwaway'})
     return compose
 
 
@@ -244,7 +244,7 @@ def free_bytes(workspace):
     return shutil.disk_usage(target).free
 
 
-def watch(system, path, role, name, port, files, serving=(), goal='healthy',
+def watch(system, path, service, name, port, files, serving=(), goal='healthy',
           limit=LIMIT_SECONDS, poll=POLL_SECONDS, stop=STOP_SECONDS, log=print):
     """Start the container and poll until the workspace is built, or it is answering, or time is up.
 
@@ -265,7 +265,7 @@ def watch(system, path, role, name, port, files, serving=(), goal='healthy',
     try:
         # No --wait: the wait is the thing being measured, and it is measured against the workspace
         # and the engine's own answer rather than against Docker's opinion of when to give up.
-        system.docker('compose', *project, 'up', '-d', '--no-deps', '--pull', 'never', role)
+        system.docker('compose', *project, 'up', '-d', '--no-deps', '--pull', 'never', service)
         while True:
             elapsed = time.monotonic() - started
             answer = probe(system, name, port)
@@ -348,9 +348,9 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
     """Take one measurement for a profile and merge it into the receipt the switch reads."""
     require(phase in ('provision', 'warm'), 'Unknown provisioning phase: ' + str(phase))
     bundle = controller.desired(profile)
-    role, engine, provision = controller.provisioning(bundle)
-    require(role is not None, profile + ': this profile does not provision itself; there is nothing to measure')
-    cfg = bundle['compose']['services'][role]
+    service, engine, provision = controller.provisioning(bundle)
+    require(service is not None, profile + ': this profile does not provision itself; there is nothing to measure')
+    cfg = bundle['compose']['services'][service]
     workspace = workspace_target(cfg, provision)
     require(workspace is not None, profile + ': the engine workspace bind is missing from the bundle')
     system = controller.system
@@ -373,11 +373,11 @@ def measurement(controller, profile, phase='provision', limit=LIMIT_SECONDS, pol
     spec = controller.state / 'provisioning' / (profile + '-compose.json')
     # The exact file this run started from stays on disk: if a measurement is questioned later, or a
     # later engine revision changes what it asks for, the difference is readable.
-    atomic_json(spec, throwaway(bundle, role, name, port))
+    atomic_json(spec, throwaway(bundle, service, name, port))
     # A build run shares the machine, so the serving backends are watched while it packs. A warm run
     # has no serving backend by construction — that is what its refusal enforces — so there is nothing
     # beside it to sample.
-    result = watch(system, spec, role, name, port, ready_files(workspace, provision),
+    result = watch(system, spec, service, name, port, ready_files(workspace, provision),
         serving=serving_containers(controller) if phase == 'provision' else (),
         goal='workspace' if phase == 'provision' else 'healthy',
         limit=limit, poll=poll, stop=stop_seconds(cfg), log=log)

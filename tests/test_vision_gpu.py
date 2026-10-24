@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 
+from models import CODING, EVERYDAY
 from runtime.config import CONFIGURATIONS, engine_interface, read, render
 from runtime.controller import Controller
 from runtime.system import atomic_json
@@ -20,7 +21,7 @@ def argv_engine(profile):
     """Whether this configuration's backend is handed an argument vector, which is what the UUID
     notation below describes. An environment-interface backend is addressed by index instead, so the
     CUDA_VISIBLE_DEVICES this test compares is a UUID list only for the former -- and since 2026-10-20
-    a paired configuration is not the same thing as an argument-vector one."""
+    a configuration is not the same thing as an argument-vector one; its models are."""
     return engine_interface(ENGINES[read(ROOT / 'config/profiles' / (profile + '.json'))['engine']]) == 'argv'
 
 
@@ -34,23 +35,26 @@ def vision_host():
 class VisionTests(unittest.TestCase):
     def test_all_profiles_only_change_encoder_and_visibility(self):
         host = vision_host()
-        gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services']['everyday']
+        gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services'][EVERYDAY]
         # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests. Nighttime's MTP
         # draft also lives on the vision GPU, so on a CPU-vision host it runs without the draft.
         for profile in (p for p in CONFIGURATIONS if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
-            # The night-side resident is the same launch whichever configuration loads it, and that is
-            # worth asserting across a paired configuration built on a different engine as well as the
+            # The everyday model is the same launch whichever configuration loads it, and that is
+            # worth asserting across a configuration built on a different engine as well as the
             # two that share one.
-            self.assertEqual(gpu['compose']['services']['everyday'], gpu_night)
+            self.assertEqual(gpu['compose']['services'][EVERYDAY], gpu_night)
             if not argv_engine(profile):
                 continue
-            for role, cfg in gpu['compose']['services'].items():
-                prior = cpu['compose']['services'][role]
-                group = 'daytime' if role == 'coding' else 'nighttime'
-                self.assertEqual(cfg['environment']['CUDA_VISIBLE_DEVICES'], ','.join([*host['cuda_order'][group], VISION]))
+            for model, cfg in gpu['compose']['services'].items():
+                prior = cpu['compose']['services'][model]
+                # Which GPU pair a launch is on is a fact of the cards it reserved, not of the id it is
+                # filed under: several of this host's models load one after another on the same pair and
+                # in the same container.
                 ids = cfg['deploy']['resources']['reservations']['devices'][0]['device_ids']
+                group = 'nighttime' if set(ids) & set(BASE['gpu_ids']['nighttime']) else 'daytime'
+                self.assertEqual(cfg['environment']['CUDA_VISIBLE_DEVICES'], ','.join([*host['cuda_order'][group], VISION]))
                 self.assertEqual(ids, [*BASE['gpu_ids'][group], VISION])
                 restored = copy.deepcopy(cfg)
                 restored.pop('environment')
@@ -58,7 +62,7 @@ class VisionTests(unittest.TestCase):
                 argv = restored['command']
                 argv[argv.index('--mmproj-offload')] = '--no-mmproj-offload'
                 argv[argv.index('--mmproj-device') + 1] = 'none'
-                if role == 'everyday':
+                if model == EVERYDAY:
                     i = argv.index('--spec-type'); del argv[i:i + 14]  # seven draft flags and their values
                     restored['volumes'] = [m for m in restored['volumes'] if m['target'] != '/weights/mtp.gguf']
                 self.assertEqual(restored, prior)
@@ -108,5 +112,5 @@ class VisionTests(unittest.TestCase):
                 (lambda ci: ci['HostConfig']['DeviceRequests'][0].update(DeviceIDs=[VISION]), 'GPU assignment'),
                 (lambda ci: ci['HostConfig']['DeviceRequests'][0].update(Count=-1), 'GPU reservation contract')]:
                 system.containers[name] = copy.deepcopy(original); mutation(system.containers[name])
-                self.assertIn(reason, c.observe(bundle)['coding']['differences'])
+                self.assertIn(reason, c.observe(bundle)[CODING]['differences'])
                 self.assertFalse(c.status()['ready'])

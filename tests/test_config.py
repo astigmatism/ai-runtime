@@ -6,34 +6,92 @@ import shutil
 import tempfile
 import unittest
 
+from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
 from runtime.system import atomic_json
 from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT,
-    DEFAULT_PROFILE, EVERYDAY_PROFILE, EVERYDAY_PROFILES, PROFILE_ALIASES, RETIRED_PROFILES,
+    DEFAULT_PROFILE, PROFILE_ALIASES, RETIRED_PROFILES,
     ALIASES_VERSION, available_profiles, belongs_to_host, catalog_names, clean_alias,
-    configurations_for, model_id, nameable_models,
+    configurations_for, is_exclusive, model_id, models_of, nameable_models,
     default_name, default_profile, digest, display_name, engine_interface, merge_settings, read,
-    read_aliases, render, resolve_profile, service_engine, text_gpus, unknown_profile)
+    read_aliases, render, resolve_profile, service_engine, service_key, text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
 VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
-# A solo configuration reserves all four text GPUs and loads no second resident; a paired one takes
-# one GPU pair and loads the Everyday resident beside it.
-EXCLUSIVE = tuple(n for n in CONFIGURATIONS if read(ROOT / 'config/profiles' / (n + '.json')).get('exclusive'))
-PAIRED = tuple(n for n in CONFIGURATIONS if n not in EXCLUSIVE)
+
+
+def profile_file(name):
+    """What one profile file says, since half of these tests ask what a file states."""
+    return read(ROOT / 'config/profiles' / (name + '.json'))
+
+
+def config_with(name, **changes):
+    """The shipped configuration directory with one profile file edited.
+
+    A refusal worth reaching through a real file: the same edit applied to a dict in memory skips the
+    part of the rule that lives in how a profile is found and read on disk.
+    """
+    directory = Path(tempfile.mkdtemp()) / 'config'
+    shutil.copytree(ROOT / 'config', directory)
+    path = directory / 'profiles' / (name + '.json')
+    definition = read(path)
+    definition.update(changes)
+    path.write_text(json.dumps(definition))
+    return directory
+
+
+def one_pair_host(machine):
+    """A machine with one text pair, for a configuration that loads one model on it.
+
+    The alternative is four cards and one model, which render refuses -- correctly: a declared card
+    with nothing placed on it is a card the operator believes is serving.
+    """
+    host = copy.deepcopy(BASELINE['host'])
+    return {'model_root': host['model_root'], 'router_state_dir': host['router_state_dir'],
+        'router_admin_url': host['router_admin_url'], 'router_admin_header': host['router_admin_header'],
+        'uid': host['uid'], 'gid': host['gid'], 'host_id': machine,
+        'gpu_ids': {'daytime': host['gpu_ids']['daytime']},
+        'gpu_names': {'daytime': host['gpu_names']['daytime']}}
+
+
+def exclusive(name):
+    """Whether the model a configuration is named after owns every text GPU of this host."""
+    return is_exclusive(profile_file(name))
+
+
+# How many models a configuration loads is a fact in its own `models` list, and the two shapes the
+# shipped set is in follow from reading it: one model across every card, or several with the cards
+# divided. Nothing here may assume the answer the way a `role` used to.
+NAMED = {name: [model_id(model) for model in models_of(ROOT / 'config', profile_file(name))]
+    for name in CONFIGURATIONS}
+ALONE = tuple(n for n in CONFIGURATIONS if len(NAMED[n]) == 1)
+# Which configurations load a model, read off the lists rather than from a role every file used to
+# carry: a test that says "every configuration that loads this model" says which model it means.
+LOADS = {model: tuple(n for n in CONFIGURATIONS if model in NAMED[n])
+    for model in {model for models in NAMED.values() for model in models}}
+# The file the Everyday model is defined in. It is a profile file like any other, and what makes it a
+# model rather than a configuration is that it names no `models` list of its own -- which is also why
+# no configuration may load it as one.
+EVERYDAY_FILE = 'everyday'
+# A configuration is filed under the model it is named after, and a model is filed under the id a
+# client routes on, so `service_key(model) is model_id(model)` is the whole identity rule; the tests
+# read it once here instead of trusting a key that used to be spelled `coding`.
+OWN = {name: service_key(profile_file(name)) for name in CONFIGURATIONS}
+# Every profile file the revision ships: the configurations, and the models their lists name.
+DEFINITIONS = tuple(sorted(path.stem for path in (ROOT / 'config/profiles').glob('*.json')))
 ENGINES = read(ROOT / 'config/shared.json')['engines']
-# The one configuration that is not llama.cpp, and the only solo one. Its engine is configured by the
-# environment, so the catalog fields that describe a flag the engine was handed (KV types, --fit, the
-# host-RAM prompt cache budget) are not published for it.
+# The one configuration that is not llama.cpp, and the only one that owns every card. Its engine is
+# configured by the environment, so the catalog fields that describe a flag the engine was handed (KV
+# types, --fit, the host-RAM prompt cache budget) are not published for it.
 SOLO = 'flash-next-strata-solo-thinking-recovery'
 RECOVERY = SOLO
-# The alias every configuration's coding entry carries for the legacy Ollama surface. It is the
+# The alias the household's default model carries for the legacy Ollama surface. It is the
 # compatibility ID, not the one a contract client sends, so it is never the only alias an entry has.
 COMPATIBILITY_ALIAS = 'local-active'
-# The service IDs clients address residents by. Every configuration publishes all three: a solo
-# configuration answers `nighttime` from its own model, which is what keeps a client that only ever
-# sends one of them working whichever configuration is selected.
-RESIDENT_SERVICES = ('daytime', COMPATIBILITY_ALIAS, 'nighttime')
+# The service IDs a client of this machine sends. Every configuration of Rosalina publishes all three:
+# the configuration that loads one model answers `nighttime` from that model, which is what keeps a
+# client that only ever sends one of them working whichever configuration is selected.
+CLIENT_SERVICES = ('daytime', COMPATIBILITY_ALIAS, 'nighttime')
 # The machine the shipped private settings name, and the machine every fixture host that does not name
 # itself stands for: absent `host_id` says nothing, which is the whole registry with no guard.
 ROSALINA = 'rosalina'
@@ -43,7 +101,7 @@ DAISY = 'daisy'
 
 
 def interface_of(profile):
-    return engine_interface(ENGINES[read(ROOT / 'config/profiles' / (profile + '.json'))['engine']])
+    return engine_interface(ENGINES[profile_file(profile)['engine']])
 
 
 def vision_host(host=None):
@@ -53,13 +111,23 @@ def vision_host(host=None):
     return host
 
 
+def deployed(host, machine):
+    """A host that states which machine it is, which is what a deployed `host.json` does.
+
+    A host that states nothing is shown every machine's configurations, and then a service ID another
+    machine publishes really is one nothing loaded here answers -- which is what `offline_services`
+    reports, and what a pin recorded on the machine its own definition names does not contain.
+    """
+    return {**host, 'host_id': machine}
+
+
 def fixture_host(profile):
     """The host a pinned digest was recorded on, which for the second machine's configuration is not
     the four-card host the rest of these pins were."""
-    definition = read(ROOT / 'config/profiles' / (profile + '.json'))
-    if definition.get('hosts') and ROSALINA not in definition['hosts']:
+    hosts = profile_file(profile).get('hosts')
+    if hosts and ROSALINA not in hosts:
         return second_machine(gpu_architectures=['75'])
-    return vision_host()
+    return deployed(vision_host(), ROSALINA)
 
 
 def host_for(profile):
@@ -70,11 +138,11 @@ def host_for(profile):
     another machine the host it was measured on, since `--gpus 0,1` on four cards is a refusal and not
     a rendering.
     """
-    definition = read(ROOT / 'config/profiles' / (profile + '.json'))
-    if definition.get('hosts') and ROSALINA not in definition['hosts']:
+    hosts = profile_file(profile).get('hosts')
+    if hosts and ROSALINA not in hosts:
         return second_machine(gpu_architectures=['75'])
-    # The exclusive profiles place their projector and MTP draft on the vision GPU.
-    return vision_host() if profile in EXCLUSIVE else BASELINE['host']
+    # A model that owns every text GPU places its projector and MTP draft on the vision GPU.
+    return deployed(vision_host() if exclusive(profile) else BASELINE['host'], ROSALINA)
 
 
 def second_machine(**changes):
@@ -94,30 +162,65 @@ def second_machine(**changes):
     return host
 
 
+# Both fixture files under tests/fixtures/ are published artifacts of the revision that keyed a Compose
+# service by its role, and a fixture is never re-cut to let a test pass: `renamed-profiles.json` holds
+# the digests a rename must keep reproducing and `active-bundles.json` the whole-bundle digests that
+# notice an unintended launch change. A service is now filed under the model it loads, and the container
+# it starts no longer carries a `local-ai.role` label: nothing read that label -- not the controller,
+# not the portal, not the router -- so it described a concept this runtime no longer has, and a label
+# nobody reads is not worth a container's metadata. The pins therefore want two things back and only
+# those two: the old spelling of the service key, and the label that spelled it. Putting exactly that
+# back is what keeps these pins the check they were cut to be: an argv, a mount, an environment
+# variable, a catalog field or a GPU moved by accident still breaks the digest.
+def role(service):
+    """The key the pinned revision filed this model's launch under."""
+    return 'everyday' if service == EVERYDAY else 'coding'
+
+
+def stamped(service, cfg):
+    """The container as the pinned revision rendered it, label and all."""
+    return {**cfg, 'labels': {**cfg.get('labels', {}), 'local-ai.role': role(service)}}
+
+
+def filed_by_role(bundle):
+    bundle = copy.deepcopy(bundle)
+    bundle.pop('config_sha256', None)
+    services = bundle['compose']['services']
+    bundle['compose']['services'] = {role(service): stamped(service, cfg)
+        for service, cfg in services.items()}
+    for entry in bundle['manifest']['services']:
+        entry['role'] = role(entry.pop('service'))
+    return bundle
+
+
 class ConfigurationTests(unittest.TestCase):
     def test_renamed_profiles_launch_exactly_the_backends_of_their_previous_names(self):
         # The 2026-10-07 consolidation renamed the kept configurations. Their backends and model aliases
         # (benchmark history) are unchanged, so switching from an old name to its new one recreates nothing.
         # compose_sha256 is the whole backend set at the rename; Nighttime has since gained MTP3 (2026-10-07),
-        # so the Daytime service is what stays pinned for the paired configurations.
+        # so the configuration's own service is what stays pinned for the configurations that load another
+        # model beside it.
         #
         # Every selectable configuration is pinned here, renamed or not -- an entry whose previous_id is
         # null says so in its note -- because the digest is the cheapest thing that notices a profile edit
-        # moved a launch flag, a mount or a variable along with it.
+        # moved a launch flag, a mount or a variable along with it. The per-service digest is the one that
+        # says a launch did not move, and it survives the day a service is filed under a different name:
+        # what is digested is the container, not the key it sits under.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
         self.assertEqual(set(recorded), set(CONFIGURATIONS))
         for name, expected in recorded.items():
             with self.subTest(profile=name, previous=expected['previous_id']):
-                compose = render(ROOT / 'config', fixture_host(name), name)['compose']
-                self.assertEqual(digest(compose['services']['coding']), expected['coding_service_sha256'])
-                if name in EXCLUSIVE:
-                    self.assertEqual(digest(compose), expected['compose_sha256'])
+                bundle = render(ROOT / 'config', fixture_host(name), name)
+                self.assertEqual(digest(stamped(OWN[name], bundle['compose']['services'][OWN[name]])),
+                    expected['coding_service_sha256'])
+                if name in ALONE:
+                    self.assertEqual(digest(filed_by_role(bundle)['compose']), expected['compose_sha256'])
 
     def test_nothing_in_service_is_relaunched_by_a_revision_that_did_not_mean_to(self):
         # A revision that changes the launch of what is serving is a deliberate act, not a side effect
         # of adding a neighbour. config_sha256 is what the controller compares against the live
         # container, so a change here does not refuse -- it recreates a running model. Two of these
-        # bundles also carry the Everyday resident's launch inside them, so the night-side model's
+        # bundles also carry the Everyday model's launch inside them, so the night-side model's
         # projector and MTP draft are pinned here too: they ride on the index the shared vision GPU is
         # assigned, which is exactly the thing a change to the vision placement moves without any new
         # profile mentioning it.
@@ -125,8 +228,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(set(pinned['bundles']), set(CONFIGURATIONS))
         for name, expected in sorted(pinned['bundles'].items()):
             with self.subTest(profile=name):
-                self.assertEqual(render(ROOT / 'config', fixture_host(name),
-                    name)['config_sha256'], expected)
+                self.assertEqual(digest(filed_by_role(
+                    render(ROOT / 'config', fixture_host(name), name))), expected)
 
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,13 +238,17 @@ class ConfigurationTests(unittest.TestCase):
             definition = read(path); definition['context_tokens'] = 98304
             path.write_text(json.dumps(definition))
             result = render(config, BASELINE['host'], 'qwen27b-q8-pair')
-            argv = result['compose']['services']['coding']['command']
+            argv = result['compose']['services'][CODING]['command']
             for flag in ['--ctx-size', '--kv-unified-per-slot']:
                 self.assertEqual(argv[argv.index(flag) + 1], '98304')
             self.assertEqual(result['catalog']['context_length'], 98304)
             self.assertEqual(result['catalog']['models'][0]['total_context_length'], 98304)
             self.assertEqual(result['manifest']['services'][0]['context_tokens'], 98304)
-            self.assertEqual(result['catalog']['models'][1]['context_length'], 98304)
+            # An edit to one model's window is an edit to that model: the other model this
+            # configuration loads keeps the window its own file states, which 98304 alone cannot show
+            # (the Everyday model is served at that width) and the source of it can.
+            self.assertEqual([m['context_length'] for m in result['catalog']['models']],
+                [98304, read(ROOT / 'config/profiles/everyday.json')['context_tokens']])
             self.assertEqual(result['catalog']['display_name'], 'Qwen3.8 27B Q8 (96K)')
 
     def test_gpu_groups_cannot_overlap(self):
@@ -181,67 +288,80 @@ class ConfigurationTests(unittest.TestCase):
         engine = read(ROOT / 'config/shared.json')['engines']['qwen38-dual-836d571']
         q8 = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-pair')
         q6k = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q6k-pair')
-        for bundle, alias, quant, display in ((q8, 'qwen3.8-27b-q8_0-tensor-next', 'Q8_0', 'Qwen3.8 27B Q8 (160K)'),
-                (q6k, 'qwen3.8-27b-ud-q6_k_xl-tensor-next', 'UD-Q6_K_XL', 'Qwen3.8 27B Q6_K (160K)')):
+        for bundle, alias, quant, display in ((q8, CODING, 'Q8_0', 'Qwen3.8 27B Q8 (160K)'),
+                (q6k, CODING_Q6K, 'UD-Q6_K_XL', 'Qwen3.8 27B Q6_K (160K)')):
             with self.subTest(alias=alias):
-                self.assertEqual(list(bundle['compose']['services']), ['coding', 'everyday'])
-                argv = bundle['compose']['services']['coding']['command']
+                # Two models named, two services, each filed under the model it loads.
+                self.assertEqual(list(bundle['compose']['services']), [alias, EVERYDAY])
+                argv = bundle['compose']['services'][alias]['command']
                 # Tensor mode divides every weight between the RTX 3090 and RTX 4080 SUPER, balanced by bandwidth.
                 for flag, value in {'--alias': alias, '--split-mode': 'tensor', '--tensor-split': '55,45', '--fit': 'off',
                         '--ctx-size': '163840', '--spec-draft-n-max': '3', '--spec-draft-device': 'CUDA1'}.items():
                     self.assertEqual(argv[argv.index(flag) + 1], value)
-                self.assertEqual(service_engine(bundle, 'coding'), engine)
+                self.assertEqual(service_engine(bundle, alias), engine)
                 catalog = bundle['catalog']
                 self.assertEqual((catalog['model'], catalog['quantization'], catalog['display_name']), (alias, quant, display))
                 self.assertEqual((catalog['context_length'], catalog['mtp']['max_draft_tokens'], catalog['mtp']['device']), (163840, 3, 'CUDA1'))
                 self.assertEqual(catalog['models'][1]['display_name'], 'Qwen3.8 27B Abliterated Q6_K (96K)')
         # Q6_K differs from Q8 only in its main weights, alias, and catalog identity.
-        q8_cfg, q6k_cfg = q8['compose']['services']['coding'], copy.deepcopy(q6k['compose']['services']['coding'])
-        argv = q6k_cfg['command']; argv[argv.index('--alias') + 1] = 'qwen3.8-27b-q8_0-tensor-next'
+        q8_cfg, q6k_cfg = q8['compose']['services'][CODING], copy.deepcopy(q6k['compose']['services'][CODING_Q6K])
+        argv = q6k_cfg['command']; argv[argv.index('--alias') + 1] = CODING
         for mount in q6k_cfg['volumes']:
             if mount['target'] == '/weights/main.gguf':
                 self.assertTrue(mount['source'].endswith('Qwen3.8-27B-UD-Q6_K_XL.gguf'))
                 mount['source'] = next(m['source'] for m in q8_cfg['volumes'] if m['target'] == '/weights/main.gguf')
         self.assertEqual(q6k_cfg, q8_cfg)
-        self.assertEqual(q6k['compose']['services']['everyday'], q8['compose']['services']['everyday'])
+        # The model both configurations load beside themselves is one launch, not two renderings of it.
+        self.assertEqual(q6k['compose']['services'][EVERYDAY], q8['compose']['services'][EVERYDAY])
 
-    def test_the_everyday_resident_runs_the_base_mtp3_head_on_the_shared_vision_gpu(self):
-        night = read(ROOT / 'config/profiles' / (EVERYDAY_PROFILE + '.json'))
+    def test_the_everyday_model_runs_the_base_mtp3_head_on_the_shared_vision_gpu(self):
+        night = profile_file(EVERYDAY_FILE)
         spec = {'--spec-type': 'draft-mtp', '--spec-draft-model': '/weights/mtp.gguf', '--spec-draft-n-max': '3',
             '--spec-draft-ngl': 'all', '--spec-draft-device': 'CUDA2', '--spec-draft-type-k': 'q8_0', '--spec-draft-type-v': 'q8_0'}
         self.assertEqual({k: night['arguments'][k] for k in spec}, spec)
         self.assertEqual((night['display_name'], night['arguments']['--alias'], night['draft_on_vision_gpu']),
-            ('Qwen3.8 27B Abliterated Q6_K', 'qwen3.8-27b-abliterated-q6_k', True))
+            ('Qwen3.8 27B Abliterated Q6_K', EVERYDAY, True))
         # At 128K, speculative decoding needed another 564 MiB on the RTX 4080 than the pair had free.
         self.assertEqual(night['context_tokens'], 98304)
-        head = next(a for a in read(ROOT / 'config/profiles/qwen27b-q6k-pair.json')['artifacts'] if a['target'] == '/weights/mtp.gguf')
+        head = next(a for a in profile_file('qwen27b-q6k-pair')['artifacts'] if a['target'] == '/weights/mtp.gguf')
         self.assertIn(head, night['artifacts'])  # the same self-contained 27B MTP head Daytime uses
         host = vision_host()
-        for name in PAIRED:
+        for name in LOADS[EVERYDAY]:
             with self.subTest(profile=name):
                 bundle = render(ROOT / 'config', host, name)
-                self.assertNotIn('nighttime_profile', bundle)
-                everyday = bundle['compose']['services']['everyday']
+                # The bundle says what it loads by loading it. A top-level key pointing at whatever
+                # runs beside the selected configuration -- in either spelling this house has used,
+                # `nighttime_profile` or `everyday_profile` -- would be a second source for what the
+                # `models` list already states, and the two would eventually disagree.
+                self.assertEqual(set(bundle), {'schema_version', 'profile', 'compose', 'catalog',
+                    'manifest', 'artifacts', 'config_sha256'})
+                everyday = bundle['compose']['services'][EVERYDAY]
                 argv = everyday['command']
                 for flag, value in {**spec, '--split-mode': 'tensor', '--device': 'CUDA0,CUDA1', '--mmproj-device': 'CUDA2'}.items():
                     self.assertEqual(argv[argv.index(flag) + 1], value)
                 self.assertEqual(everyday['deploy']['resources']['reservations']['devices'][0]['device_ids'], [*host['gpu_ids']['nighttime'], VISION])
-                model = bundle['catalog']['models'][1]
+                model = next(m for m in bundle['catalog']['models'] if m['model'] == EVERYDAY)
                 self.assertEqual((model['model'], model['mtp']['device'], model['mtp']['max_draft_tokens'], model['display_name']),
-                    ('qwen3.8-27b-abliterated-q6_k', 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K (96K)'))
-        # Without a vision GPU there is nowhere to put the draft: the Everyday resident runs without
+                    (EVERYDAY, 'CUDA2', 3, 'Qwen3.8 27B Abliterated Q6_K (96K)'))
+        # Without a vision GPU there is nowhere to put the draft: the Everyday model runs without
         # it rather than failing.
         cpu = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-pair')
-        argv = cpu['compose']['services']['everyday']['command']
+        argv = cpu['compose']['services'][EVERYDAY]['command']
         self.assertFalse([x for x in argv if x.startswith('--spec-')])
-        self.assertNotIn('/weights/mtp.gguf', [m['target'] for m in cpu['compose']['services']['everyday']['volumes']])
+        self.assertNotIn('/weights/mtp.gguf', [m['target'] for m in cpu['compose']['services'][EVERYDAY]['volumes']])
         self.assertEqual(cpu['catalog']['models'][1]['mtp'], {'enabled': False})
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config_dir)
             for name, change, message, target in [
-                    (EVERYDAY_PROFILE, {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU', 'qwen27b-q8-pair'),
-                    ('qwen27b-q8-pair', {'everyday': 'everyday-retired'}, 'unknown everyday resident profile', 'qwen27b-q8-pair'),
-                    (SOLO, {'everyday': EVERYDAY_PROFILE}, 'runs no second resident', SOLO)]:
+                    (EVERYDAY_FILE, {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU', 'qwen27b-q8-pair'),
+                    # A model that owns every text GPU cannot be named beside another one: the
+                    # configuration would be promising two launches that each need the whole machine.
+                    (SOLO, {'models': [SOLO, EVERYDAY_FILE]},
+                        'owns every text GPU of this host, so no other model can be loaded beside it', SOLO),
+                    # And the things a configuration names have to be models: a configuration in that
+                    # list is a decision, not something to load.
+                    ('qwen27b-q8-pair', {'models': ['qwen27b-q8-pair', SOLO]},
+                        'is a configuration and cannot be loaded as a model', 'qwen27b-q8-pair')]:
                 path = config_dir / 'profiles' / (name + '.json'); original = path.read_text()
                 definition = read(path); definition.update(change); path.write_text(json.dumps(definition))
                 with self.subTest(profile=name), self.assertRaisesRegex(RuntimeError, message):
@@ -262,17 +382,20 @@ class ConfigurationTests(unittest.TestCase):
                 path = config / 'profiles/qwen27b-q8-pair.json'
                 definition = read(path)
                 definition.update(exclusive=True, gpu_group='all')
+                # A model that owns every text GPU of this host owns it alone, so this exemplar loads
+                # nothing beside it -- which is the rule, not an inconvenience of the fixture.
+                definition['models'] = ['qwen27b-q8-pair']
                 definition['arguments'].update({'--device': 'CUDA0,CUDA1,CUDA2,CUDA3',
                     '--tensor-split': '1,1,1,1', '--spec-draft-device': 'CUDA4'})
                 definition['arguments'].update(change)
                 path.write_text(json.dumps(definition))
                 return render(config, vision_host() if host is None else host, 'qwen27b-q8-pair')
 
-            reserved = solo_llama()['compose']['services']['coding']['deploy']['resources']['reservations']['devices'][0]
+            reserved = solo_llama()['compose']['services'][CODING]['deploy']['resources']['reservations']['devices'][0]
             self.assertEqual(reserved['device_ids'], [*text, VISION])
-            # With no second resident the vision card is not shared, so it is reserved last and the
+            # Nothing else is loaded to share the vision card, so it is reserved last and the
             # language model never lands on it.
-            argv = solo_llama()['compose']['services']['coding']['command']
+            argv = solo_llama()['compose']['services'][CODING]['command']
             self.assertEqual(argv[argv.index('--device') + 1], 'CUDA0,CUDA1,CUDA2,CUDA3')
             for change, message in [({'--device': 'CUDA0,CUDA1,CUDA2'}, 'exactly once'),
                     ({'--device': 'CUDA0,CUDA1,CUDA2,CUDA4'}, 'exactly once'),
@@ -282,7 +405,7 @@ class ConfigurationTests(unittest.TestCase):
                 with self.subTest(arguments=change), self.assertRaisesRegex(RuntimeError, message):
                     solo_llama(**change)
             # The projector and the draft live on the one card no text model uses, so a host that was
-            # never given one cannot run a solo llama.cpp configuration at all.
+            # never given one cannot run a llama.cpp model that owns the machine at all.
             with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
                 solo_llama(BASELINE['host'])
             thin = vision_host(); thin['vision_gpu_id'] = 'GPU-night-2'
@@ -292,7 +415,9 @@ class ConfigurationTests(unittest.TestCase):
                     (SOLO, {'exclusive': 'yes'}, 'true or false'),
                     (SOLO, {'gpu_group': 'daytime'}, '"all" GPU group'),
                     ('qwen27b-q8-pair', {'gpu_group': 'all'}, 'unknown GPU group'),
-                    (EVERYDAY_PROFILE, {'exclusive': True}, '"all" GPU group')]:
+                    # Exclusivity is a fact about one model and its memory: the Everyday model naming
+                    # it without naming every card is refused through the list that loads it.
+                    (EVERYDAY_FILE, {'exclusive': True}, '"all" GPU group')]:
                 shutil.rmtree(config); shutil.copytree(ROOT / 'config', config)
                 target = config / 'profiles' / (name + '.json')
                 definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
@@ -300,7 +425,7 @@ class ConfigurationTests(unittest.TestCase):
                     render(config, vision_host(), name if name == SOLO else 'qwen27b-q8-pair')
 
     def test_a_solo_configuration_needs_every_text_card_named(self):
-        # Both text pairs are reserved, so a host that cannot name four distinct cards is refused
+        # Every text card is reserved, so a host that cannot name four distinct cards is refused
         # before a drain is taken rather than after a backend has been half-built on three of them.
         host = vision_host(); host['gpu_ids']['nighttime'][0] = host['gpu_ids']['daytime'][0]
         with self.assertRaisesRegex(RuntimeError, 'reserves a card twice'):
@@ -312,14 +437,15 @@ class ConfigurationTests(unittest.TestCase):
     def test_ram_prompt_cache_is_shared_for_daytime_and_lowered_only_for_nighttime(self):
         shared = read(ROOT / 'config/shared.json')
         self.assertEqual(shared['arguments']['--cache-ram'], '49152')
-        # Every Daytime profile inherits the shared 48 GiB lazy LRU cap. Nighttime alone overrides
-        # it to 24 GiB: on the 123 GiB host its cache had grown to ~50 GB with ~8 GB swapped and
-        # swap exhausted, so the worst-case combined pair is bounded at 72 GiB instead of 96 GiB.
+        # Every configuration's own model inherits the shared 48 GiB lazy LRU cap. The abliterated
+        # model alone overrides it to 24 GiB: on the 123 GiB host its cache had grown to ~50 GB with
+        # ~8 GB swapped and swap exhausted, so the worst-case combined pair is bounded at 72 GiB
+        # instead of 96 GiB.
         for name in CONFIGURATIONS:
             with self.subTest(profile=name):
-                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                definition = profile_file(name)
                 self.assertNotIn('--cache-ram', definition['arguments'])
-        night = read(ROOT / 'config/profiles' / (EVERYDAY_PROFILE + '.json'))
+        night = profile_file(EVERYDAY_FILE)
         self.assertEqual(night['arguments']['--cache-ram'], '24576')
         self.assertIn('--cache-ram', night['argument_order'])
         # Only the flag-configured engines are given a cache budget at all, so only they publish one.
@@ -327,18 +453,22 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(profile=name):
                 rendered = render(ROOT / 'config', host_for(name), name)
                 self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
-                coding, *paired = rendered['catalog']['models']
-                self.assertEqual(coding['global_ram_prompt_cache_mib'], 49152)
-                self.assertEqual([m['global_ram_prompt_cache_mib'] for m in paired], [] if name in EXCLUSIVE else [24576])
-                for role, expected in (('coding', '49152'), ('everyday', '24576'))[:1 if name in EXCLUSIVE else 2]:
-                    argv = rendered['compose']['services'][role]['command']
+                # A model is published with the budget its own file states, whichever configuration is
+                # asking for it: the lowered one travels with the abliterated model and not with the
+                # configuration that happens to load it.
+                self.assertEqual({m['model']: m['global_ram_prompt_cache_mib']
+                    for m in rendered['catalog']['models']},
+                    {model: (24576 if model == EVERYDAY else 49152) for model in NAMED[name]})
+                for model, cfg in rendered['compose']['services'].items():
+                    argv = cfg['command']
                     self.assertEqual(argv.count('--cache-ram'), 1)
-                    self.assertEqual(argv[argv.index('--cache-ram') + 1], expected)
+                    self.assertEqual(argv[argv.index('--cache-ram') + 1],
+                        '24576' if model == EVERYDAY else '49152')
 
     def test_every_backend_uses_one_of_the_pinned_engines(self):
         engines = read(ROOT / 'config/shared.json')['engines']
         # The Flash-Next branch engine retired with the llama.cpp Flash-Next configurations; the 27B
-        # pair and the Everyday resident use 836d571, and the Strata engine is the only non-llama.cpp
+        # pair and the abliterated model use 836d571, and the Strata engine is the only non-llama.cpp
         # one in the house.
         #
         # Two Strata engines are registered on purpose, and only for as long as the 0.1.44.1 candidate
@@ -349,7 +479,7 @@ class ConfigurationTests(unittest.TestCase):
         # is removed reference-aware (ops/reports/20261015-strata-engine-0.1.44.1-build/README.md).
         #
         # A fourth, dated 2026-10-16: the same revision with the image encoder compiled in, which is a
-        # build-time decision (BUILD_VISION) and not a runtime switch, so giving the resident its
+        # build-time decision (BUILD_VISION) and not a runtime switch, so giving a launch its
         # picture encoder means a second image. The text-only entry stays registered for exactly the
         # same reason the 0.1.43 one does -- undoing the vision step is a repoint, not a rebuild.
         #
@@ -372,25 +502,29 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
             'flash-next-strata-two-card-iq3-s': 'strata-vision-296b59d2f73c',
             'flash-next-strata-iq3-xxs-daisy': 'strata-sm75-296b59d2f73c',
-            EVERYDAY_PROFILE: 'qwen38-dual-836d571'}
-        self.assertEqual(set(expected), {*CONFIGURATIONS, *EVERYDAY_PROFILES})
+            EVERYDAY_FILE: 'qwen38-dual-836d571'}
+        # Every profile file in the tree is accounted for: a configuration, or a model one names. A
+        # file that is neither is a launch no configuration renders and no test renders either.
+        self.assertEqual(set(expected), {path.stem for path in (ROOT / 'config/profiles').glob('*.json')})
         for name, engine_name in expected.items():
             with self.subTest(profile=name):
-                self.assertEqual(read(ROOT / 'config/profiles' / (name + '.json'))['engine'], engine_name)
-        for name in PAIRED:
+                self.assertEqual(profile_file(name)['engine'], engine_name)
+        for name in CONFIGURATIONS:
             bundle = render(ROOT / 'config', host_for(name), name)
-            for role in ('coding', 'everyday'):
-                with self.subTest(profile=name, role=role):
-                    # Being paired is not the same as being llama.cpp: the two-card Strata probe loads
-                    # the Everyday resident on the other pair exactly as the 27B pair does, and runs a
-                    # different image as itself. Each role is held to its own engine, which is the
-                    # stronger reading and the one that stays true as the house grows.
-                    want = engines[expected[name] if role == "coding" else expected[EVERYDAY_PROFILE]]
-                    self.assertEqual(bundle['compose']['services'][role]['image'], want['tag'])
-                    self.assertEqual(service_engine(bundle, role), want)
+            for model in models_of(ROOT / 'config', profile_file(name)):
+                service = service_key(model)
+                with self.subTest(profile=name, service=service):
+                    # Loading two models is not the same as being one kind of engine: the two-card
+                    # Strata probe loads the abliterated model on the other pair exactly as the 27B
+                    # pair does, and runs a different image as itself. Each model is held to its own
+                    # engine, which is the stronger reading and the one that stays true as the house
+                    # grows -- and it is only readable because the service is filed under the model.
+                    want = engines[model['engine']]
+                    self.assertEqual(bundle['compose']['services'][service]['image'], want['tag'])
+                    self.assertEqual(service_engine(bundle, service), want)
 
     def test_nighttime_uses_tensor_parallel_placement_across_its_pair(self):
-        night = read(ROOT / 'config/profiles' / (EVERYDAY_PROFILE + '.json'))
+        night = profile_file(EVERYDAY_FILE)
         self.assertEqual(night['arguments']['--split-mode'], 'tensor')
         self.assertIn('--split-mode', night['argument_order'])
         for flag, value in {'--tensor-split': '60,40', '--device': 'CUDA0,CUDA1', '--n-gpu-layers': 'all',
@@ -398,9 +532,10 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(argument=flag):
                 self.assertEqual(night['arguments'][flag], value)
         self.assertEqual(night['arguments']['--spec-type'], 'draft-mtp')  # MTP3 since 2026-10-07, on the vision GPU
-        for name in PAIRED:
+        for name in LOADS[EVERYDAY]:
             with self.subTest(profile=name):
-                argv = render(ROOT / 'config', host_for(name), name)['compose']['services']['everyday']['command']
+                argv = render(ROOT / 'config', host_for(name), name)['compose'][
+                    'services'][EVERYDAY]['command']
                 self.assertEqual(argv.count('--split-mode'), 1)
                 self.assertEqual(argv[argv.index('--split-mode') + 1], 'tensor')
                 self.assertEqual(argv[argv.index('--flash-attn') + 1], 'on')  # required by tensor mode
@@ -449,6 +584,73 @@ class ConfigurationTests(unittest.TestCase):
                 render(config, vision_host(), SOLO)
 
 
+class AConfigurationNamesItsModels(unittest.TestCase):
+    """How many models a configuration loads is written in its own file, and it has to be written well.
+
+    Every one of these refusals is a configuration that would otherwise render something other than
+    what its author read: a list that does not include the file it is written in, a model named twice
+    onto two cards, a configuration loaded as if it were a model. None of them can serve, and a
+    machine that started one would be running a decision nobody selected.
+    """
+
+    def test_the_models_a_configuration_names_are_loaded_in_that_order(self):
+        # The switch brings a configuration's models up one at a time in the order the file names
+        # them, so the list is load-bearing for the drain: a renderer that sorted the models, or that
+        # always put the configuration's own model first, would change what comes up when without
+        # changing a byte of any profile.
+        config = config_with('qwen27b-q8-pair', models=[EVERYDAY_FILE, 'qwen27b-q8-pair'])
+        bundle = render(config, BASELINE['host'], 'qwen27b-q8-pair')
+        self.assertEqual(list(bundle['compose']['services']), [EVERYDAY, CODING])
+        self.assertEqual([s['service'] for s in bundle['manifest']['services']], [EVERYDAY, CODING])
+        self.assertEqual([m['model'] for m in bundle['catalog']['models']], [EVERYDAY, CODING])
+
+    def test_a_configuration_that_names_two_models_loads_two_services(self):
+        # One file, as many launches as it names: the number of Compose services is the number of
+        # entries in the list, which is the whole content of the change and what every old assertion
+        # about "the coding half and the everyday half" used to stand in for.
+        for name in CONFIGURATIONS:
+            with self.subTest(profile=name):
+                bundle = render(ROOT / 'config', host_for(name), name)
+                self.assertEqual(sorted(bundle['compose']['services']), sorted(NAMED[name]),
+                    name + ' does not load one service per model it names')
+        # And the count comes out of the list rather than out of a rule about configurations: the 27B
+        # pair, told to load only its own model, loads one service. It needs a machine with the one
+        # pair it keeps, because a declared card with nothing placed on it is refused -- as it should
+        # be, and that refusal is the other half of what the list means.
+        only = render(config_with('qwen27b-q8-pair', models=['qwen27b-q8-pair']),
+            one_pair_host(ROSALINA), 'qwen27b-q8-pair')
+        self.assertEqual(list(only['compose']['services']), [CODING])
+
+    def test_a_configuration_must_name_the_models_it_loads(self):
+        for models, message in [
+                ([], 'must be a non-empty list'),
+                ('everyday', 'must be a non-empty list'),
+                (['qwen27b-q6k-pair'], 'must name itself'),
+                (['qwen27b-q8-pair', 'qwen27b-q8-pair'], 'twice'),
+                (['qwen27b-q8-pair', SOLO], 'is a configuration and cannot be loaded as a model')]:
+            with self.subTest(models=models):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    render(config_with('qwen27b-q8-pair', models=models),
+                        BASELINE['host'], 'qwen27b-q8-pair')
+        # A configuration file with the list taken out is not "one model, implicitly". A file that
+        # states no decision is refused, because the answer used to be that it was stated twice.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            path = config / 'profiles/qwen27b-q8-pair.json'
+            definition = read(path); definition.pop('models')
+            path.write_text(json.dumps(definition))
+            with self.assertRaisesRegex(RuntimeError, 'a configuration must name the models it loads'):
+                render(config, BASELINE['host'], 'qwen27b-q8-pair')
+
+    def test_a_model_that_names_a_list_of_its_own_is_a_configuration(self):
+        # The list is what makes a file a configuration, so naming one is not a detail about who loads
+        # it: `everyday` carrying its own list would be a decision somebody can select, filed under
+        # the name another configuration is loading as a model.
+        with self.assertRaisesRegex(RuntimeError, 'is a configuration and cannot be loaded as a model'):
+            render(config_with(EVERYDAY_FILE, models=[EVERYDAY_FILE]),
+                BASELINE['host'], 'qwen27b-q8-pair')
+
+
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
@@ -456,68 +658,77 @@ class RegistryTests(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
             'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
             'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy'))
-        # Paired is a statement about residents and GPUs -- one text pair plus the Everyday resident on
-        # the other -- and not about which engine the coding side runs, which is why a Strata
-        # configuration joined this tuple on 2026-10-20 without either 27B pair changing.
-        self.assertEqual(PAIRED, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-            'flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'))
+        # Loading more than one model is a statement about cards -- one model on one text pair and
+        # another on the other -- and not about which engine the first of them runs, which is why a
+        # Strata configuration joined this set on 2026-10-20 without either 27B pair changing.
+        self.assertEqual(tuple(n for n in CONFIGURATIONS if len(NAMED[n]) > 1),
+            ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
+             'flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'))
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
-        # Every second resident a configuration names is listed, the default first.
-        self.assertEqual([x['profile'] for x in registry['always_included']], list(EVERYDAY_PROFILES))
-        variants = {x['profile']: x for x in registry['always_included']}
-        night = variants[EVERYDAY_PROFILE]
-        baseline = {name: render(ROOT / 'config', vision_host(), cfg)['compose']['services']['everyday']
-            for name, cfg in ((EVERYDAY_PROFILE, 'qwen27b-q8-pair'),)}
+        # The models a configuration loads are listed with it, in the order it names them. A model an
+        # operator cannot see they are about to load is a model they did not choose.
+        self.assertEqual([[m['model'] for m in x['models']] for x in registry['selectable']],
+            [NAMED[name] for name in CONFIGURATIONS])
         for name in CONFIGURATIONS:
             with self.subTest(profile=name):
                 entry = next(x for x in registry['selectable'] if x['profile'] == name)
                 rendered = render(ROOT / 'config', host_for(name), name)
                 model = next(m for m in rendered['catalog']['models'] if m['model'] == entry['model'])
-                engine = service_engine(rendered, 'coding')
+                engine = service_engine(rendered, OWN[name])
                 self.assertEqual(entry['display_name'], model['display_name'])
                 self.assertEqual(entry['context_tokens'], model['context_length'])
                 self.assertEqual(entry['engine_tag'], engine['tag'])
                 self.assertEqual(entry['backend_revision'], engine['revision'])
-                self.assertEqual(entry['exclusive'], name in EXCLUSIVE)
-                self.assertEqual(rendered['catalog']['configuration'], {'id': name, 'exclusive': name in EXCLUSIVE})
-                # Nothing a client sends is left unpublished, in any configuration: a solo one answers
-                # `nighttime` from the one model it loads, so the router has no offline service to
-                # report for it either. What differs is only how many residents are launched.
+                self.assertEqual(entry['exclusive'], exclusive(name))
+                self.assertEqual(rendered['catalog']['configuration'],
+                    {'id': name, 'exclusive': exclusive(name)})
+                # Nothing a client sends is left unpublished, in any configuration: the one that loads
+                # a single model answers `nighttime` from that model, so the router has no offline
+                # service to report for it either. What differs is only how many models are launched.
                 self.assertEqual(rendered['catalog']['offline_services'], [])
-                self.assertEqual(list(rendered['compose']['services']),
-                    ['coding'] if name in EXCLUSIVE else ['coding', 'everyday'])
-                self.assertEqual([m['model'] for m in rendered['catalog']['models']],
-                    [entry['model']] if name in EXCLUSIVE else [entry['model'], night['model']])
-                if name in EXCLUSIVE:
-                    continue
-                # The second backend is the Everyday variant the configuration names, identical
-                # whichever coding configuration names it.
-                paired = variants[entry['everyday']]
-                everyday = service_engine(rendered, 'everyday')
-                night_entry = next(m for m in rendered['catalog']['models'] if m['model'] == paired['model'])
-                self.assertEqual(paired['engine_tag'], everyday['tag'])
-                self.assertEqual(paired['backend_revision'], everyday['revision'])
-                self.assertEqual(paired['context_tokens'], night_entry['context_length'])
-                self.assertEqual(paired['display_name'], night_entry['display_name'])
-                self.assertEqual(render(ROOT / 'config', vision_host(), name)['compose']['services']['everyday'], baseline[entry['everyday']])
+                # One service per model the file names, in the order it names them, each filed under
+                # the model it loads -- which is the claim this whole change rests on.
+                self.assertEqual(list(rendered['compose']['services']), NAMED[name])
+                self.assertEqual([m['model'] for m in rendered['catalog']['models']], NAMED[name])
+                for listed in entry['models']:
+                    published = next(m for m in rendered['catalog']['models']
+                        if m['model'] == listed['model'])
+                    with self.subTest(model=listed['model']):
+                        self.assertEqual(listed['display_name'], published['display_name'])
+                        self.assertEqual(listed['context_tokens'], published['context_length'])
+                        self.assertEqual(listed['service_ids'], sorted(published['aliases']))
+                        self.assertEqual(listed['exclusive'], published.get('exclusive', False))
+                # What a client can ask for is the union over the models loaded; what the
+                # configuration is named after is a separate fact, because "what would answer" and
+                # "what is loaded" are different questions and neither answers the other.
+                self.assertEqual(entry['service_ids'],
+                    sorted({sid for m in entry['models'] for sid in m['service_ids']}))
+                self.assertEqual(entry['model_service_ids'], sorted(model['aliases']))
+        # The model several configurations share is one launch, not one rendering per configuration
+        # that names it: identical image, identical argv, identical GPU reservation.
+        launches = {json.dumps(render(ROOT / 'config', vision_host(), name)['compose']['services'][EVERYDAY],
+                   sort_keys=True) for name in LOADS[EVERYDAY]}
+        self.assertEqual(len(launches), 1, 'the Everyday model is a different launch depending on '
+            'which configuration asks for it')
 
     def test_catalog_names_each_backends_text_gpus_and_vision_gpu(self):
         host = vision_host()
         names = host['gpu_names']
         paired = render(ROOT / 'config', host, 'qwen27b-q8-pair')['catalog']
         coding, everyday = paired['models']
+        self.assertEqual((coding['model'], everyday['model']), (CODING, EVERYDAY))
         self.assertEqual(coding['gpu_names'], names['daytime'])
         self.assertEqual(everyday['gpu_names'], names['nighttime'])
         self.assertEqual(len(coding['gpu_names']), len(coding['text_gpu_uuids']))
         self.assertEqual((coding['vision_gpu_name'], coding['vision_gpu_shared']), ('RTX 3080', True))
         self.assertEqual(paired['configuration'], {'id': 'qwen27b-q8-pair', 'exclusive': False})
-        # The root coding projection carries the same names as its entry.
+        # The root projection is the first model's entry, names and all.
         self.assertEqual(paired['gpu_names'], coding['gpu_names'])
         [solo] = render(ROOT / 'config', host, SOLO)['catalog']['models']
         self.assertEqual(solo['gpu_names'], [*names['daytime'], *names['nighttime']])
-        # The solo configuration holds the shared card to itself from 2026-10-16: it loads no second
-        # resident, so the encoder that runs there shares it with nothing, and `vision_gpu_shared`
-        # says so rather than repeating the paired configurations' answer.
+        # A model that owns every text GPU holds the shared card to itself: nothing else is loaded to
+        # share it with, so `vision_gpu_shared` says so rather than repeating what the configurations
+        # that divide the machine say.
         self.assertEqual((solo['vision_gpu_name'], solo['vision_gpu_shared']), ('RTX 3080', False))
         self.assertEqual(solo['vision_device'], 'CUDA4')
         self.assertTrue(solo['capability_profile']['vision'])
@@ -534,19 +745,21 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(text_only['input_modalities'], ['text'])
 
     def test_every_model_declares_whether_it_is_nsfw(self):
-        # Router clients pick "the most capable NSFW model" from this flag; only the Everyday
-        # resident is abliterated, and a solo configuration answers `nighttime` with a model that is
-        # not, which is a fact the flag states rather than one the service ID implies.
+        # Router clients pick "the most capable NSFW model" from this flag. It is a fact about one
+        # model and its pack -- only the abliterated one is -- stated the same way whichever
+        # configuration loads it, and a configuration that answers `nighttime` from a model that is
+        # not abliterated says so rather than letting the service ID imply it.
         for name in CONFIGURATIONS:
             with self.subTest(profile=name):
                 catalog = render(ROOT / 'config', host_for(name), name)['catalog']
                 flags = {m['model']: m['capability_profile']['nsfw'] for m in catalog['models']}
-                self.assertEqual(sorted(flags.values()), [False] if name in EXCLUSIVE else [False, True])
+                self.assertEqual(flags, {model: model == EVERYDAY for model in NAMED[name]})
+                # The document root is the first model published, and it is never the abliterated one.
                 self.assertIs(catalog['models'][0]['capability_profile']['nsfw'], False)
                 self.assertIs(catalog['capability_profile']['nsfw'], False)
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles' / (EVERYDAY_PROFILE + '.json')
+            path = config / 'profiles' / (EVERYDAY_FILE + '.json')
             definition = read(path)
             for value in (None, 'yes'):
                 if value is None:
@@ -559,15 +772,23 @@ class RegistryTests(unittest.TestCase):
 
     def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
         definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}
-        self.assertEqual(sorted(k for k, v in definitions.items() if v['role'] == 'coding'),
-            sorted(CONFIGURATIONS))  # A new profile file must be registered in CONFIGURATIONS.
+        # A profile that names the models it loads is a configuration, and every one has to be
+        # registered; everything else in the directory is a model, and it is reachable only because
+        # some configuration names it. A file that is neither is a launch nothing renders.
+        configurations = {name for name, value in definitions.items() if 'models' in value}
+        self.assertEqual(sorted(configurations), sorted(CONFIGURATIONS))
+        named = {model for name in CONFIGURATIONS for model in profile_file(name)['models']}
+        self.assertEqual(configurations | named, set(definitions),
+            'a profile file no configuration names or loads is dead configuration')
         selectable = [x['profile'] for x in available_profiles(ROOT / 'config')['selectable']]
         for retired in ('daytime-swift', 'daytime-256', 'nighttime-256', 'nighttime', 'primary'):
             self.assertNotIn(retired, selectable)
         self.assertEqual(available_profiles(ROOT / 'config')['selectable'][0]['gpu_names'], [])
         listed = available_profiles(ROOT / 'config', BASELINE['host'])
-        self.assertEqual(listed['selectable'][0]['gpu_names'], BASELINE['host']['gpu_names']['daytime'])
-        self.assertEqual(listed['always_included'][0]['gpu_names'], BASELINE['host']['gpu_names']['nighttime'])
+        # Each model of a configuration is drawn with the cards it runs on, in the order the file
+        # names them: the page reads the cards off this and not out of its own head.
+        self.assertEqual([m['gpu_names'] for m in listed['selectable'][0]['models']],
+            [BASELINE['host']['gpu_names']['daytime'], BASELINE['host']['gpu_names']['nighttime']])
 
     def test_registry_publishes_no_host_paths_artifacts_or_checksums(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
@@ -585,17 +806,27 @@ class RegistryTests(unittest.TestCase):
 
     def test_cli_list_is_generated_from_the_same_registry(self):
         from runtime.__main__ import listed
-        lines = listed(ROOT / 'config').splitlines()
-        self.assertEqual([line.split(':')[0] for line in lines],
-            ['primary', *CONFIGURATIONS, *EVERYDAY_PROFILES])
         registry = available_profiles(ROOT / 'config')
-        self.assertIn(registry['always_included'][0]['display_name'], lines[0])
-        for entry in registry['selectable'] + registry['always_included']:
-            row = next(line for line in lines if line.startswith(entry['profile'] + ':'))
-            self.assertIn(entry['display_name'], row)
-            self.assertIn(entry['model'], row)
-            self.assertEqual(row.endswith('(owns every text GPU of this host; runs without a second resident)'),
-            entry['profile'] in EXCLUSIVE)
+        lines = listed(ROOT / 'config').splitlines()
+        # One row per configuration, and under it one indented row per model it loads: `list` is the
+        # command that answers "what could this machine be doing", and the answer is models -- one,
+        # two, or as many as its cards hold -- rather than a configuration with a footnote.
+        at = 0
+        for entry in registry['selectable']:
+            row = lines[at]; at += 1
+            with self.subTest(profile=entry['profile']):
+                self.assertTrue(row.startswith(entry['profile'] + ':'), row)
+                self.assertIn(entry['display_name'], row)
+                self.assertIn(entry['model'], row)
+            for model in entry['models']:
+                row = lines[at]; at += 1
+                with self.subTest(model=model['model']):
+                    self.assertTrue(row.startswith('    '), row)
+                    self.assertIn(model['display_name'], row)
+                    self.assertIn('every text GPU of this host' if model['exclusive']
+                        else 'cards unknown', row)
+                    self.assertIn(', '.join(model['service_ids']) or 'no service ID', row)
+        self.assertEqual(at, len(lines), 'the listing says something the registry does not know')
 
     def registry_with(self, name, mutate):
         with tempfile.TemporaryDirectory() as tmp:
@@ -614,10 +845,12 @@ class RegistryTests(unittest.TestCase):
                 self.registry_with('qwen27b-q6k-pair', None)
         for name, mutate, expected in [
                 ('qwen27b-q8-pair', lambda definition: definition.update(engine='no-such-engine'), 'unknown engine'),
-                (EVERYDAY_PROFILE, lambda definition: definition.update(id='renamed'), 'differs from its filename'),
-                # A solo configuration has no second resident to name, and saying it does is a
-                # configuration that lies about what it will launch.
-                (SOLO, lambda definition: definition.update(everyday=EVERYDAY_PROFILE), 'runs no second resident'),
+                (EVERYDAY_FILE, lambda definition: definition.update(id='renamed'), 'differs from its filename'),
+                # A model that owns every text GPU of this host cannot be named beside another one, and
+                # a configuration that does so anyway is a configuration that lies about what it will
+                # launch -- it would drain onto two launches that each need the whole machine.
+                (SOLO, lambda definition: definition.update(models=[SOLO, EVERYDAY_FILE]),
+                    'no other model can be loaded beside it'),
                 ('qwen27b-q8-pair', lambda definition: definition.update(context_tokens=524289), 'router contract')]:
             with self.subTest(profile=name):
                 with self.assertRaisesRegex(RuntimeError, expected):
@@ -643,7 +876,7 @@ class EnvironmentEngineTests(unittest.TestCase):
 
     def test_the_service_is_rendered_from_its_own_arguments_and_mounts(self):
         definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
-        service = self.bundle()['compose']['services']['coding']
+        service = self.bundle()['compose']['services'][STRATA_SOLO]
         self.assertEqual(service['command'], [])
         self.assertEqual(service['entrypoint'], ['./docker-entrypoint.sh'])
         self.assertIs(service['read_only'], False)
@@ -688,7 +921,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         own instead of a reservation taken out of each of those four.
         """
         bundle = self.bundle()
-        service = bundle['compose']['services']['coding']
+        service = bundle['compose']['services'][STRATA_SOLO]
         host = host_for(SOLO)
         text = text_gpus(host, read(ROOT / 'config/profiles' / (SOLO + '.json')))
         self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'],
@@ -702,10 +935,10 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(entry['cuda_visible_devices'], '0,1,2,3,4')
         self.assertEqual(int(service['environment']['VISION_DEVICE']), len(text))
 
-    def test_a_host_with_no_shared_vision_gpu_renders_the_text_only_resident_it_was(self):
+    def test_a_host_with_no_shared_vision_gpu_renders_the_text_only_model_it_was(self):
         """host.json is the switch, and the profile is the same file whichever way it is set."""
         definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
-        service = render(ROOT / 'config', BASELINE['host'], SOLO)['compose']['services']['coding']
+        service = render(ROOT / 'config', BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
         self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
         self.assertEqual(service['environment']['VISION'], 'no')
         self.assertNotIn('VISION_DEVICE', service['environment'])
@@ -723,7 +956,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         # leaves whatever the last-selected configuration wrote sitting in the workspace.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['SAMPLING'], 'thinking')
             self.assertNotIn('VISION_DEVICE', service['environment'])
             path = config / ('profiles/' + SOLO + '.json')
@@ -731,12 +964,12 @@ class EnvironmentEngineTests(unittest.TestCase):
             definition['arguments'].pop('--sampling')
             definition['argument_order'].remove('--sampling')
             path.write_text(json.dumps(definition))
-            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
             self.assertNotIn('SAMPLING', service['environment'])
 
     def test_a_sampling_preset_the_entry_point_cannot_write_is_refused_before_any_drain(self):
         # A preset is a name from a table that lives in the image, because the engine refuses to
-        # start on a sampling value it does not understand and this resident is exclusive: a config
+        # start on a sampling value it does not understand and this model is exclusive: a config
         # it refuses is nothing serving. So a value outside the table is a render error, not a boot
         # that dies after the drain, and numbers are refused for the same reason.
         for preset in ('temperature=1.0', '1.0', 'Thinking', 'greedy', '', True):
@@ -758,7 +991,7 @@ class EnvironmentEngineTests(unittest.TestCase):
             definition['arguments'].pop('--sampling')
             definition['argument_order'].remove('--sampling')
             path.write_text(json.dumps(definition))
-            service = render(config, BASELINE['host'], SOLO)['compose']['services']['coding']
+            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
             self.assertNotIn('SAMPLING', service['environment'])
 
     def test_the_encoder_is_placed_at_the_end_of_whatever_cards_the_container_is_given(self):
@@ -775,7 +1008,7 @@ class EnvironmentEngineTests(unittest.TestCase):
             host['vision_cuda_device'] = stated
             with self.subTest(vision_cuda_device=stated):
                 bundle = render(ROOT / 'config', host, SOLO)
-                service = bundle['compose']['services']['coding']
+                service = bundle['compose']['services'][STRATA_SOLO]
                 visible = [int(x) for x in service['environment']['CUDA_VISIBLE_DEVICES'].split(',')]
                 # The number is derived, so every int the host states is ignored. What places the
                 # encoder is that the shared card is the last card this container is given, and the
@@ -798,16 +1031,20 @@ class EnvironmentEngineTests(unittest.TestCase):
             path = config / ('profiles/' + SOLO + '.json')
             definition = read(path)
             definition.pop('exclusive'); definition['gpu_group'] = 'daytime'
+            # Half the cards for this model means the other half is somebody's: a configuration that
+            # left a declared card unplugged leaves a card the operator believes is serving with
+            # nothing that can be placed on it.
+            definition['models'] = [SOLO, EVERYDAY_FILE]
             definition['arguments']['--gpus'] = '0,1'
             definition['container']['environment']['CUDA_VISIBLE_DEVICES'] = '0,1'
             path.write_text(json.dumps(definition))
-            service = render(config, vision_host(), SOLO)['compose']['services']['coding']
+            service = render(config, vision_host(), SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2')
             self.assertEqual(service['environment']['VISION_DEVICE'], '2')
             self.assertEqual(service['environment']['GPUS'], '0,1')
             self.assertEqual(service['environment']['VISION'], 'yes')
             # And the solo layout still renders on that same host, at its own number.
-            solo = render(ROOT / 'config', vision_host(), SOLO)['compose']['services']['coding']
+            solo = render(ROOT / 'config', vision_host(), SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(solo['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3,4')
             self.assertEqual(solo['environment']['VISION_DEVICE'], '4')
 
@@ -842,7 +1079,7 @@ class EnvironmentEngineTests(unittest.TestCase):
                     definition['argument_order'].remove(key)
             path.write_text(json.dumps(definition))
             bundle = render(config, vision_host(), SOLO)
-            service = bundle['compose']['services']['coding']
+            service = bundle['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
             self.assertEqual(service['environment']['VISION'], 'no')
             self.assertNotIn('VISION_DEVICE', service['environment'])
@@ -876,21 +1113,21 @@ class EnvironmentEngineTests(unittest.TestCase):
             # With every entry-point statement gone the image renders -- the window is what is left
             # of the 512K claim, and it is the contract that answers: 262,144 or nothing.
             bundle = render(config, vision_host(), name)
-            environment = bundle['compose']['services']['coding']['environment']
+            environment = bundle['compose']['services'][STRATA_SOLO]['environment']
             for variable in ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'SAMPLING'):
                 self.assertNotIn(variable, environment)
             definition['context_tokens'] = 262144
             path.write_text(json.dumps(definition))
             self.assertEqual(render(config, vision_host(), name)['catalog']['context_length'], 262144)
 
-    def test_the_solo_resident_is_published_without_llama_cpp_only_claims(self):
+    def test_an_exclusive_model_is_published_without_llama_cpp_only_claims(self):
         bundle = self.bundle()
         entry = bundle['catalog']['models'][0]
         definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
         self.assertEqual(entry['model'], definition['arguments']['--alias'])
-        # A resident, so it answers the service IDs a resident answers -- including `nighttime`,
-        # which it answers itself rather than leaving a client with nothing to send.
-        self.assertEqual(set(entry['aliases']), set(RESIDENT_SERVICES))
+        # A model of this machine, so it answers the service IDs a client of this machine sends --
+        # including `nighttime`, which it answers itself rather than leaving a client with nothing.
+        self.assertEqual(set(entry['aliases']), set(CLIENT_SERVICES))
         # The router takes the first alias that is not the compatibility ID as the service a client
         # sends, so the order is load-bearing, not cosmetic.
         self.assertEqual(next(a for a in entry['aliases'] if a != COMPATIBILITY_ALIAS), 'daytime')
@@ -924,7 +1161,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         provides and what the engine is allowed to narrow.
         """
         shared = read(ROOT / 'config/shared.json')['container_defaults']
-        cfg = self.bundle()['compose']['services']['coding']
+        cfg = self.bundle()['compose']['services'][STRATA_SOLO]
         for key in CONTAINER_CONTRACT:
             with self.subTest(setting=key):
                 self.assertIsNotNone(cfg.get(key))
@@ -1144,7 +1381,7 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
         engines = read(ROOT / 'config/shared.json')['engines']
         seen = {}
-        for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
+        for name in DEFINITIONS:
             profile = read(ROOT / 'config/profiles' / (name + '.json'))
             if not engines[profile['engine']].get('provisioning'):
                 continue
@@ -1204,7 +1441,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         bundle = render(ROOT / 'config', host_for(name), name)
         variables = (variables,) if isinstance(variables, str) else variables
         for variable in variables:
-            bundle['compose']['services']['coding']['environment'].pop(variable, None)
+            bundle['compose']['services'][service_key(profile_file(name))]['environment'].pop(variable, None)
             bundle['manifest']['services'][0]['recommended_environment'].pop(variable, None)
         if 'CONTEXT' in variables:
             # A window step carries one number, and CONTEXT is where the launch receives it; the
@@ -1254,7 +1491,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         for name, expectations in stated.items():
             with self.subTest(profile=name):
                 environment = self.rendered(name, '-')\
-                    ['compose']['services']['coding']['environment']
+                    ['compose']['services'][service_key(profile_file(name))]['environment']
                 self.assertEqual((environment['SAMPLING'], environment['TOOL_CALL_RECOVERY']),
                     expectations)
 
@@ -1317,10 +1554,10 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache')
         host = vision_host()
         p, r = render(ROOT / 'config', host, probe), render(ROOT / 'config', host, resident)
-        pc, rc = p['compose']['services']['coding'], r['compose']['services']['coding']
+        pc, rc = p['compose']['services'][STRATA_SOLO], r['compose']['services'][STRATA_SOLO]
         # The card column, and the five settings the probe declares in source that the configuration
         # in service still carries as hand edits inside its workspace (overlay facts 9-11, and the
-        # budget the pair shares with the Everyday resident).
+        # budget the pair shares with the abliterated model).
         cards = ('CUDA_VISIBLE_DEVICES', 'GPUS', 'VISION_DEVICE')
         declared = ('RESIDENT_BUDGET_GIB', 'VRAM_RESERVE_MIB', 'CONTROL_VECTOR',
                     'CONTROL_VECTOR_LAYERS', 'STRATA_LOG')
@@ -1365,19 +1602,19 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         self.assertEqual(p['catalog']['models'][0]['quantization'],
             r['catalog']['models'][0]['quantization'])
         # The two session lengths the trial runs at, read off the published contract and not from a
-        # launch flag: 262,144 for the resident `daytime` answers, and the Everyday resident's own
-        # 98,304 for `nighttime`. A paired configuration publishes both entries, which is what makes
-        # the second number visible here at all -- a solo configuration cannot show it, because there
-        # the same backend answers nighttime at its own width.
+        # launch flag: 262,144 for the model `daytime` answers with, and the abliterated model's own
+        # 98,304 for `nighttime`. A configuration that names both publishes both entries, which is
+        # what makes the second number visible here at all -- a configuration that names one model
+        # cannot show it, because there the same backend answers `nighttime` at its own width.
         self.assertEqual(p['catalog']['models'][0]['context_length'], 262144)
         self.assertEqual(r['catalog']['models'][0]['context_length'], 262144)
         self.assertEqual([m['context_length'] for m in p['catalog']['models']
                           if 'nighttime' in m['aliases']], [98304])
         # And the four cards are still exactly two + two + the encoder, shared with nothing: the
-        # night-side resident this configuration loads beside itself is the launch the 27B pair loads,
+        # night-side model this configuration names beside its own is the launch the 27B pair loads,
         # byte for byte, which is the claim the shared-vision placement was built to allow.
-        night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services']['everyday']
-        self.assertEqual(p['compose']['services']['everyday'], night)
+        night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services'][EVERYDAY]
+        self.assertEqual(p['compose']['services'][EVERYDAY], night)
         self.assertEqual(p['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
         self.assertEqual(p['manifest']['services'][0]['parallel_slots'], 1)
         self.assertNotIn('exclusive', read(ROOT / 'config/profiles' / (probe + '.json')))
@@ -1397,7 +1634,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         host = vision_host()
         iq4 = render(ROOT / 'config', host, 'flash-next-strata-two-card-iq4-xs')
         iq3 = render(ROOT / 'config', host, 'flash-next-strata-two-card-iq3-s')
-        a, b = iq4['compose']['services']['coding'], iq3['compose']['services']['coding']
+        a, b = iq4['compose']['services'][STRATA_SOLO], iq3['compose']['services'][STRATA_PAIR]
         # What a pack is, as far as the launch is concerned: which quantization and family the engine is
         # told -- and note that the profile's own --model path never reaches the engine at all, because
         # the environment interface carries the quant name and GGUF_DIR and the engine assembles the
@@ -1435,7 +1672,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         self.assertEqual(m3['capability_profile']['speculative'], m4['capability_profile']['speculative'])
         # And the night side is the same launch in both arms, so the two configurations differ to an
         # operator by the pack they run and to the router by nothing else.
-        self.assertEqual(iq3['compose']['services']['everyday'], iq4['compose']['services']['everyday'])
+        self.assertEqual(iq3['compose']['services'][EVERYDAY], iq4['compose']['services'][EVERYDAY])
         self.assertEqual([m['context_length'] for m in iq3['catalog']['models']
                           if 'nighttime' in m['aliases']], [98304])
         self.assertEqual(iq3['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
@@ -1463,7 +1700,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         the same machine that serves; a slot count beside an off cache is a statement about nothing; a
         table nothing mounts is a boot that either does not happen or happens with one layer's n-gram
         table quietly absent. All four are refused here, before a drain is spent, because this engine's
-        exclusive resident is the only thing serving and a refused boot is nothing serving.
+        exclusive model is the only thing serving and a refused boot is nothing serving.
         """
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
@@ -1508,7 +1745,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
 
     def test_a_ring_the_engine_cannot_read_refuses_before_anything_renders(self):
         """The rope statements are refused the way every entry-point fact is: at render, because an
-        exclusive resident started on a ring the engine refuses is nothing serving on a drain already
+        exclusive model started on a ring the engine refuses is nothing serving on a drain already
         spent. A ring word the engine has never heard; a ring with no scale; a scale that is not a
         positive number; yarn with no trained window named; a yarn window that does not exceed the
         trained one it stretches (the engine refuses the pair); and numbers stated beside `off`,
@@ -1575,9 +1812,9 @@ class ServiceIdentityTests(unittest.TestCase):
                     # still has nothing a contract client may send.
                     self.assertTrue(service, 'Profile ' + name +
                         ' publishes a catalog no client following the router contract can address')
-                    # No two residents answer to the same service ID, whichever configuration is
-                    # selected: `daytime` is only ever the coding resident, `nighttime` only ever one
-                    # thing, in exactly one direction.
+                    # No two models answer to the same service ID, whichever configuration is
+                    # selected: `daytime` is only ever one model's, `nighttime` only ever one thing,
+                    # in exactly one direction.
                     for other in catalog['models']:
                         if other is entry:
                             continue
@@ -1589,11 +1826,12 @@ class ServiceIdentityTests(unittest.TestCase):
         """A service ID is answered here or says so; it is never quietly missing.
 
         A client that has `nighttime` configured cannot discover that this configuration stopped
-        loading that resident — its request just fails, forever, with nothing telling it why. So for
-        every configuration each ID a client may send is asserted to be either published by a
-        resident or listed in `offline_services` with a reason a status page can show. Nothing is
-        offline in any configuration today: the solo configuration answers `nighttime` from the one
-        model it does load, which is the whole reason it is a configuration and not an experiment.
+        loading the model that used to answer it — its request just fails, forever, with nothing
+        telling it why. So for every configuration each ID a client may send is asserted to be either
+        published by a model that is loaded or listed in `offline_services` with a reason a status
+        page can show. Nothing is offline in any configuration today: the configuration that loads one
+        model answers `nighttime` from that model, which is the whole reason it is a configuration and
+        not an experiment.
         """
         for name in CONFIGURATIONS:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
@@ -1601,7 +1839,7 @@ class ServiceIdentityTests(unittest.TestCase):
             published = {alias for model in catalog['models'] for alias in model['aliases']}
             offline = {alias for service in catalog['offline_services'] for alias in service['aliases']}
             with self.subTest(profile=name):
-                # The resident IDs are one machine's namespace. A configuration built for a second
+                # These IDs are one machine's namespace. A configuration built for a second
                 # machine answers its own name -- which is what lets two machines reach one router
                 # without either relaunching -- so it is held to publishing something a client can
                 # send, which ServiceIdentityTests does, and not to publishing `daytime`, a name this
@@ -1610,7 +1848,7 @@ class ServiceIdentityTests(unittest.TestCase):
                     self.assertTrue(published - {COMPATIBILITY_ALIAS},
                         'Configuration ' + name + ' publishes no service ID of its own')
                     continue
-                for service_id in RESIDENT_SERVICES:
+                for service_id in CLIENT_SERVICES:
                     self.assertIn(service_id, published | offline,
                         'Configuration ' + name + ' neither answers ' + service_id +
                         ' nor declares it offline: a client holding that name fails with no reason')
@@ -1618,7 +1856,7 @@ class ServiceIdentityTests(unittest.TestCase):
                     'Configuration ' + name + ' answers ' + str(published & offline) + ' and also '
                     'declares it offline')
                 self.assertEqual(offline, set(), 'Configuration ' + name +
-                    ' declares a service offline that every resident here answers')
+                    ' declares a service offline that every model here answers')
 
     def test_a_retired_service_id_is_answered_by_nothing(self):
         """`trial` addressed the Strata engine while it was an experiment and nobody's default.
@@ -1652,9 +1890,9 @@ class ContainerContractTests(unittest.TestCase):
 
     def test_every_service_carries_the_house_container_settings(self):
         for name in CONFIGURATIONS:
-            for role, cfg in render(ROOT / 'config', host_for(name), name)['compose']['services'].items():
+            for service, cfg in render(ROOT / 'config', host_for(name), name)['compose']['services'].items():
                 for key in CONTAINER_CONTRACT:
-                    with self.subTest(profile=name, role=role, setting=key):
+                    with self.subTest(profile=name, service=service, setting=key):
                         self.assertIsNotNone(cfg.get(key))
 
 
@@ -1662,10 +1900,10 @@ class ConfigurationNamingTests(unittest.TestCase):
     """What a configuration is called, and what happens to a name that stops meaning one."""
 
     def test_a_renamed_configuration_renders_its_new_name_exactly(self):
-        # A rename is a naming change, not a redeploy: Compose services are keyed by role and the
-        # canonical model id is the model alias, so the old name has to produce byte-identical
-        # backends. If this ever differs, a host that renames while running would be drained for a
-        # backend that is not the one it already has.
+        # A rename is a naming change, not a redeploy: a Compose service is keyed by the model it
+        # loads and the canonical model id is that model's alias, so the old name has to produce
+        # byte-identical backends. If this ever differs, a host that renames while running would be
+        # drained for a backend that is not the one it already has.
         self.assertEqual(set(PROFILE_ALIASES.values()) & set(PROFILE_ALIASES), set(),
             'a rename must land on a current id, never on another alias')
         for old, new in PROFILE_ALIASES.items():
@@ -1721,10 +1959,10 @@ class ConfigurationNamingTests(unittest.TestCase):
         # a live rollback, named here so that retiring it is a decision and not an oversight.
         engines = read(ROOT / 'config/shared.json')['engines']
         # The 0.1.43 image, until the 0.1.44.1 candidate is decided; and the text-only image of
-        # 0.1.44.1, until the encoder that joined the resident on 2026-10-16 has earned its place.
+        # 0.1.44.1, until the encoder that joined the image on 2026-10-16 has earned its place.
         rollback = {'strata-7695859aa13a', 'strata-296b59d2f73c'}
         used = set()
-        for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
+        for name in DEFINITIONS:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             self.assertIn(definition['engine'], engines, name + ' names an engine that is not registered')
             used.add(definition['engine'])
@@ -1735,7 +1973,7 @@ class ConfigurationNamingTests(unittest.TestCase):
     def test_a_model_is_called_by_its_model_and_its_session_length(self):
         # One naming rule for every surface, because a person meets the name in the page, in a
         # router's model list and in a terminal, and asks the same question each time: which window.
-        for name in CONFIGURATIONS + EVERYDAY_PROFILES:
+        for name in DEFINITIONS:
             with self.subTest(profile=name):
                 definition = read(ROOT / 'config' / 'profiles' / (name + '.json'))
                 self.assertEqual(default_name(definition),
@@ -1864,7 +2102,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # Nothing ships unscoped, and the split is now a real one: this is where the shipped set says
         # which machine each launch was measured on, so a definition that grows a second host has to
         # be changed here as well as there.
-        for name in (*CONFIGURATIONS, *EVERYDAY_PROFILES):
+        for name in DEFINITIONS:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             with self.subTest(profile=name):
                 self.assertTrue(definition['hosts'], name + ' names no machine at all')
@@ -1900,8 +2138,8 @@ class MoreThanOneMachineTests(unittest.TestCase):
         self.assertEqual([x['profile'] for x in registry['selectable']],
             ['flash-next-strata-iq3-xxs-daisy'],
             'a machine is offered the launches it was measured on, which is now one and not none')
-        self.assertEqual(registry['always_included'], [],
-            'the Everyday resident is a launch of the machine that has the pair for it')
+        self.assertEqual(sorted({m['model'] for c in registry['selectable'] for m in c['models']}),
+            [STRATA_DAISY], 'a machine is shown the models of the configurations it names, and no others')
         # Scoping one of Rosalina's launches to this machine *adds* it: the machine's own configuration
         # does not make way for it, and the order is the registry's, which is the order the page shows.
         self.assertEqual(configurations_for(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']),
@@ -1918,11 +2156,12 @@ class MoreThanOneMachineTests(unittest.TestCase):
 
     def test_a_one_pair_host_runs_a_solo_configuration_across_its_two_cards(self):
         # The whole point of the boundary: not a degraded Rosalina, a configuration of this machine.
-        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all')
+        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all',
+            models=[self.TWO_CARD_SOLO])
         bundle = render(config, second_machine(), self.TWO_CARD_SOLO)
-        self.assertEqual(list(bundle['compose']['services']), ['coding'])
-        self.assertEqual([s['role'] for s in bundle['manifest']['services']], ['coding'])
-        service = bundle['compose']['services']['coding']
+        self.assertEqual(list(bundle['compose']['services']), [STRATA_PAIR])
+        self.assertEqual([s['service'] for s in bundle['manifest']['services']], [STRATA_PAIR])
+        service = bundle['compose']['services'][STRATA_PAIR]
         pair = second_machine()['gpu_ids']['daytime']
         self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'], pair)
         self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1')
@@ -1937,23 +2176,27 @@ class MoreThanOneMachineTests(unittest.TestCase):
         self.assertEqual(model['input_modalities'], ['text'])
         self.assertEqual(model['capability_profile']['vision'], False)
         self.assertNotIn('vision_gpu_uuid', model)
-        # The Everyday resident is not offline here: `nighttime` is a service this machine never
-        # offered, and 503-ing a service ID nobody publishes is a different claim from silence.
-        self.assertEqual(bundle['catalog']['offline_services'], [])
+        # `nighttime` is not offline here: it is a service this machine never offered, and 503-ing a
+        # service ID nobody publishes is a different claim from silence. What *is* offline is the name
+        # the other configuration of this machine answers -- scoping a Rosalina launch to this host
+        # puts two configurations on it, and between them the second machine's name goes unanswered.
+        self.assertEqual([service['model'] for service in bundle['catalog']['offline_services']],
+            [STRATA_DAISY], 'the service the other configuration of this host publishes, with the reason')
+        self.assertEqual(bundle['catalog']['offline_services'][0]['reason'],
+            'not_loaded_by_this_configuration')
 
     def test_a_configuration_that_wants_the_other_pair_refuses_a_one_pair_host(self):
-        # Same definition, `exclusive` left off: it is a paired configuration again, and a paired
-        # configuration needs the pair this machine does not have. It refuses twice over, and the
-        # first refusal is the one that names the machine: the second resident it loads is a launch
-        # of the other host.
+        # Same definition, `exclusive` left off: it names two models again, and two models need two
+        # text pairs, which this machine does not have. It refuses twice over, and the first refusal
+        # is the one that names the machine: the other model it names is a launch of the other host.
         with self.assertRaisesRegex(RuntimeError, 'cannot bring another machine'):
             render(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']), second_machine(),
                 self.TWO_CARD_SOLO)
-        # And with a second resident that does belong here, the card shortage still refuses: a host
-        # states the GPU groups it has, and this one has one.
+        # And with the other model scoped to this machine as well, so neither is foreign, the card
+        # shortage still refuses: a host states the GPU groups it has, and this one has one.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            for name in (self.TWO_CARD_SOLO, EVERYDAY_PROFILE):
+            for name in (self.TWO_CARD_SOLO, EVERYDAY_FILE):
                 path = config / 'profiles' / (name + '.json')
                 definition = read(path); definition['hosts'] = ['daisy']
                 path.write_text(json.dumps(definition))
@@ -1968,7 +2211,8 @@ class MoreThanOneMachineTests(unittest.TestCase):
             render(config, second_machine(), SOLO)
 
     def test_an_image_without_sass_for_these_cards_is_refused_where_it_is_rendered(self):
-        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all')
+        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all',
+            models=[self.TWO_CARD_SOLO])
         with self.assertRaisesRegex(RuntimeError, 'carries SASS for CUDA 86/89'):
             render(config, second_machine(gpu_architectures=['75']), self.TWO_CARD_SOLO)
         # A host that does not state its cards gets no check it cannot answer -- and states them in
@@ -1988,9 +2232,9 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # machine's own name because two machines cannot both answer `daytime` to one router.
         bundle = render(ROOT / 'config', second_machine(gpu_architectures=['75']),
             self.DAISY_CONFIGURATION)
-        service = bundle['compose']['services']['coding']
+        service = bundle['compose']['services'][STRATA_DAISY]
         environment = service['environment']
-        self.assertEqual([x['role'] for x in bundle['manifest']['services']], ['coding'])
+        self.assertEqual([x['service'] for x in bundle['manifest']['services']], [STRATA_DAISY])
         self.assertEqual((environment['CONTEXT'], environment['GPUS'],
             environment['CUDA_VISIBLE_DEVICES']), ('65536', '0,1', '0,1'))
         self.assertNotIn('VRAM_RESERVE_MIB', environment,
@@ -2015,32 +2259,58 @@ class MoreThanOneMachineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'carries SASS for'):
             render(config, second_machine(gpu_architectures=['75']), self.DAISY_CONFIGURATION)
 
-    def test_a_host_where_nothing_pairs_names_no_second_resident(self):
-        # `always_included` is the second resident a configuration on this host loads, not a resident
-        # that happens to be in the registry. On a host whose every configuration runs alone, the CLI
-        # header and the page both read it as "selecting any of these loads this too", and nothing does
-        # -- and the Everyday resident being scoped to this machine is not what makes it load.
+    def test_a_model_no_configuration_loads_is_not_offered_to_this_host(self):
+        # A model is offered to a host because a configuration of that host names it, and for no other
+        # reason. Scoping the abliterated model to this machine does not put it in the listing: nothing
+        # this machine can select loads it, and a page that drew it anyway would be drawing a launch
+        # an operator could never start.
         from runtime.__main__ import listed
         machine = 'a-machine-of-its-own'
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
             for name, changes in ((self.TWO_CARD_SOLO, {'hosts': [machine], 'exclusive': True,
-                    'gpu_group': 'all'}), (EVERYDAY_PROFILE, {'hosts': [machine]})):
+                    'gpu_group': 'all', 'models': [self.TWO_CARD_SOLO]}),
+                    (EVERYDAY_FILE, {'hosts': [machine]})):
                 path = config / 'profiles' / (name + '.json')
                 definition = read(path); definition.update(changes)
                 path.write_text(json.dumps(definition))
             registry = available_profiles(config, second_machine(host_id=machine))
             self.assertEqual([x['profile'] for x in registry['selectable']], [self.TWO_CARD_SOLO])
-            self.assertEqual(registry['always_included'], [])
-            self.assertIn('(no second resident in any configuration)',
-                listed(config, second_machine(host_id=machine)))
+            self.assertEqual([[m['model'] for m in x['models']] for x in registry['selectable']],
+                [[STRATA_PAIR]])
+            rows = listed(config, second_machine(host_id=machine)).splitlines()
+            self.assertEqual(len(rows), 2,
+                'a model no configuration of this host names is listed as if it ran: ' + repr(rows))
+            row = rows[1]
+            self.assertTrue(row.startswith('    '), row)
+            self.assertIn(registry['selectable'][0]['models'][0]['display_name'], row)
+            self.assertNotIn(read(config / 'profiles/everyday.json')['display_name'], '\n'.join(rows),
+                'the abliterated model is scoped to this machine and loads on nothing it can select')
 
     def test_the_cli_listing_is_the_host_s_own(self):
         from runtime.__main__ import listed
-        self.assertEqual([line.split(':')[0] for line in
-                listed(ROOT / 'config', second_machine()).splitlines()],
-            ['primary', 'flash-next-strata-iq3-xxs-daisy'])
-        self.assertEqual([line.split(':')[0] for line in listed(ROOT / 'config',
-                second_machine(host_id='no-machine-claims-this-one')).splitlines()], ['primary'])
-        listed_rows = [line.split(':')[0] for line in listed(ROOT / 'config').splitlines()]
-        self.assertEqual(listed_rows, ['primary', *CONFIGURATIONS, *EVERYDAY_PROFILES])
+
+        def blocks(host=None):
+            # A listing is a row per configuration with one indented row per model under it.
+            rows, current = [], None
+            for line in listed(ROOT / 'config', host).splitlines():
+                if line.startswith(' '):
+                    current.append(line)
+                else:
+                    current = [line]
+                    rows.append(current)
+            return rows
+
+        machine = blocks(second_machine())
+        self.assertEqual([block[0].split(':')[0] for block in machine],
+            ['flash-next-strata-iq3-xxs-daisy'])
+        self.assertEqual(len(machine[0]), 2, 'a configuration is listed with the models it loads')
+        self.assertIn('every text GPU of this host', machine[0][1])
+        self.assertIn('daisy', machine[0][1], 'the service ID a client of this machine sends')
+        self.assertEqual(blocks(second_machine(host_id='no-machine-claims-this-one')), [])
+        for block in blocks():
+            name = block[0].split(':')[0]
+            self.assertEqual(len(block) - 1, len(NAMED[name]),
+                name + ' is listed with ' + str(len(block) - 1) + ' models and loads '
+                + str(len(NAMED[name])))
+        self.assertEqual([block[0].split(':')[0] for block in blocks()], list(CONFIGURATIONS))

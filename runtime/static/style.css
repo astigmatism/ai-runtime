@@ -62,16 +62,16 @@ h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: va
    state word does not get to hyphenate an operator's name to make room for itself. */
 .model > div { flex: 1 1 auto; min-width: 0 }
 .model .state { flex: 0 1 auto; text-align: right; max-width: 40% }
-.model .role { font-size: 10px; letter-spacing: .14em; color: var(--m0); font-weight: 700; margin: 0 0 6px;
+.model .ids { font-size: 10px; letter-spacing: .14em; color: var(--m0); font-weight: 700; margin: 0 0 6px;
   text-transform: uppercase }
 .model .name { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -.01em; overflow-wrap: anywhere }
 .model .alias { font-size: 11.5px; color: var(--muted); margin: 5px 0 0; overflow-wrap: anywhere }
 .model .state { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700;
   color: var(--m0); white-space: nowrap }
 /* The card's own tone, so a model's card and the tiles it owns are read as one thing. */
-.model.m1 { border-color: var(--m1) } .model.m1 .role, .model.m1 .state { color: var(--m1) }
-.model.m2 { border-color: var(--m2) } .model.m2 .role, .model.m2 .state { color: var(--m2) }
-.model.m3 { border-color: var(--m3) } .model.m3 .role, .model.m3 .state { color: var(--m3) }
+.model.m1 { border-color: var(--m1) } .model.m1 .ids, .model.m1 .state { color: var(--m1) }
+.model.m2 { border-color: var(--m2) } .model.m2 .ids, .model.m2 .state { color: var(--m2) }
+.model.m3 { border-color: var(--m3) } .model.m3 .ids, .model.m3 .state { color: var(--m3) }
 .model.unwell { border-style: dashed; border-color: #6d7f87; background: #182227 }
 .model.unwell .state { color: var(--warn) }
 .model.bad { border-style: dashed; border-color: #7a5548; background: #1f1b1b }
@@ -153,14 +153,22 @@ fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0 }
    the width from the name it is annotating. */
 .cfg .row { font-size: 12px; color: var(--muted); margin: 7px 0 0; line-height: 1.55; display: flex;
   gap: 9px; align-items: baseline }
-/* The first column is a service ID, and a service ID an operator cannot read is not a label: this
-   one is sized for the longest ID this household routes on. */
-.cfg .row span:first-child { flex: 0 0 92px; color: #9fc9c0 }
-.cfg .row span:nth-child(2) { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere }
-.cfg .row .pill { align-self: center; white-space: nowrap }
-.cfg .row .ghost.tiny { align-self: center; flex: 0 0 auto; margin: 0 0 0 auto; min-height: 26px;
-  padding: 2px 9px; font-size: 11px }
-/* A model line that will not fit puts its button underneath rather than over the name. */
+/* The first column is a service ID -- `daytime`, `nighttime`, `Variant` -- and a service ID an
+   operator cannot read is not a label. It is sized to its content with a floor, because every pixel
+   it does not take belongs to the model's name and the cards it runs on.
+   These are child selectors, not descendant ones: a `span:first-child` that also reaches inside the
+   controls paints the `Renamed` pill in the label's colour, which is the label's colour *on* the
+   pill's own background, and a pill whose word cannot be read is a pill that says nothing. */
+.cfg .row > span:first-child { flex: 0 0 auto; min-width: 62px; color: #9fc9c0 }
+/* Words, not characters: `overflow-wrap: anywhere` broke "4080 SUPER" in half and made a two-item
+   sentence look like a four-line one. */
+.cfg .row > span:nth-child(2) { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word }
+/* Renaming a model is one action with a mark beside it, so the two travel together, held to the right
+   of the line and level with the model's name rather than with the middle of a wrapped sentence. */
+.cfg .row .controls { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; margin-left: auto }
+.cfg .row .pill { white-space: nowrap; flex: 0 0 auto; padding: 2px 5px }
+.cfg .row .ghost.tiny { min-height: 26px; padding: 2px 9px; font-size: 11px }
+/* A model line that will not fit puts its controls underneath rather than over the name. */
 @media (max-width: 900px) { .cfg .row { flex-wrap: wrap } }
 .cfg .end { display: grid; justify-items: end; align-content: start; gap: 9px }
 .state { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: #a8e4d2; font-weight: 700 }

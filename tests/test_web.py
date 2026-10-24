@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+from models import CODING, CODING_Q6K, EVERYDAY
 from runtime.web import handler
 from runtime.compat import dispatch
 
@@ -42,8 +43,11 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn('innerHTML', urllib.request.urlopen(self.base + '/app.js').read().decode())
 
     def test_status_passes_the_configuration_registry_through_unchanged(self):
+        # The page draws the models out of each configuration's own list, so a registry that arrived
+        # with its `models` arrays folded away would render a machine that loads nothing.
         self.state['status']['configurations'] = {'active': 'qwen27b-q8-pair', 'selectable':
-            [{'profile': 'qwen27b-q8-pair'}, {'profile': 'qwen27b-q6k-pair'}], 'always_included': [{'profile': 'everyday'}]}
+            [{'profile': 'qwen27b-q8-pair', 'models': [{'model': CODING}, {'model': EVERYDAY}]},
+             {'profile': 'qwen27b-q6k-pair', 'models': [{'model': CODING_Q6K}, {'model': EVERYDAY}]}]}
         with urllib.request.urlopen(self.base + '/api/status') as response:
             self.assertEqual(json.load(response)['configurations'], self.state['status']['configurations'])
 

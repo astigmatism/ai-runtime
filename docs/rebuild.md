@@ -14,7 +14,7 @@ Containerization makes the application replaceable. It does not back up model we
 | Router conversation data, Open WebUI data, other application volumes | Separate consistent application backups |
 | OS, LAN address, user IDs, NVIDIA driver/toolkit, Docker/Compose | Host provisioning; record installed versions in the private recovery inventory |
 
-The current model definitions require nine files (173,684,537,856 bytes) across all three configurations, or five files (54,702,891,968 bytes) for `qwen27b-q8-pair` together with its everyday resident. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
+What a restore needs is the artifacts of the configuration it selects, de-duplicated by path across every model that configuration loads: five files (54,702,891,968 bytes) cover `qwen27b-q8-pair` together with the second model it loads (`everyday`), because the two share one MTP draft. The nine-file, 173,684,537,856-byte figure above the line is the older three-configuration registry this recovery kit was first counted against; count again from `config/profiles/*.json` for whatever is actually selected. The exporter does **not** copy these large files. Download URLs were imported from the historical artifact manifests, and future availability is not guaranteed. Keep an off-machine model backup if recovery must work offline or finish quickly.
 
 The custom inference images have exact local image identity pins. Loading saved images preserves the known artifacts; rebuilding llama.cpp may produce a different image ID even from the same source commit. Validate and deliberately update the engine definition before using a rebuilt image. `qwen38-dual-836d571`, the only Qwen3.8-27B engine and also the engine of the `daytime-flash-next` Flash-Next experiment (the `8ea2902` engine and its image were retired on 2026-10-04), was built on the host from upstream llama.cpp `836d57176dc699a726c55418e4f96b8ca628e1bf` with its unmodified `.devops/cuda.Dockerfile` (`--target full`, `CUDA_VERSION=12.8.1`, `CUDA_DOCKER_ARCH=86;89`); see `docs/deployment.md` for the exact command. The private export saves every engine registered in `config/shared.json` — since 2026-10-15 that is this engine and the two Strata tags, and not the `qwen38-dual-43fe9c6` image the retired llama.cpp Flash-Next configurations used. Never change an integrity hash just to bypass a failed restore, and never treat restoration as a new performance qualification.
 
@@ -61,9 +61,12 @@ require(u.source_preflight() == active['revision'], 'Wrong restored source revis
 u.candidate(active['image'], 'validate', full_hash=True)
 path = u.state / 'generated' / desired['config_sha256'] / 'compose.json'
 atomic_json(path, desired['compose'])
+# The Compose service keys are the model ids of the models this configuration names, so they are read
+# off the rendered bundle rather than spelled out: a restore of a one-model configuration starts one
+# service and a restore of a two-model configuration starts both, in the order it names them.
 u.run('docker', 'compose', '-p', desired['compose']['name'], '-f', str(path),
       'up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '450',
-      'coding', 'everyday', capture=False)
+      *desired['compose']['services'], capture=False)
 u.compose(u.root, active['image'], 'up', '-d', '--pull', 'never',
           '--wait', '--wait-timeout', '150', 'controller')
 u.candidate(active['image'], 'check')
