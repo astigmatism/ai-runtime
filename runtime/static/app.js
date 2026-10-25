@@ -279,6 +279,7 @@ function rowOf(config) {
   const radio = node('input', '', 'select');
   radio.type = 'radio'; radio.name = 'profile'; radio.value = config.profile;
   radio.checked = isSelected;
+  radio.dataset.focus = 'config:' + config.profile;
   radio.setAttribute('aria-label', `Preview ${titleOf(config)} on the GPU map`);
   radio.disabled = !controlsEnabled();
   radio.addEventListener('change', () => select(config.profile));
@@ -339,6 +340,7 @@ function editor(config, model) {
   field.placeholder = defaultNameOf(model);
   field.setAttribute('aria-label', 'Name for ' + model.model);
   field.maxLength = 48;
+  field.dataset.focus = 'alias:' + model.model;
   field.addEventListener('input', () => { aliasDraft = field.value; });
   const acts = node('div', '', 'acts');
   const save = node('button', aliasSaving ? 'Saving…' : 'Save', 'ghost');
@@ -375,7 +377,11 @@ function switchImpact(target) {
 }
 function renderRegistry() {
   const configs = configurations();
-  const signature = JSON.stringify([configs, editing, aliasDraft, aliasError,
+  // `aliasDraft` is deliberately not in here. It changes on every keystroke, and the only thing
+  // drawn from it is the box's own value — which the browser is already holding, with the caret in it.
+  // Including it meant the next poll rebuilt the list out from under whoever was typing: the text
+  // survived and the focus did not.
+  const signature = JSON.stringify([configs, editing, aliasError,
     running() ? operation.target_profile : null, status?.profile, selected, connected]);
   if (signature !== registrySignature) {
     registrySignature = signature;
@@ -711,20 +717,42 @@ function powerFacts(entry, read) {
     + (read.power_capped_hours ? ` · power-capped ${read.power_capped_hours} h since boot` : ''));
   return facts;
 }
+/* "read from the driver N seconds ago" is the one fact in this panel that is always going stale, and
+   it is the only one that is drawn from the clock rather than from the status. So it is refreshed on
+   every poll, by itself, instead of rebuilding the panel underneath it — which is what used to close
+   the operator's drawer and steal their caret. */
+function powerAge(where, entry) {
+  if (!where) {
+    entry = powerOpen ? powerCard(powerOpen) : null;
+    where = entry ? el('power').querySelector('.when .age') : null;
+    if (!entry || !where) return;
+  }
+  where.textContent = powerPatch?.gpu === entry.uuid ? 'read from the driver just now'
+    : entry.read_at
+      ? `read from the driver ${Math.max(0, Math.round((Date.now() - Date.parse(entry.read_at)) / 1000))} seconds ago`
+      : 'never read from the driver';
+}
+
 function renderPower() {
   const panel = el('power');
   const entry = powerOpen ? powerCard(powerOpen) : null;
-  // Cleared before anything is drawn, on every path: this panel is rebuilt by the five-second poll
-  // while it is open, and a panel that appended instead of replacing grew a little taller every
-  // time the page looked at it.
+  if (!entry) { panel.replaceChildren(); panel.hidden = true; powerSignature = ''; return; }
+  /* Drawn from a signature, the way the map and the list are. This panel holds readings that arrive on
+     their own slower cadence, and rebuilding it on every five-second poll closed the drawer the
+     operator had just opened and took the caret out of a watts field mid-number. The clearing stays
+     directly above the drawing, so a redraw replaces rather than appends and the panel cannot grow. */
+  const signature = JSON.stringify([powerOpen, entry, powerWrites(), powerUnwell(powerOpen), powerPatch,
+    powerChoice, powerDraft, powerError, powerReply, powerBusy, powerGate[powerOpen], powerCustom]);
+  if (signature === powerSignature) { powerAge(); return; }
+  powerSignature = signature;
   panel.replaceChildren();
-  if (!entry) { panel.hidden = true; return; }
   panel.hidden = false;
   const read = (powerPatch?.gpu === entry.uuid ? powerPatch.read : null) || entry.read || {};
   const available = powerWrites(), target = powerTarget(entry);
   const refused = available.available === false;
   const head = node('div', '', 'head');
   const when = node('span', '', 'when'), stamp = node('i', '', 'dot mute');
+  const age = node('span', '', 'age');
   const reread = node('button', 'Re-read', 'ghost tiny');
   reread.type = 'button';
   reread.addEventListener('click', () => {
@@ -737,10 +765,8 @@ function renderPower() {
       .catch(error => { powerError = error.message || 'This card could not be read.'; })
       .finally(() => { powerBusy = false; render(); });
   });
-  add(when, stamp, node('span', powerPatch?.gpu === entry.uuid
-    ? `read from the driver just now` : entry.read_at
-    ? `read from the driver ${Math.max(0, Math.round((Date.now() - Date.parse(entry.read_at)) / 1000))} seconds ago`
-    : 'never read from the driver'), reread);
+  powerAge(age, entry);
+  add(when, stamp, age, reread);
   add(head, node('h2', `Power state · ${entry.name || 'GPU'}`), when);
   add(panel, head);
 
@@ -771,6 +797,7 @@ function renderPower() {
   const rungRow = (name, values, why, tags, dashed) => {
     const row = node('label', '', `rung${target.mode === name ? ' now' : ''}${dashed ? ' stock' : ''}`);
     const radio = node('input'); radio.type = 'radio'; radio.name = 'power-rung';
+    radio.dataset.focus = 'rung:' + name;
     radio.checked = target.mode === name;
     radio.disabled = refused || powerBusy;
     radio.addEventListener('change', () => { powerChoice = {mode: name}; powerError = ''; render(); });
@@ -808,10 +835,15 @@ function renderPower() {
   add(panel, rungs);
 
   const custom = node('details', '', 'custom');
+  // Open or closed is the operator's decision, not something the runtime gets to reset because a
+  // reading arrived, so it is kept in module state and put back on every draw.
+  custom.open = powerCustom;
+  custom.addEventListener('toggle', () => { powerCustom = custom.open; });
   const summary = node('summary', powerDraft.power !== undefined
     ? `Values by hand — ${watts(powerDraft.power)} · ${mhz(powerDraft.clock_max)} · `
       + `${powerDraft.offset > 0 ? '+' : ''}${mhz(powerDraft.offset)}`
     : `Values by hand — a trial rung this machine has not measured`);
+  summary.dataset.focus = 'power:custom';
   const fields = node('div', '', 'fields');
   const field = (key, label, hint, bounds) => {
     const box = node('label', '', target.mode === 'custom' && powerBad(key, read, powerBlock().envelope) ? 'bad' : '');
@@ -820,6 +852,9 @@ function renderPower() {
       : key === 'clock_max' ? read.clock_sm ?? '' : read.offset ?? '');
     input.placeholder = hint.placeholder;
     input.setAttribute('aria-label', label);
+    // A stable name for the copy of this field that a redraw creates, so a poll landing while the
+    // operator is typing can hand the caret and the selection back instead of dropping them.
+    input.dataset.focus = 'power:' + key;
     input.addEventListener('input', () => {
       powerDraft = {...powerDraft, [key]: input.value};
       if (target.mode !== 'custom') powerChoice = {mode: 'custom'};
@@ -863,6 +898,7 @@ function renderPower() {
       + `first.`));
     const label = node('label'), check = node('input');
     check.type = 'checkbox'; check.checked = !!gate;
+    check.dataset.focus = 'gate:' + entry.uuid;
     check.addEventListener('change', () => { powerGate[entry.uuid] = check.checked; render(); });
     add(label, check, node('span', 'Apply anyway — this engine is not what I am worried about'));
     add(notice, label);
@@ -911,7 +947,32 @@ function powerBad(key, read, envelope) {
 }
 
 
+/* A redraw is the runtime telling the page something new, and it must not cost the operator what they
+   were in the middle of doing. Controls that can legitimately be holding a caret name themselves with
+   `data-focus`; after a redraw the page looks for the copy that was just made, gives it the focus back
+   and puts the caret where it was. Without this, a poll — or a driver reading landing on its own
+   cadence — dropped the caret out of a half-typed model name or a half-typed wattage, at a moment the
+   operator could not predict, which reads as the page taking the keyboard away. */
+function keepFocus() {
+  const active = document.activeElement;
+  try {
+    const name = active?.dataset?.focus;
+    return name ? {name, start: active.selectionStart, end: active.selectionEnd} : null;
+  } catch (_) { return null; }
+}
+function restoreFocus(at) {
+  if (!at) return;
+  const again = document.querySelector(`[data-focus="${at.name}"]`);
+  if (!again) return;
+  again.focus();
+  if (typeof again.setSelectionRange !== 'function') return;
+  try {
+    if (typeof at.start === 'number' && again.selectionStart !== at.start) again.setSelectionRange(at.start, at.end);
+  } catch (_) { /* this kind of control has no caret to put back */ }
+}
+
 function render() {
+  const focus = keepFocus();
   renderPower();
   // One guard over the whole render: a page that has drawn half its facts and stopped is worse than
   // one that says it cannot read the runtime, because half a picture of a serving machine is what an
@@ -923,6 +984,7 @@ function render() {
   } catch (error) {
     tellError('The page could not be drawn from this status: ' + (error && error.message || error));
   }
+  restoreFocus(focus);
 }
 
 /* --------------------------------------------------------------------------------- the plumbing */
@@ -935,6 +997,11 @@ let editing = null, aliasDraft = '', aliasError = '', aliasSaving = false;
    an "apply anyway" tick so a re-render does not silently un-tick the thing that let the write through. */
 let powerOpen = null, powerChoice = {}, powerDraft = {}, powerError = '', powerReply = '', powerBusy = false;
 let powerPatch = null, powerGate = {};
+/* The panel is drawn from a signature like every other region on this page, and "is the Values by
+   hand drawer open" is part of what it draws. It lives here rather than only on the `<details>`
+   element because the element is thrown away and rebuilt, and an operator who opened a drawer should
+   not have it close under their hands because the runtime answered a poll. */
+let powerCustom = false, powerSignature = '';
 function schedule(delay) { clearTimeout(timer); timer = setTimeout(tick, delay); }
 try { pending = JSON.parse(sessionStorage.getItem('runtime-switch-request')); } catch (_) { /* may be disabled */ }
 if (pending && typeof pending.request_id !== 'string') pending = null;

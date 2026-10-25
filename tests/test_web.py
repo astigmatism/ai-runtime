@@ -431,14 +431,74 @@ class PowerHttpTests(OperationFixture, unittest.TestCase):
         self.assertEqual(depth, 0, 'the stylesheet ends ' + str(depth) + ' rule(s) deep')
 
     def test_the_panel_is_cleared_before_anything_is_drawn_in_it(self):
-        """The power panel is rebuilt by the five-second poll while it is open, and for a while it
-        appended instead of replacing: the document grew by a panel's height every poll, 2,194px to
-        57,553px in ten minutes, and it stayed perfectly readable the whole time, which is exactly why
-        nobody noticed. The fix is one call, and it has to come before the branch that decides whether
-        there is a card open at all — clearing it only when a card *is* open leaves the last panel of a
-        closed card sitting under the map forever.
+        """The power panel is rebuilt while it is open, and for a while it appended instead of
+        replacing: the document grew by a panel's height every poll, 2,194px to 57,553px in ten
+        minutes, and it stayed perfectly readable the whole time, which is exactly why nobody noticed.
+        The clearing has to sit directly above the drawing, and there has to be one on the path that
+        closes the panel too — clearing it only when a card *is* open leaves the last panel of a closed
+        card sitting under the map forever.
         """
         source = urllib.request.urlopen(self.base + '/app.js').read().decode()
         body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
-        self.assertLess(body.index('panel.replaceChildren()'), body.index('if (!entry)'),
-            'a panel cleared only on the path that opens one is never cleared when it closes')
+        self.assertIn('panel.replaceChildren(); panel.hidden = true;', body,
+            'closing a card has to empty the panel, not leave it under the map')
+        self.assertLess(body.index('powerSignature = signature;'), body.index('panel.hidden = false;'),
+            'the panel has to be cleared immediately before it is drawn into')
+        self.assertIn('panel.replaceChildren();\n  panel.hidden = false;', body,
+            'the clear and the draw have to be the next two lines, or a future branch can slip between')
+
+    def test_a_poll_that_changed_nothing_leaves_the_open_panel_alone(self):
+        """The panel draws the driver's readings, which arrive on their own 30-second cadence, and it
+        is drawn from a signature like the map and the list. Rebuilt on every five-second poll instead,
+        it closed the drawer the operator had just opened and took the caret out of a watts field
+        mid-number — both of which the operator feels as the page working against them.
+        """
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
+        self.assertIn('if (signature === powerSignature) { powerAge(); return; }', body,
+            'a poll that changed nothing this panel draws must not touch its DOM')
+        self.assertIn('powerGate[powerOpen], powerCustom]);', body,
+            'the signature has to cover the operator\'s own state, or a click that should redraw '
+            'the panel is ignored')
+
+    def test_an_open_drawer_is_the_operators_to_close(self):
+        """"Values by hand" is open or closed because somebody wanted it that way. Keeping that on the
+        `<details>` element alone means the next redraw answers with a shrug and a closed drawer, so it
+        lives in module state and goes back on every draw."""
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        self.assertIn('custom.open = powerCustom;', source)
+        self.assertIn('powerCustom = custom.open', source)
+        self.assertIn('let powerCustom = false', source)
+
+    def test_typing_in_the_rename_box_survives_a_poll(self):
+        """The runtime gets asked about its own status every five seconds, and the box's draft text
+        was in the list's signature. One keystroke changed the signature, so the next poll rebuilt the
+        list: the text came back, and the focus did not. The draft is drawn once, into the box that is
+        already holding it."""
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderRegistry() {')[1].split('\nfunction ')[0]
+        signature = [line for line in body.split('if (signature')[0].splitlines() if 'const signature' in line]
+        self.assertEqual(len(signature), 1, 'the list is drawn from one signature')
+        self.assertNotIn('aliasDraft', signature[0],
+            'a keystroke is not the runtime telling the page anything new')
+        self.assertIn("field.dataset.focus = 'alias:' + model.model;", source,
+            'the box has to name itself so a redraw that does happen can hand the caret back')
+
+    def test_a_redraw_hands_the_keyboard_back(self):
+        """Even a redraw that has every right to happen is a thing happening to a control the operator
+        may be using. The page remembers which named control had the caret and where the caret was,
+        and puts both back after drawing."""
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function render() {')[1].split('\n}\n')[0]
+        self.assertIn('const focus = keepFocus();', body)
+        self.assertLess(body.index('const focus = keepFocus();'), body.index('renderPower();'),
+            'focus has to be remembered before anything is drawn')
+        self.assertIn('restoreFocus(focus);', body)
+        self.assertGreater(body.index('restoreFocus(focus);'), body.index('renderDetails();'),
+            'and handed back after everything is drawn')
+        self.assertIn("document.querySelector(`[data-focus=\"${at.name}\"]`)", source)
+        # Every control an operator can be mid-keystroke on names itself, or a redraw that does have
+        # every right to happen is allowed to drop them on the floor.
+        for name in ("'alias:' + model.model", "'power:' + key", "'config:' + config.profile",
+                     "'rung:' + name", "'gate:' + entry.uuid"):
+            self.assertIn(name, source, 'a control without a name cannot be found again after a redraw')

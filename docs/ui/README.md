@@ -73,6 +73,24 @@ panel says so rather than pretending to a verification it does not have. Nothing
 the boot path, and the panel says that too, in the same place the buttons are: a reboot returns the
 card to stock on its own, which is the way back when a card disagrees with the rung it was given.
 
+## What a refresh may do to the page
+
+The page asks the runtime for its status every five seconds, and the runtime answers whether anything
+changed or not. Drawing that answer is a contract with whatever the operator's hands are doing:
+
+- Every region is drawn from a signature of the facts it shows, and a poll that changed none of them
+  leaves the DOM alone. The power panel was the last region rebuilt unconditionally, which looked
+  perfectly healthy and closed the "Values by hand" drawer five seconds after it was opened.
+- Nothing that is drawn from the clock — "read from the driver N seconds ago" — may be a reason to
+  redraw a region. It is refreshed on its own, by itself, in the one element that holds it.
+- A region that legitimately has to redraw hands the keyboard back. Controls an operator can be
+  mid-keystroke on carry `data-focus`, and after a draw the page finds the copy it just made, focuses
+  it, and puts the caret where it was. The Rename box used to lose focus mid-word on the next poll
+  because its draft text was part of the list's signature: the text survived, the focus did not, and
+  to the operator that is the page taking the keyboard away at a moment they cannot predict.
+- Open and closed is the operator's state, so the drawer's open flag lives in the page's state
+  alongside the draft values and is put back on every draw, not read off the element being replaced.
+
 ## What the design is for
 
 One idea, stated once: the physical GPUs and which model has them. Everything else on the page is
