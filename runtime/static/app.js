@@ -396,7 +396,9 @@ function renderRegistry() {
     ? 'Checking whether the request was accepted. It will not be sent again automatically.'
     : running() ? '' : !connected ? 'Reconnect to view the current runtime before switching.'
       : status?.switching?.reason || '';
-  el('operation').hidden = !running() && !el('operation').textContent;
+  // `#operation` is not this function's to hide: it belongs to the progress of a change, and
+  // renderProgress says when there is one. A second writer here used the panel's own leftover text
+  // as its evidence, which is how a receipt three days old came back on every poll.
 }
 function select(profile) { selected = profile; actionError = ''; tellError(''); render(); }
 const controlsEnabled = () => connected && !submitting && !running() && !requestUnknown
@@ -477,9 +479,24 @@ const publicationLine = () => {
 // model, before the drain. A switch that needs no build runs it as a no-op.
 const phaseNames = {checking: 'Check', preparing: 'Prepare', draining: 'Drain', loading: 'Load', verifying: 'Verify'};
 const phases = Object.keys(phaseNames);
+// A finished run is history, and history does not need room on a page about now. This box is for a
+// change in flight and for an outcome that is not resolved yet; a run that ended well -- or ended
+// badly and had the previous release restored under it, which is the same rest -- goes quiet five
+// minutes after it stopped, which is long enough to have been read. Nothing is lost by that: the
+// durable receipt is still one GET away at /api/operations/<id>, and the revision it ran is in the
+// runtime details and in the catalog revision the router accepted. A machine whose last receipt was
+// three days old used to spend its right-hand column on it forever.
+const RECEIPT_GRACE_MS = 5 * 60 * 1000;
+function receiptWorthRoom() {
+  if (!operation) return false;
+  if (['failed', 'needs-attention'].includes(operation.status)) return true;
+  if (running()) return true;
+  const ended = Date.parse(operation.finished_at || operation.started_at || '');
+  return Number.isFinite(ended) && Date.now() - ended < RECEIPT_GRACE_MS;
+}
 function renderProgress() {
   const panel = el('operation');
-  panel.hidden = !operation;
+  panel.hidden = !receiptWorthRoom();
   if (!operation) return;
   const target = titleOf(configFor(operation.target_profile)) || operation.target_profile;
   // A restoration is a different promise from a switch, so it is titled as one: nothing was chosen,

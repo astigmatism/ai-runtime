@@ -35,31 +35,43 @@
   </section>
 
   <div class="grid">
-    <!-- One concept: the cards in this machine and what the configuration has each one doing. -->
-    <section class="panel" aria-labelledby="running-title">
-      <h2 id="running-title">Running now</h2>
-      <div id="models" class="models"><p class="sub">Loading runtime assignments…</p></div>
+    <!-- Two columns, and the same two on every machine. Each column is wrapped in what it holds:
+         this one is the machine as it is running, and only this machine's; the other is the choice,
+         with everything an operator consults about it underneath. Auto-flowing three children into
+         two columns used to place whatever came next -- the configuration list -- *under* the map on
+         a host that had an operation receipt to show and *beside* it on a host that had none, which
+         made the same page on two machines look like two products. Nothing may decide which column
+         the choice goes in but the markup.
 
-      <h2 class="mt26" id="gpus-title">Physical GPUs</h2>
-      <div id="gpus" class="board" aria-labelledby="gpus-title"></div>
-      <!-- Filled from the live registry: the colours belong to the models this machine loads, and a
-           machine that loads two of them has two swatches here and a machine that loads one has one. -->
-      <p class="legend" id="legend"></p>
+         One concept: the cards in this machine and what the configuration has each one doing. -->
+    <div class="column">
+      <section class="panel" aria-labelledby="running-title">
+        <h2 id="running-title">Running now</h2>
+        <div id="models" class="models"><p class="sub">Loading runtime assignments…</p></div>
 
-      <div id="preview" class="would" hidden>
-        <h2 class="subhead">If you switch to <span class="h3-inline" id="preview-name"></span></h2>
-        <div id="preview-models" class="models"></div>
-        <div id="preview-gpus" class="board mt12"></div>
-        <p id="preview-note" class="note"></p>
-      </div>
-    </section>
+        <h2 class="mt26" id="gpus-title">Physical GPUs</h2>
+        <div id="gpus" class="board" aria-labelledby="gpus-title"></div>
+        <!-- Filled from the live registry: the colours belong to the models this machine loads, and a
+             machine that loads two of them has two swatches here and a machine that loads one has one. -->
+        <p class="legend" id="legend"></p>
 
-    <section class="panel" id="operation" aria-labelledby="operation-title" hidden>
-      <div class="section-heading"><h2 id="operation-title"></h2><span id="elapsed" class="sub"></span></div>
-      <ol id="steps" class="steps" aria-label="Switch progress"></ol>
-      <p id="operation-message" role="status" aria-live="polite" aria-atomic="true"></p>
-      <p id="admissions" class="sub"></p>
-    </section>
+        <div id="preview" class="would" hidden>
+          <h2 class="subhead">If you switch to <span class="h3-inline" id="preview-name"></span></h2>
+          <div id="preview-models" class="models"></div>
+          <div id="preview-gpus" class="board mt12"></div>
+          <p id="preview-note" class="note"></p>
+        </div>
+      </section>
+
+      <!-- The progress of a change belongs under the configuration it is changing, not beside the
+           choice it has already stopped needing. -->
+      <section class="panel" id="operation" aria-labelledby="operation-title" hidden>
+        <div class="section-heading"><h2 id="operation-title"></h2><span id="elapsed" class="sub"></span></div>
+        <ol id="steps" class="steps" aria-label="Switch progress"></ol>
+        <p id="operation-message" role="status" aria-live="polite" aria-atomic="true"></p>
+        <p id="admissions" class="sub"></p>
+      </section>
+    </div>
 
     <div class="column">
       <section class="panel switch-section" id="configurations" aria-labelledby="switch-title">
