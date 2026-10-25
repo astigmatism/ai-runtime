@@ -13,7 +13,8 @@ from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT,
     ALIASES_VERSION, available_profiles, belongs_to_host, catalog_names, clean_alias,
     configurations_for, is_exclusive, model_id, models_of, nameable_models,
     default_name, default_profile, digest, display_name, engine_interface, merge_settings, read,
-    read_aliases, render, resolve_profile, service_engine, service_key, text_gpus, unknown_profile)
+    power_plan, power_plans, power_request, power_rung, read_aliases, read_power_registry, render,
+    resolve_profile, service_engine, service_key, text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -2314,3 +2315,123 @@ class MoreThanOneMachineTests(unittest.TestCase):
                 name + ' is listed with ' + str(len(block) - 1) + ' models and loads '
                 + str(len(NAMED[name])))
         self.assertEqual([block[0].split(':')[0] for block in blocks()], list(CONFIGURATIONS))
+
+
+def table_with(**changes):
+    """The shipped rung table with its top-level keys edited, in a real directory on disk.
+
+    These numbers get written to a live GPU, so the validator is reached through a file: the part of
+    the rule that lives in how the table is found and read is the part worth testing.
+    """
+    directory = Path(tempfile.mkdtemp()) / 'config'
+    shutil.copytree(ROOT / 'config', directory)
+    path = directory / 'undervolt.json'
+    table = read(path)
+    table.update(changes)
+    path.write_text(json.dumps(table))
+    return directory
+
+
+class RungTableTests(unittest.TestCase):
+    """The undervolt table: what it has to contain, and what it refuses to say."""
+
+    def setUp(self):
+        self.table = read_power_registry(ROOT / 'config')
+        self.envelope = self.table['envelope']
+
+    def request(self, **body):
+        return power_request(body, self.envelope, (100, 350))
+
+    def test_the_shipped_table_is_the_numbers_the_campaigns_measured(self):
+        """A guard on the evidence, not on the shape. These three defaults are the state of the art on
+        this hardware as of the campaigns that produced them, and one of them was moved *off* the
+        ladder winner on purpose; a silent edit to any of the three is a change of policy."""
+        plans = self.table['plans']
+        self.assertEqual(sorted(plans), ['rtx3080-ti', 'rtx3090', 'rtx4080-super'])
+        self.assertEqual({plan['default'] for plan in plans.values()},
+            {'assertive', 'sensible', 'safe'})
+        self.assertEqual(plans['rtx3090']['default'], 'sensible')
+        self.assertEqual(plans['rtx3090']['rungs']['sensible'],
+            {'power': 330, 'clock_max': 1905, 'offset': 75})
+        self.assertEqual(plans['rtx3080-ti']['default'], 'assertive')
+        # The 4080 SUPER is the one whose recommended rung is not its best-measured rung, and the note
+        # that says so is part of the table: without it, the next reader "fixes" the default.
+        self.assertEqual(plans['rtx4080-super']['default'], 'safe')
+        self.assertIn('stopped', plans['rtx4080-super']['note'])
+        self.assertEqual(self.envelope['offset_step'], 15)
+        self.assertEqual(self.envelope['offset_max'], 150)
+        self.assertEqual(self.envelope['clock_min'], 210)
+
+    def test_a_table_that_cannot_be_trusted_refuses_to_load(self):
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['rungs']['sensible']['offset'] = 80
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['rungs']['sensible']['offset'] = 300
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['default'] = 'aggressive'
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['rungs']['aggressive'] = {'power': 300, 'clock_max': 1800, 'offset': 90}
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        # A rung that undervolts more and asks for more watts is not a rung of this ladder.
+        plans['rtx3090']['rungs']['assertive']['power'] = 360
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['rungs']['sensible']['clock_max'] = 200
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090']['rungs'].pop('sensible')
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        # An empty table is a state, not a fault: it is what the file looked like before any card had
+        # been through the ladder. An envelope that does not say what the driver accepts is not.
+        self.assertEqual(read_power_registry(table_with(plans={})), {'version': 1, '_what': read(
+            ROOT / 'config' / 'undervolt.json')['_what'], 'envelope': self.envelope, 'plans': {}})
+        self.assertRaises(RuntimeError, read_power_registry, table_with(envelope={}))
+
+    def test_an_unmeasured_card_is_refused_by_name_and_told_what_exists(self):
+        with self.assertRaises(RuntimeError) as refused:
+            power_plan(self.table, 'rtx9090')
+        self.assertIn('rtx9090', str(refused.exception))
+        self.assertIn('rtx3090', str(refused.exception), 'a refusal for a name that does not exist '
+            'names the names that do, which is the only useful thing it can say')
+        # A card with no plan at all is the common case on a second machine, and its refusal is a
+        # different sentence: nothing was typed wrongly.
+        with self.assertRaises(RuntimeError) as refused:
+            power_plan(self.table, None)
+        self.assertIn('has no undervolt plan', str(refused.exception))
+        self.assertIn('reverted to stock', str(refused.exception))
+        with self.assertRaises(RuntimeError) as refused:
+            power_rung(power_plan(self.table, 'rtx3090'), 'extreme')
+        self.assertIn('safe, sensible, assertive', str(refused.exception))
+
+    def test_which_card_runs_which_plan_is_operational_state_and_is_checked_as_such(self):
+        self.assertEqual(power_plans({'power_plans': {'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c':
+            'rtx3090'}}), {'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': 'rtx3090'})
+        self.assertEqual(power_plans({}), {})
+        # A moniker is how the host script named a card; a deployment settings file is where a full
+        # UUID is written, because the whole point is that it names one physical card.
+        self.assertRaises(RuntimeError, power_plans, {'power_plans': {'3090': 'rtx3090'}})
+        self.assertRaises(RuntimeError, power_plans, {'power_plans': {
+            'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': None}})
+
+    def test_a_write_names_a_card_and_one_kind_of_asking_and_nothing_else(self):
+        card = 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c'
+        self.assertEqual(self.request(gpu=card, action='apply', rung='safe')['rung'], 'safe')
+        self.assertEqual(self.request(gpu=card, action='revert')['action'], 'revert')
+        custom = self.request(gpu=card, action='custom', power=300, clock_max=1800, offset=80)
+        self.assertEqual((custom['power'], custom['offset'], custom['offset_rounded']),
+            (300, 75, True))
+        for body in [{'gpu': card}, {'gpu': card, 'action': 'apply'},
+                {'gpu': card, 'action': 'apply', 'rung': 'safe', 'power': 300},
+                {'gpu': card, 'action': 'custom', 'power': 300},
+                {'gpu': card, 'action': 'custom', 'power': 300, 'clock_max': 200, 'offset': 75},
+                {'gpu': card, 'action': 'custom', 'power': 300, 'clock_max': 1800, 'offset': 75,
+                    'clock_min': 210},
+                {'gpu': '3090', 'action': 'revert'},
+                {'gpu': card, 'action': 'revert', 'override': 'yes'},
+                {'gpu': card, 'action': 'read', 'rung': 'safe'}]:
+            with self.subTest(body=body):
+                self.assertRaises(RuntimeError, self.request, **body)

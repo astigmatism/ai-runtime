@@ -1,0 +1,51 @@
+{
+  "version": 1,
+
+  "_what": "Undervoltage rungs a card can be asked to sit at, ported from the host script ops/scripts/gpu-undervolt. A plan belongs to a *card*, not to a configuration: it outlives a switch, and it outlives nothing else -- these are volatile driver settings and a reboot returns a card to stock on its own, which is the recovery method and is deliberately not replaced by anything here. Which card runs which plan is operational state (`.state/host.json`, `power_plans`); the numbers, the rung names, the envelope and the evidence are source, because they are what the runtime validates and renders. Cards nobody has measured have no plan and are refused a rung rather than being handed another card's numbers.",
+
+  "envelope": {
+    "offset_step": 15,
+    "offset_max": 150,
+    "clock_min": 210,
+    "_why": "15 MHz is the driver's granularity, so a value off the step is rounded rather than refused. +150 MHz is the envelope proven on this driver family (+15..+150 accepted and held); a held +300 faulted a live serving context with Xid 31, and API acceptance is not serving safety. The clock floor stays at 210 MHz: a high floor is what makes an offsetting card crash at idle."
+  },
+
+  "plans": {
+    "rtx3090": {
+      "name": "RTX 3090 (GA102)",
+      "arch": "ampere",
+      "default": "sensible",
+      "measured": "2026-10-18: -12.5% energy per token, identical output. Evidence, ladder and gates: ops/reports/2026-10-18-rtx3090-undervolt/",
+      "rungs": {
+        "safe": { "power": 350, "clock_max": 1920, "offset": 45 },
+        "sensible": { "power": 330, "clock_max": 1905, "offset": 75 },
+        "assertive": { "power": 315, "clock_max": 1890, "offset": 105 }
+      }
+    },
+
+    "rtx3080-ti": {
+      "name": "RTX 3080 Ti (GA102)",
+      "arch": "ampere",
+      "default": "assertive",
+      "measured": "2026-10-18: -11.8% energy per token, identical output. Measured on this card, not copied from the 3090: same voltage band, but this board holds 50-75 MHz lower at a given mV and its inference power floor sits higher (300 W, not 250 W) against a 400 W default. Evidence: ops/reports/2026-10-18-3080ti-undervolt/summary.md",
+      "rungs": {
+        "safe": { "power": 340, "clock_max": 1875, "offset": 45 },
+        "sensible": { "power": 315, "clock_max": 1830, "offset": 75 },
+        "assertive": { "power": 300, "clock_max": 1800, "offset": 105 }
+      }
+    },
+
+    "rtx4080-super": {
+      "name": "RTX 4080 SUPER (AD103)",
+      "arch": "ada",
+      "default": "safe",
+      "measured": "2026-10-19 ladder: sensible -16% energy per token (prefill windows; -32% clean decode window), identical output; assertive failed the >=98% pooled-decode gate in two windows. First Ada card through the ladder: no Ampere number survived translation. Evidence: ops/reports/2026-10-19-4080super-undervolt/summary.md",
+      "note": "The default here is `safe`, one rung toward stock from the ladder winner, and that is not a measurement result: running `sensible` in daytime service the LLM simply stopped (owner-reported 2026-10-20, from live use). Recorded as reported, not corroborated -- the engine's own log starts after the move, with no Xid or OOM line inside what survived. What `sensible` failed is the production duty cycle, not the bench gates, so it stays in the table as a measured rung and `safe` is what a one-click apply means.",
+      "rungs": {
+        "safe": { "power": 270, "clock_max": 2760, "offset": 45 },
+        "sensible": { "power": 255, "clock_max": 2640, "offset": 75 },
+        "assertive": { "power": 240, "clock_max": 2520, "offset": 105 }
+      }
+    }
+  }
+}

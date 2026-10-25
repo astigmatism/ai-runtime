@@ -23,7 +23,10 @@ reason — they already know how to be a machine that is not this one.
 """
 import argparse
 from http.server import ThreadingHTTPServer
+import copy
+import hashlib
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -80,6 +83,9 @@ def machine(state, profile, arguments):
     # `--router` at the household's router instead and the page shows what a real deployment shows
     # when that router is unreachable, which is also worth looking at.
     host.update(router_state_dir=str(state / 'router'))
+    # The cards get driver-shaped names before anything reads them, so the power panel and the map are
+    # talking about the same four pieces of silicon.
+    power_uuids(host)
     host.setdefault('host_id', 'daisy' if arguments.host_json else 'rosalina')
     if arguments.router:
         host['router_target'] = {'url': arguments.router, 'token_env': 'PUBLISHER_TOKEN'}
@@ -103,6 +109,167 @@ def machine(state, profile, arguments):
     return controller, system, bundle
 
 
+# --------------------------------------------------------------------------------- the cards' power
+# A preview without a GPU has to answer the card agent the way a GPU does, or every tile says
+# "power unreadable" and the page is a lie in the other direction. This is that answer: a handful of
+# cards with a driver behind them, at states worth looking at — one at a rung, one at stock, one
+# hand-set between rungs, one that this revision has never measured, and one nobody has read yet.
+CARDS = {
+    # name: the plan this revision has for it, or None when nobody has run the ladder on it.
+    'RTX 3090': 'rtx3090', 'RTX 4080 SUPER': 'rtx4080-super', 'RTX 3080 Ti': 'rtx3080-ti',
+    'RTX 4080': None, 'RTX 2080 Ti': None}
+# What each card is doing when the preview opens, by position in the map: the states a page has to
+# draw, in the order a person reading them expects to find them. The last card is deliberately left
+# unseeded, so the driver answers it with an error and the page has to say `power unreadable` — and
+# a card nobody has polled yet, which shows `no reading yet`, is what every card looks like for the
+# first half minute of a fresh preview.
+OPENING = [('sensible', None), ('stock', None), ('custom', None), ('rung', 'assertive')]
+
+
+def power_uuids(host):
+    """The host's own cards, given UUIDs a power request can name.
+
+    The fixture's host calls its cards `GPU-day-1`, and a power request names a card the way the
+    driver does, so the preview renames the ones that are not already shaped like a card — everywhere
+    the old name appears, `cuda_order` included, because a host whose `gpu_ids` say one thing and
+    whose ordering says another refuses to render for a reason that has nothing to do with what is
+    being looked at. Done before the bundle is rendered, so the map, the services and the power block
+    all speak one set of names, which is the whole point of a preview instead of a drawing.
+    """
+    def shaped(value):
+        return re.fullmatch(r'GPU-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}', value or '')
+
+    def invented(value):
+        digest = hashlib.sha1(value.encode()).hexdigest()
+        return 'GPU-%s-%s-%s-%s-%s' % (digest[:8], digest[8:12], digest[12:16], digest[16:20],
+            digest[20:32])
+
+    renamed = {}
+    snapshot = copy.deepcopy(host)
+
+    def rename(value):
+        if isinstance(value, list):
+            return [rename(item) for item in value]
+        if isinstance(value, dict):
+            return {rename(key): rename(item) for key, item in value.items()}
+        if isinstance(value, str) and value.startswith('GPU-') and not shaped(value):
+            return renamed.setdefault(value, invented(value))
+        return value
+
+    # The names are collected first, so one card gets one UUID however many places name it.
+    collected = []
+
+    def find(value):
+        if isinstance(value, list):
+            for item in value:
+                find(item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    collected.append(key)
+                find(item)
+        elif isinstance(value, str):
+            collected.append(value)
+
+    find(host)
+    for name in collected:
+        if name.startswith('GPU-') and not shaped(name):
+            renamed.setdefault(name, invented(name))
+    host.clear()
+    host.update(rename(snapshot))
+
+    plans = {}
+    for group, names in host.get('gpu_names', {}).items():
+        for gpu, name in zip(host['gpu_ids'][group], names):
+            if CARDS.get(name):
+                plans[gpu] = CARDS[name]
+    host['power_plans'] = plans
+    return host
+
+
+class PreviewDriver:
+    """The card agent, answered in this process: reads report, writes move the two readable knobs."""
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.cards = {}
+        self.log = []
+
+    def seed(self, uuid, name, state, rung=None):
+        plan = CARDS.get(name)
+        table = self.controller.power.registry()['plans'].get(plan or '', {})
+        default = table.get('rungs', {}).get(table.get('default', ''), {})
+        card = {'uuid': uuid, 'name': 'NVIDIA GeForce ' + name, 'driver': '560.35.03',
+            'pci': '0000:01:00.0', 'power_limit': default.get('power', 350),
+            'power_default': 350, 'power_min': 100, 'power_max': 350, 'draw': 71.0,
+            'draw_average': 64.0, 'clock_sm': 1500, 'clock_max_sm': 2100, 'clock_mem': 9750,
+            'pstate': 'P0', 'temperature': 44, 'fan': 42, 'utilization': 88, 'memory_used': 21_500,
+            'memory_utilization': 23, 'power_capped_hours': 6.4, 'offset': default.get('offset', 0)}
+        if state == 'stock':
+            card.update(power_limit=card['power_default'], offset=0, utilization=4, pstate='P5',
+                clock_sm=210, temperature=31)
+        elif state == 'custom':
+            card.update({'offset': -30, 'power_limit': 255, 'power_default': 320, 'power_max': 320,
+                'clock_max_sm': 2955, 'clock_sm': 2520, 'power_capped_hours': 61.2})
+        elif rung:
+            asked = table['rungs'][rung]
+            card.update(power_limit=asked['power'], offset=asked['offset'],
+                clock_sm=asked['clock_max'])
+        self.cards[uuid] = card
+
+    def answer(self, argv):
+        verb = argv[argv.index('runtime.gpucard') + 1]
+        uuids = [argv[i + 1] for i, arg in enumerate(argv) if arg == '--uuid']
+        if verb == 'read':
+            return {'ok': True, 'verb': 'read', 'cards': {uuid: self.cards.get(uuid) or {
+                # A card the driver can see but cannot answer is one card's failure, not the pass's:
+                # this is the shape `runtime.gpucard` returns, and the tile says `power unreadable`.
+                'error': 'the V/F offset query is not supported on this device'} for uuid in uuids}}
+        uuid = uuids[0]
+        asked = {'power': int(argv[argv.index('--power') + 1]),
+            'offset': int(argv[argv.index('--offset') + 1]),
+            'clock_max': None if '--clock-max' not in argv else int(argv[argv.index('--clock-max') + 1]),
+            'clock_min': 210 if '--clock-min' not in argv else int(argv[argv.index('--clock-min') + 1])}
+        before = self.cards.get(uuid) or {'power_default': 350, 'clock_max_sm': 2100}
+        after = dict(before, power_limit=asked['power'], offset=asked['offset'],
+            clock_sm=asked['clock_max'] or before['clock_max'], power_capped_hours=0.0)
+        self.cards[uuid] = after
+        self.log.append((uuid, asked))
+        return {'ok': True, 'verb': 'apply', 'apply': {'before': before, 'after': after,
+            'attempts': 1, 'asked': asked, 'commands': ['nvidia-smi -i %s -pl %d' % (uuid,
+                asked['power'])], 'readback': {'power': 'ok', 'offset': 'ok',
+                'clock_max': 'unverifiable'}, 'errors': [], 'ok': True}}
+
+
+def power_preview(controller, system, scene):
+    """Wire the fake driver in, and seed the states the page is being looked at for."""
+    driver = PreviewDriver(controller)
+    docker = system.docker
+    def fake(*args, **kwargs):
+        if args[0] == 'run' and 'runtime.gpucard' in args:
+            return json.dumps(driver.answer(list(args)))
+        return docker(*args, **kwargs)
+    system.docker = fake
+    cards = controller.power.cards()
+    for position, (uuid, name) in enumerate(cards):
+        if position == len(cards) - 1 and len(cards) > 1:
+            continue  # the last card is the one the driver cannot answer: `power unreadable`
+        state, rung = OPENING[position % len(OPENING)]
+        if CARDS.get(name) is None and state == 'rung':
+            state, rung = 'stock', None
+        driver.seed(uuid, name, state, rung)
+    controller.power.merge({uuid: {'read_at': time.strftime('%Y-%m-%dT%H:%M:%S+00:00',
+        time.gmtime(time.time() - 12)), 'read': card} for uuid, card in driver.cards.items()})
+    controller.power.merge({'swept_at': time.strftime('%Y-%m-%dT%H:%M:%S+00:00',
+        time.gmtime(time.time() - 12))})
+    if scene == 'gate':
+        # One engine unwell on a card with a plan: the panel has to refuse, and offer the tick.
+        for service in controller.load('active.json')['bundle']['manifest']['services']:
+            system.containers[service['container_name']]['State']['Running'] = False
+            break
+    return driver
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--state', choices=('steady', 'switching', 'restoration'), default='steady')
@@ -113,11 +280,17 @@ def main():
     parser.add_argument('--host-json', help='Path to another machine\'s host.json, so the page is '
         'drawn for that machine (its cards, its service IDs, its one configuration) instead of the '
         'four-GPU host this harness otherwise invents.')
+    parser.add_argument('--power', choices=('mixed', 'gate'), default='mixed',
+        help='What the cards are doing when the page opens: `mixed` is one card at a rung, one at '
+        'stock, one hand-set between rungs, one the driver cannot answer, and (for the first half '
+        'minute) one nobody has polled yet; `gate` also stops an engine, so the panel has to refuse '
+        'a write and offer the tick that means "apply anyway".')
     arguments = parser.parse_args()
 
     temporary = tempfile.TemporaryDirectory()
     state = Path(temporary.name)
     controller, system, bundle = machine(state, arguments.profile, arguments)
+    power_preview(controller, system, arguments.power)
     web_state = {'started': True}
     operations = Operations(controller, web_state)
     # One refresh before anything else, so the machine is already read as ready when the preview

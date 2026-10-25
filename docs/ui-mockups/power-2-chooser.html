@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>The power chooser on one card — proposal</title>
+  <link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">rosalina / AI Runtime</p>
+      <h1>House standard</h1>
+      <p class="sub">flash-next-strata-solo-thinking-recovery-cache · 1 model · one of them uses all 4 text GPUs</p>
+    </div>
+    <span class="badge ready">Ready</span>
+  </header>
+
+  <div class="strip">
+    <span class="fact"><i class="dot"></i><span>One model ready</span></span>
+    <span class="fact"><i class="dot mute"></i><span>0 active · 0 queued</span></span>
+    <span class="fact"><i class="dot warn"></i><span>Catalog published to 192.168.1.23:11435 revision 4f0c19a7</span></span>
+    <span class="fact"><i class="dot mute"></i><span>Updated 06:41:02</span></span>
+  </div>
+
+  <div class="grid">
+    <div class="column">
+      <section class="panel">
+        <h2>Running now</h2>
+        <div class="models">
+          <article class="model">
+            <div>
+              <p class="ids">daytime · local-active · nighttime</p>
+              <p class="name">House standard</p>
+              <p class="alias">qwen3.8-flash-next-ud-iq4_xs · 256K context · RTX 3090 + RTX 4080 SUPER + RTX 4080 + RTX 3080 Ti</p>
+            </div>
+            <span class="state">Ready</span>
+          </article>
+        </div>
+
+        <h2 class="mt26">Physical GPUs</h2>
+        <div class="board">
+          <div class="gpu m0">
+            <h3>RTX 3090</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw rung"><i class="dot"></i><span><b>sensible</b></span></p>
+              <button class="ghost tiny" type="button">Close</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 4080 SUPER</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw rung"><i class="dot"></i><span><b>safe</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 4080</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span><b>stock</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 3080 Ti</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw custom"><i class="dot warn"></i><span><b>custom</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu vision">
+            <h3>RTX 3080</h3>
+            <div class="chips"><span class="mini vision">daytime</span><span class="mini vision">CUDA4</span></div>
+            <p class="own">image encoder · exclusive</p>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span>no measured rungs</span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+        </div>
+        <p class="legend">
+          <span><i class="m0"></i>daytime — House standard</span>
+          <span><i class="v"></i>Vision</span>
+          <span><i class="d"></i>Nothing placed</span>
+        </p>
+
+        <!-- The chooser. It opens under the card it belongs to, in the same column that holds the
+             machine as it runs: a rung is a fact about this machine now, not about the configuration
+             you are considering. -->
+        <section class="power">
+          <div class="head">
+            <h2>Power state · RTX 3090</h2>
+            <span class="when"><i class="dot mute"></i>read from the driver 6 seconds ago
+              <button class="ghost tiny" type="button">Re-read</button></span>
+          </div>
+
+          <dl class="facts">
+            <dt>Power limit</dt>
+            <dd>330 W <em>of this card's 350 W default, range 100–350 W</em></dd>
+            <dt>V/F offset</dt>
+            <dd>+75 MHz <em>NVML GpcClkVfOffset, read back after the write; 15 MHz steps, ±150 MHz allowed</em></dd>
+            <dt>Observed SM clock</dt>
+            <dd>1905 MHz <em>lock asked for 210–1905 MHz. This driver reports no clock-lock field and no
+              voltage, so the cap is inferred from this number and nothing more</em></dd>
+            <dt>Draw</dt>
+            <dd>242 W <em>average 251 W · 54 °C · p-state P2 · power-capped 0.42 h since boot</em></dd>
+          </dl>
+
+          <p class="note"><b>At <code>sensible</code>, this card's default rung.</b> Power limit and V/F
+            offset both read back exactly as the rung asks. A clock lock cannot be verified on GeForce:
+            1905 MHz observed against 1905 MHz asked is the whole evidence, which is why the rung is named
+            from the two values that can be read.</p>
+
+          <div class="rungs">
+            <label class="rung">
+              <input type="radio" name="rung">
+              <div>
+                <p class="name">safe <span class="tags"></span></p>
+                <p class="set">350 W · max 1920 MHz · offset +45 MHz</p>
+                <p class="why">One rung toward stock. Apply it when a serving engine has been unwell on
+                  anything lower.</p>
+              </div>
+            </label>
+            <label class="rung now">
+              <input type="radio" name="rung" checked>
+              <div>
+                <p class="name">sensible <span class="tags"><span class="tag def">card default</span><span class="tag cur">where it is now</span></span></p>
+                <p class="set">330 W · max 1905 MHz · offset +75 MHz</p>
+                <p class="why">Measured on this card 2026-10-18: −12.5 % energy per token, identical output.
+                  Evidence, ladder and gates: <code>ops/reports/2026-10-18-rtx3090-undervolt/</code></p>
+              </div>
+            </label>
+            <label class="rung">
+              <input type="radio" name="rung">
+              <div>
+                <p class="name">assertive <span class="tags"></span></p>
+                <p class="set">315 W · max 1890 MHz · offset +105 MHz</p>
+                <p class="why">The floor this card was measured to hold, not a rung to leave running
+                  unattended.</p>
+              </div>
+            </label>
+            <label class="rung stock">
+              <input type="radio" name="rung">
+              <div>
+                <p class="name">Stock <span class="tags"><span class="tag off">revert</span></span></p>
+                <p class="set">-rgc · offset 0 · power limit 350 W</p>
+                <p class="why">Back to the driver's own numbers, live, with no restart of anything that is
+                  serving. This is the action to take first when a card is misbehaving.</p>
+              </div>
+            </label>
+          </div>
+
+          <details class="custom">
+            <summary>Values by hand — 330 W · 1905 MHz · +75 MHz</summary>
+            <div class="fields">
+              <label>Power limit (W)<input type="text" value="330">
+                <span class="hint">this card takes 100–350 W</span></label>
+              <label>Max SM clock (MHz)<input type="text" value="1905">
+                <span class="hint">locked from 210 MHz up; 15 MHz bins</span></label>
+              <label class="bad">V/F offset (MHz)<input type="text" value="80">
+                <span class="hint">not a 15 MHz step: this would be applied as +75. Positive undervolts;
+                  ±150 is the envelope proven on this driver</span></label>
+            </div>
+            <p class="sub">Hand-set values are the script's <code>set</code>: a trial rung the machine has
+              not measured. They are never offered as if they were measured, and a card with no plan of its
+              own can only be moved this way or back to stock.</p>
+          </details>
+
+          <p class="volat"><b>Nothing is installed in the boot path, by design.</b> These are volatile driver
+            settings: a reboot returns this card to stock on its own, and that is the way back. This page
+            reads and writes them; it never re-applies one by itself. A rung belongs to the card, so
+            switching configuration leaves it exactly where it is.</p>
+
+          <div class="acts">
+            <button type="button">Re-apply sensible to RTX 3090</button>
+            <button class="ghost" type="button">Close</button>
+          </div>
+          <p class="sub">Nothing is drained and nothing is paused: the write is three driver calls and one
+            read-back, a couple of seconds. It is refused while a switch, a restoration or a source
+            deployment has the machine.</p>
+
+          <p class="hist"><b>Written from this page 2026-10-24 21:04:</b> <code>safe</code> →
+            <code>sensible</code>, read-back OK. Before that: <code>stock</code> → <code>safe</code>,
+            read-back OK, 2026-10-18 19:22. Twenty most recent writes are kept in
+            <code>.state/power/history.json</code> and none of them survived a reboot.</p>
+        </section>
+      </section>
+    </div>
+
+    <div class="column">
+      <section class="panel switch-section">
+        <h2>Configurations</h2>
+        <fieldset>
+          <div class="configs">
+            <article class="cfg">
+              <input class="select" type="radio" name="profile">
+              <div>
+                <p class="title"><span>qwen27b-q8-pair</span></p>
+                <p class="id mono">qwen3.8-27b-q8_0-tensor-next + qwen3.8-27b-abliterated-q6_k</p>
+                <p class="row"><span>daytime</span><span>Qwen3.8 27B Q8 (160K) · RTX 3090 + RTX 4080 SUPER</span></p>
+                <p class="row"><span>nighttime</span><span>Qwen3.8 27B Abliterated Q6_K (96K) · RTX 4080 + RTX 3080 Ti</span></p>
+              </div>
+              <div class="end"><span class="state muted"></span></div>
+            </article>
+            <article class="cfg selected active">
+              <input class="select" type="radio" name="profile" checked>
+              <div>
+                <p class="title"><span>flash-next-strata-solo-thinking-recovery-cache</span></p>
+                <p class="id mono">qwen3.8-flash-next-ud-iq4_xs</p>
+                <p class="row"><span>daytime</span><span>House standard · RTX 3090 + RTX 4080 SUPER + RTX 4080 + RTX 3080 Ti</span><span class="controls"><span class="pill">Renamed</span><button class="ghost tiny" type="button">Rename</button></span></p>
+                <p class="row"><span>Variant</span><span>card sampling + call recovery + parked conversations</span></p>
+              </div>
+              <div class="end"><span class="state">Active</span></div>
+            </article>
+          </div>
+        </fieldset>
+        <button class="wide" type="button" disabled>House standard is active</button>
+      </section>
+
+      <details class="runtime-details">
+        <summary>Runtime details</summary>
+        <p class="sub">Deployed revision <code>2cb8dbe4b479</code> · source changes go in with
+          <strong>Update and restart</strong> in Service Portal.</p>
+      </details>
+    </div>
+  </div>
+
+  <footer>
+    <span>The GPU map shows assignments, model-service health, and the power state last read 6 seconds ago —
+      not a telemetry history.</span>
+    <span>Status updated 06:41:02</span>
+  </footer>
+</main>
+</body>
+</html>

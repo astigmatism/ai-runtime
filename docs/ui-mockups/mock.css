@@ -1,0 +1,330 @@
+/* One concept per screen: the cards in this machine and what the active configuration has each one
+   doing, and the list of configurations to switch to. Everything else is either a fact in the strip
+   at the top or folded into the details at the bottom.
+
+   The page is served under `style-src 'self'`, which forbids inline styles, so every difference in
+   appearance is a state class the script adds — never a style attribute it writes. */
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #eef2f5; background: #0e1417; color-scheme: dark;
+  --line: #2b3c42; --muted: #9db2ba; --day: #85dec9; --night: #c4b4ef; --vision: #d5ddef;
+  /* One colour per model a configuration loads, in the order it names them. A machine that loads one
+     model uses one of them and a machine that loads four uses four. Nothing here says how many a
+     configuration is supposed to have, because nothing here knows that. */
+  --m0: #85dec9; --m1: #c4b4ef; --m2: #f0c987; --m3: #a3d8a8;
+  --panel: #141e23; --warn: #e6bb78; --bad: #ed9797;
+}
+
+* { box-sizing: border-box }
+body { margin: 0 }
+main { max-width: 1240px; padding: 34px 32px 40px; margin: auto }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%) }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .94em }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace }
+
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap }
+.eyebrow { font-size: 11px; letter-spacing: .17em; color: var(--muted); font-weight: 600; margin: 0 }
+h1 { font-size: 32px; letter-spacing: -.04em; margin: 8px 0 0; font-weight: 600; overflow-wrap: anywhere }
+h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; font-weight: 650 }
+.sub { color: var(--muted); font-size: 13px; margin: 6px 0 0; line-height: 1.55; overflow-wrap: anywhere }
+.mt26 { margin: 26px 0 0 }
+.mt12 { margin: 12px 0 0 }
+
+.badge { font-size: 12px; border: 1px solid #596972; border-radius: 24px; padding: 7px 13px; white-space: nowrap;
+  align-self: flex-start }
+.badge.ready { color: #a4e8d1; background: #1a362c; border-color: #325747 }
+.badge.pending { color: #f0cf9e; background: #3a2d1e; border-color: #73562d }
+.badge.bad { color: #f0b6b6; background: #3b2424; border-color: #6f4545 }
+
+.notice { border: 1px solid #7a5548; background: #241a17; color: #ecd6c9; border-radius: 11px;
+  padding: 13px 15px; font-size: 13px; line-height: 1.6; margin: 18px 0 0 }
+
+/* The one-line health of the machine, where a glance is supposed to be enough. */
+.strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 26px; border-top: 1px solid var(--line);
+  padding-top: 14px }
+.fact { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; background: var(--panel) }
+.fact b { color: #dfeaec; font-weight: 550 }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--day); flex: none }
+.dot.warn { background: var(--warn) } .dot.bad { background: var(--bad) } .dot.mute { background: #5b6f78 }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; align-items: start }
+.column { display: grid; gap: 22px; min-width: 0 }
+.panel { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 22px; min-width: 0 }
+.section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 15px; flex-wrap: wrap }
+
+/* The models this configuration loads: what is running, what answers, and what a client asks for to
+   reach each one. A card per model, and the colour a model has here is the colour its cards have. */
+.models { display: grid; gap: 12px }
+.model { border: 1px solid var(--m0); border-radius: 14px; background: #15282a; padding: 14px 16px;
+  display: flex; justify-content: space-between; gap: 14px; align-items: flex-start }
+/* The state on the right may not have the last word: a long model name belongs to the reader, and a
+   state word does not get to hyphenate an operator's name to make room for itself. */
+.model > div { flex: 1 1 auto; min-width: 0 }
+.model .state { flex: 0 1 auto; text-align: right; max-width: 40% }
+.model .ids { font-size: 10px; letter-spacing: .14em; color: var(--m0); font-weight: 700; margin: 0 0 6px;
+  text-transform: uppercase }
+.model .name { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -.01em; overflow-wrap: anywhere }
+.model .alias { font-size: 11.5px; color: var(--muted); margin: 5px 0 0; overflow-wrap: anywhere }
+.model .state { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700;
+  color: var(--m0); white-space: nowrap }
+/* The card's own tone, so a model's card and the tiles it owns are read as one thing. */
+.model.m1 { border-color: var(--m1) } .model.m1 .ids, .model.m1 .state { color: var(--m1) }
+.model.m2 { border-color: var(--m2) } .model.m2 .ids, .model.m2 .state { color: var(--m2) }
+.model.m3 { border-color: var(--m3) } .model.m3 .ids, .model.m3 .state { color: var(--m3) }
+.model.unwell { border-style: dashed; border-color: #6d7f87; background: #182227 }
+.model.unwell .state { color: var(--warn) }
+.model.bad { border-style: dashed; border-color: #7a5548; background: #1f1b1b }
+.model.bad .state { color: var(--bad) }
+
+/* The physical machine. One tile per card, coloured by who has it. */
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px }
+.gpu { border: 1px solid #33454d; border-top: 3px solid #4a5f67; border-radius: 11px; background: #111b1f;
+  padding: 12px; display: grid; gap: 9px; min-height: 112px; align-content: space-between; min-width: 0 }
+.gpu h3 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere }
+.gpu .own { font-size: 11px; color: var(--muted) }
+.gpu .chips { display: flex; gap: 5px; flex-wrap: wrap }
+.gpu.m0 { border-top-color: var(--m0) } .gpu.m0 .own { color: var(--m0) }
+.gpu.m1 { border-top-color: var(--m1) } .gpu.m1 .own { color: var(--m1) }
+.gpu.m2 { border-top-color: var(--m2) } .gpu.m2 .own { color: var(--m2) }
+.gpu.m3 { border-top-color: var(--m3) } .gpu.m3 .own { color: var(--m3) }
+.gpu.vision { border-top-color: var(--vision) } .gpu.vision .own { color: var(--vision) }
+.gpu.preview { border-style: dashed; background: #131f22 }
+.mini { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; border-radius: 4px;
+  padding: 2px 5px; background: #25453f; color: #9fe8d3 }
+.mini.m1 { background: #33324d; color: #ded6f7 }
+.mini.m2 { background: #4a3c22; color: #f7e0b6 }
+.mini.m3 { background: #2c4430; color: #cdeed0 }
+.mini.vision { background: #3a4046; color: #e2e8ee }
+.mini.off { background: #3a2f22; color: var(--warn) }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11px; color: var(--muted); margin: 18px 0 0 }
+.legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; background: var(--day);
+  margin-right: 6px; vertical-align: middle }
+.legend i.m0 { background: var(--m0) } .legend i.m1 { background: var(--m1) }
+.legend i.m2 { background: var(--m2) } .legend i.m3 { background: var(--m3) }
+.legend i.v { background: var(--vision) }
+.legend i.d { background: transparent; border-top: 2px dashed #6b7f88; height: 0 }
+
+/* A selected configuration that is not the live one: the same machine, redrawn as a promise. */
+.would { margin-top: 26px; border-top: 1px dashed #3a4d55; padding-top: 20px }
+.would .model, .would .gpu { border-style: dashed }
+.tag { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: #0e1417; background: var(--day);
+  border-radius: 5px; padding: 3px 7px; font-weight: 700; flex: none }
+.tag.off { background: #4d6068; color: #cfdde1 }
+.tag.new { background: var(--night) }
+.note { border: 1px solid #3d5560; background: #152026; border-radius: 11px; padding: 13px 15px;
+  font-size: 13px; line-height: 1.6; color: #cfe0e4; margin: 16px 0 0 }
+.note b { color: #fff; font-weight: 600 }
+
+/* Switch and restoration progress, shown only while one is true. */
+.steps { display: flex; list-style: none; padding: 0; margin: 20px 0 18px }
+.steps li { flex: 1; position: relative; text-align: center; font-size: 11px; color: var(--muted) }
+.steps .m { display: block; width: 20px; height: 20px; border: 1px solid #5a6f78; border-radius: 50%;
+  background: #0f1719; position: relative; z-index: 1; margin: 0 auto 7px; line-height: 18px; font-size: 11px }
+.steps li:after { content: ""; position: absolute; top: 10px; left: calc(50% + 10px); right: calc(-50% + 10px);
+  height: 1px; background: #3a4b53 }
+.steps li:last-child:after { display: none }
+.steps li.done { color: #cfe0e4 }
+.steps li.done .m { background: var(--day); border-color: var(--day); color: #0e2521 }
+.steps li.done:after { background: var(--day) }
+.steps li.now { color: #eaf4f6 }
+.steps li.now .m { border: 5px solid var(--day) }
+.steps li.bad .m { border-color: var(--bad); color: var(--bad) }
+#operation-message { margin: 0; font-size: 14px; line-height: 1.6 }
+
+.restore { border: 1px solid #7a5548; background: #241a17; border-radius: 14px; padding: 20px; margin-bottom: 22px }
+.restore h2 { color: #f0cf9e; margin: 0 0 10px }
+.restore p { font-size: 13px; line-height: 1.6; margin: 0 0 16px; color: #e2d3c6 }
+
+/* The configurations to switch to, each with the name it publishes and a place to change it. */
+fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0 }
+.configs { display: grid; gap: 10px }
+.cfg { border: 1px solid #2f4048; border-radius: 13px; background: var(--panel); padding: 14px 15px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start }
+.cfg:hover { border-color: #4a626c }
+.cfg.selected { border-color: #73bcae; background: #18292c }
+.cfg.active { border-color: #4b6f65 }
+.cfg input.select { width: 16px; height: 16px; margin: 4px 0 0; accent-color: var(--day); cursor: pointer }
+.cfg .title { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -.01em; display: flex;
+  align-items: center; gap: 8px; flex-wrap: wrap; overflow-wrap: anywhere }
+.cfg .id { font-size: 11px; color: #7c9199; margin: 5px 0 0; overflow-wrap: anywhere }
+/* One line per model: its service ID, the name it is published by with the cards it runs on, and its
+   own Rename. Nothing on the line stretches, or a nine-pixel pill turns into a teal column and steals
+   the width from the name it is annotating. */
+.cfg .row { font-size: 12px; color: var(--muted); margin: 7px 0 0; line-height: 1.55; display: flex;
+  gap: 9px; align-items: baseline }
+/* The first column is a service ID -- `daytime`, `nighttime`, `Variant` -- and a service ID an
+   operator cannot read is not a label. It is sized to its content with a floor, because every pixel
+   it does not take belongs to the model's name and the cards it runs on.
+   These are child selectors, not descendant ones: a `span:first-child` that also reaches inside the
+   controls paints the `Renamed` pill in the label's colour, which is the label's colour *on* the
+   pill's own background, and a pill whose word cannot be read is a pill that says nothing. */
+.cfg .row > span:first-child { flex: 0 0 auto; min-width: 62px; color: #9fc9c0 }
+/* Words, not characters: `overflow-wrap: anywhere` broke "4080 SUPER" in half and made a two-item
+   sentence look like a four-line one. */
+.cfg .row > span:nth-child(2) { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word }
+/* Renaming a model is one action with a mark beside it, so the two travel together, held to the right
+   of the line and level with the model's name rather than with the middle of a wrapped sentence. */
+.cfg .row .controls { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; margin-left: auto }
+.cfg .row .pill { white-space: nowrap; flex: 0 0 auto; padding: 2px 5px }
+.cfg .row .ghost.tiny { min-height: 26px; padding: 2px 9px; font-size: 11px }
+/* A model line that will not fit puts its controls underneath rather than over the name. */
+@media (max-width: 900px) { .cfg .row { flex-wrap: wrap } }
+.cfg .end { display: grid; justify-items: end; align-content: start; gap: 9px }
+.state { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: #a8e4d2; font-weight: 700 }
+.state.muted { color: var(--muted) }
+.pill { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; color: #0e2521;
+  background: var(--day); border-radius: 4px; padding: 2px 6px }
+button { font: inherit; font-size: 14px; border-radius: 9px; padding: 12px 20px; min-height: 44px;
+  border: 1px solid transparent; background: #87dec9; color: #102521; font-weight: 600; cursor: pointer }
+button:disabled { opacity: .5; cursor: default }
+button.ghost { background: #111c20; border-color: #3d5158; color: #cfe0e4; font-weight: 500; min-height: 36px;
+  padding: 8px 12px; font-size: 12.5px; white-space: nowrap }
+button.wide { width: 100% }
+.impact { font-size: 12.5px; line-height: 1.65; color: var(--muted); margin: 16px 0 12px }
+
+/* The alias editor: a name, the default it covers over, and the reach of the change. */
+.edit { grid-column: 1 / -1; border-left: 2px solid #4a626c; padding: 2px 0 2px 14px; margin: 12px 0 0 }
+.edit input.name { font: inherit; font-size: 13px; width: 100%; border: 1px solid #46606a; border-radius: 8px;
+  background: #0d1417; color: #eef2f5; padding: 10px 12px; min-height: 40px }
+.edit p { font-size: 11.5px; color: var(--muted); margin: 9px 0 11px; line-height: 1.55 }
+.edit .acts { display: flex; gap: 9px; flex-wrap: wrap }
+.edit .error { color: var(--bad) }
+
+.runtime-details, .deployment-details { border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel) }
+.runtime-details summary, .deployment-details summary { cursor: pointer; padding: 16px 20px; font-size: 13px;
+  color: #c8d9de }
+.runtime-details > *:not(summary), .deployment-details > *:not(summary) { margin-left: 20px; margin-right: 20px }
+.runtime-details > p:last-of-type, .deployment-details > p { padding-bottom: 20px }
+#services { display: grid; gap: 15px; padding-bottom: 8px }
+.service { border: 1px solid #2b3a41; border-radius: 11px; padding: 14px; display: grid; gap: 7px }
+.service h3 { margin: 0; font-size: 14px }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 12px }
+dt { color: #8ea3aa; font-weight: 550 }
+dd { margin: 0; color: #d6e2e6; overflow-wrap: anywhere }
+
+footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 11px;
+  color: #8fa3aa; border-top: 1px solid var(--line); margin-top: 26px; padding-top: 16px }
+
+@media (max-width: 900px) {
+  main { padding: 24px 16px 32px }
+  h1 { font-size: 25px }
+  .grid { grid-template-columns: minmax(0, 1fr) }
+  .board { grid-template-columns: repeat(2, minmax(0, 1fr)) }
+  .model { flex-wrap: wrap }
+  .cfg { padding: 14px 12px; gap: 10px }
+  /* Two columns cannot hold a radio, a model name, and a button at phone width without the name
+     running underneath the button, and a name an operator cannot read is the one thing a list of
+     names is for. The state and the editor's door go on a line of their own. */
+  .cfg { grid-template-columns: auto minmax(0, 1fr) }
+  .cfg .end { grid-column: 1 / -1; justify-items: start; grid-auto-flow: column; align-items: center }
+  .panel { padding: 18px }
+  .badge { padding: 7px 10px }
+}
+
+/* =============================================================================================
+   The card power state: proposal only, nothing below is served by the application.
+
+   What is added is one line on an existing GPU tile and one panel that opens under the board.
+   No new column, no new colour: a tile already says who has the card, and the power line says
+   what the driver is doing with it. Everything visual is a state class, because the page is
+   served under `style-src 'self'`.
+   ============================================================================================= */
+
+/* The tile line. It has to survive a 120px tile, so it carries a rung name and the one number
+   an operator cross-checks (the watt limit) and nothing else; the rest is in the panel. */
+/* `overflow-wrap` inherits, and `anywhere` on this line reached the text inside it: a rung named
+   `sensible` then had a min-content width of one character, the flex line collapsed to the dot, and
+   the tile spent its whole height spelling the word out one letter at a time. Words are the unit
+   here -- the longest of them is `measured`, and it fits. */
+.gpu .pw { display: flex; align-items: center; gap: 6px; font-size: 10.5px; margin: 0;
+  overflow-wrap: normal; color: var(--muted) }
+.gpu .pw b { font-weight: 650; letter-spacing: .02em; color: #cfe0e4 }
+.gpu .pw.rung b { color: var(--day) }
+.gpu .pw.custom b { color: var(--warn) }
+.gpu .pw.bad b, .gpu .pw.bad .dot { color: var(--bad) }
+/* The control rides at the right of the line it belongs to, in the same `ghost tiny` weight the
+   Rename door carries on a model line. A tile that is a button would be a second way to click a
+   card on a page that already has one. */
+/* A 150px tile holds a rung name or a button on one line, not both, and a name an operator cannot
+   read is the whole point of the line. The control goes under it, right-aligned, at the weight the
+   Rename door on a model line carries -- anything bigger and five tiles become five shouty buttons. */
+.gpu .pwrow { display: grid; gap: 8px }
+.gpu .pwrow button { justify-self: end; min-height: 26px; padding: 2px 9px; font-size: 11px }
+.gpu .pw span { flex: 1 1 auto; min-width: 0 }
+
+/* The panel. Same shape as the switch preview it sits beside: a heading, the machine's own
+   values, and what an action costs -- read before it is taken. */
+.power { border-top: 1px dashed #3a4d55; margin-top: 24px; padding-top: 20px; display: grid; gap: 16px }
+.power h2 { margin: 0 }
+.power .head { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; flex-wrap: wrap }
+.power .head .when { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 8px }
+.power .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 16px; font-size: 12px }
+.power .facts dt { color: #8ea3aa; font-weight: 550 }
+.power .facts dd { margin: 0; color: #d6e2e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere }
+.power .facts dd em { font-family: inherit; font-style: normal; color: var(--muted) }
+
+/* The rungs. A row per rung, in the same shape as a model line in the list: the thing's name,
+  what it does in the three units the driver takes, and a mark when it is the one this card ships
+  or the one it is sitting at now. */
+.rungs { display: grid; gap: 8px }
+.rung { border: 1px solid #2f4048; border-radius: 11px; background: #111c20; padding: 11px 13px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start }
+.rung:hover { border-color: #4a626c }
+.rung input { width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--day); cursor: pointer }
+.rung .name { font-size: 14px; font-weight: 600; margin: 0; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap }
+.rung .set { font-size: 11.5px; color: var(--muted); margin: 4px 0 0; font-family: ui-monospace,
+  SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere }
+.rung .why { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; line-height: 1.55 }
+.rung.now { border-color: #4b6f65; background: #16262a }
+.rung.stock { border-style: dashed }
+.rung .tags { display: flex; gap: 6px; flex-wrap: wrap }
+.tag.def { background: var(--night) }
+.tag.cur, .tag.off { background: #4d6068; color: #cfdde1 }
+
+/* Values you set by hand: three fields, each answering to the card's own reported bounds. */
+.custom { border-left: 2px solid #4a626c; padding: 2px 0 2px 14px; display: grid; gap: 12px }
+.custom .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px }
+.custom label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  font-weight: 650; display: grid; gap: 5px }
+.custom input { font: inherit; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid #46606a; border-radius: 8px; background: #0d1417; color: #eef2f5; padding: 9px 11px;
+  min-height: 40px }
+.custom .hint { font-size: 11px; color: var(--muted); letter-spacing: 0; text-transform: none;
+  font-weight: 400 }
+.custom .bad .hint { color: var(--bad) }
+
+/* Two sentences that must never be cut: the state does not survive a reboot, and the write may be
+   refused. Both belong above the button, not under it. */
+.volat { font-size: 11.5px; color: var(--muted); line-height: 1.6; margin: 0 }
+.volat b { color: #dfeaec; font-weight: 600 }
+.gate { border: 1px solid #7a5548; background: #241a17; color: #ecd6c9; border-radius: 11px;
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.6 }
+.gate label { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: #e2d3c6;
+  font-size: 12px }
+.gate input { accent-color: var(--warn) }
+.acts { display: flex; gap: 10px; flex-wrap: wrap; align-items: center }
+.wide { width: 100% }
+.hist { font-size: 11px; color: var(--muted); margin: 0; line-height: 1.6 }
+.hist b { color: #cfe0e4; font-weight: 600 }
+
+/* The folded Custom block: a `<details>` whose summary is the state it is folded over, so a closed
+   expander still says what the card is set to rather than advertising an action nobody has taken. */
+.custom summary { cursor: pointer; font-size: 12px; color: #c8d9de; letter-spacing: .02em }
+.custom summary .mono { color: var(--muted) }
+
+@media (max-width: 900px) {
+  /* A phone has one column and a card that has to stay readable at 11px. The tile keeps its rung
+     name and drops the watts, which are the second thing an operator checks; the button goes under
+     the line instead of beside it, because a 120px tile has no room for both. */
+  .gpu .pw .w { display: none }
+  .power { gap: 14px }
+  .power .head { flex-direction: column; align-items: flex-start; gap: 8px }
+  .power .facts { grid-template-columns: minmax(0, 1fr); gap: 2px 0 }
+  .power .facts dd { margin-bottom: 8px }
+  .custom .fields { grid-template-columns: minmax(0, 1fr) }
+  .acts button { flex: 1 1 100% }
+}

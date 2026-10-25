@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Power state on the GPU tiles — proposal</title>
+  <link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">rosalina / AI Runtime</p>
+      <h1>House standard</h1>
+      <p class="sub">flash-next-strata-solo-thinking-recovery-cache · 1 model · one of them uses all 4 text GPUs</p>
+    </div>
+    <span class="badge ready">Ready</span>
+  </header>
+
+  <div class="strip">
+    <span class="fact"><i class="dot"></i><span>One model ready</span></span>
+    <span class="fact"><i class="dot mute"></i><span>0 active · 0 queued</span></span>
+    <span class="fact"><i class="dot warn"></i><span>Catalog published to 192.168.1.23:11435 revision 4f0c19a7</span></span>
+    <span class="fact"><i class="dot mute"></i><span>Updated 06:41:02</span></span>
+  </div>
+
+  <div class="grid">
+    <div class="column">
+      <section class="panel">
+        <h2>Running now</h2>
+        <div class="models">
+          <article class="model">
+            <div>
+              <p class="ids">daytime · local-active · nighttime</p>
+              <p class="name">House standard</p>
+              <p class="alias">qwen3.8-flash-next-ud-iq4_xs · 256K context · RTX 3090 + RTX 4080 SUPER + RTX 4080 + RTX 3080 Ti</p>
+            </div>
+            <span class="state">Ready</span>
+          </article>
+        </div>
+
+        <h2 class="mt26">Physical GPUs</h2>
+        <div class="board">
+          <div class="gpu m0">
+            <h3>RTX 3090</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw rung"><i class="dot"></i><span><b>sensible</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 4080 SUPER</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw rung"><i class="dot"></i><span><b>safe</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 4080</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span><b>stock</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu m0">
+            <h3>RTX 3080 Ti</h3>
+            <div class="chips"><span class="mini">daytime</span></div>
+            <p class="own">every text card</p>
+            <div class="pwrow">
+              <p class="pw custom"><i class="dot warn"></i><span><b>custom</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+          <div class="gpu vision">
+            <h3>RTX 3080</h3>
+            <div class="chips"><span class="mini vision">daytime</span><span class="mini vision">CUDA4</span></div>
+            <p class="own">image encoder · exclusive</p>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span>no measured rungs</span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+          </div>
+        </div>
+        <p class="legend">
+          <span><i class="m0"></i>daytime — House standard</span>
+          <span><i class="v"></i>Vision</span>
+          <span><i class="d"></i>Nothing placed</span>
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Every state a tile has to carry</h2>
+        <p class="sub">A state sheet, not a second part of the page: the same tile, in the six readings the
+          driver can actually give back. The bold word is always what the <em>driver</em> reports right now,
+          never what the page last asked for — a reboot returns a card to stock by itself, and a tile that
+          kept showing <code>sensible</code> through that would be a tile that lies.</p>
+        <div class="board mt12">
+          <div class="gpu m0">
+            <h3>a rung is applied</h3>
+            <div class="pwrow">
+              <p class="pw rung"><i class="dot"></i><span><b>sensible</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">power limit and V/F offset both read back as the rung</p>
+          </div>
+          <div class="gpu m0">
+            <h3>nothing is applied</h3>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span><b>stock</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">limit at default, offset 0</p>
+          </div>
+          <div class="gpu m0">
+            <h3>hand-set values</h3>
+            <div class="pwrow">
+              <p class="pw custom"><i class="dot warn"></i><span><b>custom</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">no rung matches: the card is between rungs, or set by hand over SSH</p>
+          </div>
+          <div class="gpu m0">
+            <h3>never measured</h3>
+            <div class="pwrow">
+              <p class="pw"><i class="dot mute"></i><span>no measured rungs</span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">this card has no plan, so only Revert and Custom are offered</p>
+          </div>
+          <div class="gpu m0">
+            <h3>the offset is unreadable</h3>
+            <div class="pwrow">
+              <p class="pw bad"><i class="dot bad"></i><span><b>incomplete</b></span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">power limit read, NVML offset not; the panel says what is missing</p>
+          </div>
+          <div class="gpu m0">
+            <h3>no reading</h3>
+            <div class="pwrow">
+              <p class="pw bad"><i class="dot bad"></i><span>power unreadable</span></p>
+              <button class="ghost tiny" type="button">Power</button>
+            </div>
+            <p class="own">the one-shot GPU container could not run: the map still works</p>
+          </div>
+        </div>
+        <p class="sub mt12">Two of these are the reason the feature is honest rather than decorative: a
+          clock lock is not visible in any query field on this driver, and GeForce reports no voltage, so
+          the tile names a rung from the two values that <em>can</em> be read and the panel says in one
+          line that the clock cap is inferred from the observed SM clock.</p>
+      </section>
+    </div>
+
+    <div class="column">
+      <section class="panel switch-section">
+        <h2>Configurations</h2>
+        <fieldset>
+          <div class="configs">
+            <article class="cfg">
+              <input class="select" type="radio" name="profile">
+              <div>
+                <p class="title"><span>qwen27b-q8-pair</span></p>
+                <p class="id mono">qwen3.8-27b-q8_0-tensor-next + qwen3.8-27b-abliterated-q6_k</p>
+                <p class="row"><span>daytime</span><span>Qwen3.8 27B Q8 (160K) · RTX 3090 + RTX 4080 SUPER</span></p>
+                <p class="row"><span>nighttime</span><span>Qwen3.8 27B Abliterated Q6_K (96K) · RTX 4080 + RTX 3080 Ti</span></p>
+              </div>
+              <div class="end"><span class="state muted"></span></div>
+            </article>
+            <article class="cfg">
+              <input class="select" type="radio" name="profile">
+              <div>
+                <p class="title"><span>qwen27b-q6k-pair</span></p>
+                <p class="id mono">qwen3.8-27b-q6_k-tensor-next + qwen3.8-27b-abliterated-q6_k</p>
+                <p class="row"><span>daytime</span><span>Qwen3.8 27B Q6_K (160K) · RTX 3090 + RTX 4080 SUPER</span></p>
+                <p class="row"><span>nighttime</span><span>Qwen3.8 27B Abliterated Q6_K (96K) · RTX 4080 + RTX 3080 Ti</span></p>
+              </div>
+              <div class="end"><span class="state muted"></span></div>
+            </article>
+            <article class="cfg selected active">
+              <input class="select" type="radio" name="profile" checked>
+              <div>
+                <p class="title"><span>flash-next-strata-solo-thinking-recovery-cache</span></p>
+                <p class="id mono">qwen3.8-flash-next-ud-iq4_xs</p>
+                <p class="row"><span>daytime</span><span>House standard · RTX 3090 + RTX 4080 SUPER + RTX 4080 + RTX 3080 Ti</span><span class="controls"><span class="pill">Renamed</span><button class="ghost tiny" type="button">Rename</button></span></p>
+                <p class="row"><span>Variant</span><span>card sampling + call recovery + parked conversations</span></p>
+              </div>
+              <div class="end"><span class="state">Active</span></div>
+            </article>
+          </div>
+        </fieldset>
+        <button class="wide" type="button" disabled>House standard is active</button>
+      </section>
+
+      <details class="runtime-details">
+        <summary>Runtime details</summary>
+        <p class="sub">Deployed revision <code>2cb8dbe4b479</code> · source changes go in with
+          <strong>Update and restart</strong> in Service Portal.</p>
+      </details>
+    </div>
+  </div>
+
+  <footer>
+    <span>The GPU map shows assignments, model-service health, and the power state last read 6 seconds ago —
+      not a telemetry history.</span>
+    <span>Status updated 06:41:02</span>
+  </footer>
+</main>
+</body>
+</html>

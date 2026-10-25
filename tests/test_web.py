@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+import test_power
 from models import CODING, CODING_Q6K, EVERYDAY
 from runtime.web import handler
 from runtime.compat import dispatch
@@ -284,3 +285,156 @@ class AliasHttpTests(OperationFixture, unittest.TestCase):
         published = json.loads((self.state / 'router' / 'active-model.json').read_text())
         self.assertEqual(published['configuration']['id'], 'qwen27b-q6k-pair')
         self.assertEqual(published['models'][0]['display_name'], 'Spare')
+
+
+class PowerHttpTests(OperationFixture, unittest.TestCase):
+    """A card's power state over the wire: the endpoint the panel posts to, and what it may say.
+
+    The route is the smaller sibling of the alias route — it writes hardware and drains nothing — so
+    these tests are about the three things only the wire can show: that a browser cannot use it
+    without the same-origin guard, that a refusal arrives with the status the page branches on, and
+    that a driver's own words stay off the page.
+    """
+    # The controller fixture's host, with cards that carry the UUIDs a power request has to name.
+    HOST = test_power.power_host()
+
+    def setUp(self):
+        super().setUp()
+        self.agent = test_power.CardAgent()
+        for uuid in (test_power.MEASURED, test_power.OTHER, test_power.UNMEASURED, test_power.TI):
+            self.agent.read(uuid)
+        docker = self.system.docker
+        def fake(*args, **kwargs):
+            if args[0] == 'run' and 'runtime.gpucard' in args:
+                return json.dumps(self.agent.answer_for(list(args)))
+            return docker(*args, **kwargs)
+        self.system.docker = fake
+        self.c.power.merge({uuid: {'read_at': '2026-10-25T00:00:00+00:00',
+            'read': test_power.stock_read(uuid, test_power.CardAgent.names[uuid])}
+            for uuid in (test_power.MEASURED, test_power.OTHER, test_power.UNMEASURED, test_power.TI)})
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(self.c, self.web_state, self.ops))
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True); thread.start()
+        self.addCleanup(self.server.server_close); self.addCleanup(self.server.shutdown)
+        self.base = 'http://127.0.0.1:' + str(self.server.server_address[1])
+        with urllib.request.urlopen(self.base + '/api/status') as response:
+            self.token = json.load(response)['csrf_token']
+
+    def http(self, path, body=None, headers=None):
+        actual = {'Content-Type': 'application/json', 'Origin': self.base, 'X-Runtime-CSRF': self.token}
+        if headers: actual.update(headers)
+        request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers=actual,
+            method='POST')
+        try:
+            with urllib.request.urlopen(request) as response: return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            with error: return error.code, json.load(error)
+
+    def status(self):
+        self.web_state['status'] = self.c.status()
+        return self.web_state['status']
+
+    def test_a_rung_applied_from_the_page_comes_back_with_what_the_driver_said(self):
+        code, reply = self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'apply',
+            'rung': 'sensible'})
+        self.assertEqual(code, 200)
+        self.assertTrue(reply['ok'])
+        self.assertEqual((reply['to'], reply['rung'], reply['state']), ('sensible', 'sensible', 'rung'))
+        self.assertEqual(reply['readback'], {'power': 'ok', 'offset': 'ok', 'clock_max': 'unverifiable'})
+        card = self.status()['power']['cards'][test_power.MEASURED]
+        self.assertEqual((card['state'], card['rung']), ('rung', 'sensible'))
+        self.assertEqual(card['read']['power_limit'], 330)
+
+    def test_the_guard_that_protects_a_switch_protects_a_card(self):
+        for headers, expected in [({'Origin': 'http://evil.example'}, 403), ({'X-Runtime-CSRF': ''}, 403),
+                ({'Sec-Fetch-Site': 'cross-site'}, 403), ({'Content-Type': 'text/plain'}, 415)]:
+            with self.subTest(headers=headers):
+                self.assertEqual(self.http('/api/gpu-power', {'gpu': test_power.MEASURED,
+                    'action': 'apply', 'rung': 'safe'}, headers)[0], expected)
+        self.assertEqual(self.agent.writes, [], 'a refused request must not reach the driver')
+
+    def test_a_refusal_arrives_with_the_status_the_page_branches_on(self):
+        # A rung this card has never been given: the browser asked well, and the answer names the
+        # rungs that exist. That is a 400, and the page shows it beside the choice.
+        code, reply = self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'apply',
+            'rung': 'extreme'})
+        self.assertEqual(code, 400)
+        self.assertIn('safe, sensible, assertive', reply['error'],
+            'a refusal that lists the rungs lists them in the order the ladder runs')
+        # An unhealthy model on the card is not the browser's mistake: it is a 409 the panel answers
+        # with the tick that means "apply anyway".
+        self.system.containers['qwen38-daytime']['State']['Running'] = False
+        code, reply = self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'apply',
+            'rung': 'safe'})
+        self.assertEqual((code, reply['code']), (409, 'engine'))
+        self.assertIn('not healthy', reply['error'])
+        self.assertEqual(self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'apply',
+            'rung': 'safe', 'override': True})[0], 200)
+        self.system.containers['qwen38-daytime']['State']['Running'] = True
+        # A machine in the middle of changing its own shape says so, and the page keeps the draft.
+        self.c.save('transaction.json', {'phase': 'drain'})
+        code, reply = self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'revert'})
+        self.assertEqual((code, reply['code']), (409, 'busy'))
+        self.c.save('transaction.json', {'phase': 'complete'})
+        # And a request that is not about a card this machine reports is a 400, not a guess.
+        code, reply = self.http('/api/gpu-power', {'gpu': 'GPU-00000000-0000-0000-0000-000000000000',
+            'action': 'revert'})
+        self.assertEqual(code, 400)
+        self.assertIn('no card with that UUID', reply['error'])
+
+    def test_a_drivers_words_stay_off_the_page(self):
+        """The card agent's failures name a device, a query field or a socket. The page is a browser
+        two networks away, and it gets one sentence and a pointer to diagnostics."""
+        self.c.power.merge({test_power.MEASURED: {'read_at': '2026-10-25T00:00:00+00:00',
+            'error': 'nvidia-smi query failed for /dev/nvidia0: not supported'}})
+        self.c.save('power/latest.json', dict(self.c.power.latest(),
+            error='The rung table at /home/astigmatism/deployments/ai-runtime/config could not be read'))
+        # The page's own path, because the sanitising belongs to the wire and not to the machine:
+        # `controller.status()` keeps the full words, and a terminal that asks directly may read them.
+        self.assertNotIn('could not be read', json.dumps(self.status()['power']
+            ['cards'][test_power.MEASURED]['error']))
+        with urllib.request.urlopen(self.base + '/api/status') as response:
+            power = json.load(response)['power']
+        self.assertNotIn('nvidia0', json.dumps(power))
+        self.assertNotIn('deployments', json.dumps(power))
+        self.assertIn('could not be read', power['cards'][test_power.MEASURED]['error'])
+        self.assertNotIn('_why', json.dumps(power), 'the rung table reasons itself out in source, '
+            'once; the page is not where that paragraph belongs four times over')
+        # What is *not* private stays: the evidence string is the reason a rung is recommended.
+        self.assertIn('energy per token', power['cards'][test_power.MEASURED]['measured'])
+
+    def test_a_power_read_needs_no_controller_lock(self):
+        code, reply = self.http('/api/gpu-power', {'gpu': test_power.TI, 'action': 'read'})
+        self.assertEqual(code, 200)
+        self.assertTrue(reply['ok'])
+        self.assertEqual(self.agent.reads[-1], [test_power.TI])
+
+    def test_a_stray_brace_does_not_eat_the_rule_after_it(self):
+        """An unbalanced `}` in a stylesheet is not an error the page shows. A browser skips the one
+        rule that follows it and carries on, which is how a GPU tile drew its power line at the
+        default 16px inside a 141px box for as long as it took somebody to look. The cheapest thing
+        that notices is arithmetic on the file the page actually gets.
+        """
+        css = urllib.request.urlopen(self.base + '/style.css').read().decode()
+        depth = 0
+        for line, text in enumerate(css.splitlines(), 1):
+            for character in text:
+                if character == '{':
+                    depth += 1
+                elif character == '}':
+                    depth -= 1
+                    self.assertGreaterEqual(depth, 0,
+                        'an unmatched } on line ' + str(line) + ' costs the rule after it, silently')
+        self.assertEqual(depth, 0, 'the stylesheet ends ' + str(depth) + ' rule(s) deep')
+
+    def test_the_panel_is_cleared_before_anything_is_drawn_in_it(self):
+        """The power panel is rebuilt by the five-second poll while it is open, and for a while it
+        appended instead of replacing: the document grew by a panel's height every poll, 2,194px to
+        57,553px in ten minutes, and it stayed perfectly readable the whole time, which is exactly why
+        nobody noticed. The fix is one call, and it has to come before the branch that decides whether
+        there is a card open at all — clearing it only when a card *is* open leaves the last panel of a
+        closed card sitting under the map forever.
+        """
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
+        self.assertLess(body.index('panel.replaceChildren()'), body.index('if (!entry)'),
+            'a panel cleared only on the path that opens one is never cleared when it closes')

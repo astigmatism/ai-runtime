@@ -10,6 +10,7 @@ import time
 from urllib.parse import urlsplit
 
 from .operations import Operations, OperationError, public_operation
+from .power import PowerError, public_power
 
 
 def public_status(state):
@@ -23,6 +24,10 @@ def public_status(state):
         status['ready'] = False
     if status.get('configurations', {}).get('error'):
         status['configurations']['error'] = 'The configuration registry could not be read.'
+    # A card power error is a Docker or driver complaint, and both can carry a path or a device
+    # name. The page's job is to say the card could not be read and point at diagnostics.
+    if status.get('power'):
+        status['power'] = public_power(status['power'])
     # A note about the alias file is a filesystem complaint, and it carries the state path with it.
     if (status.get('aliases') or {}).get('note'):
         status['aliases']['note'] = 'Saved aliases could not be read and are not in use.'
@@ -113,7 +118,8 @@ def handler(controller, state, operations=None):
 
         def do_POST(self):
             route = self.path.split('?', 1)[0]
-            if route not in ('/api/profile-switch', '/api/restore-last-known-good', '/api/alias'):
+            if route not in ('/api/profile-switch', '/api/restore-last-known-good', '/api/alias',
+                    '/api/gpu-power'):
                 self.send(405, {'error': 'Method not allowed'})
                 return
             token = self.headers.get('X-Runtime-CSRF', '')
@@ -160,6 +166,28 @@ def handler(controller, state, operations=None):
                         return
                     self.send(200, reply)
                 return
+            # A card's power state is the other change of that kind: three driver calls and a
+            # read-back, no drain, no release, nothing to restore. It shares the checks above because
+            # it writes to hardware, and it refuses by rule instead of queueing -- the rules, and the
+            # sentence for each refusal, live in runtime/power.py.
+            if route == '/api/gpu-power':
+                if not controller:
+                    self.send(503, {'error': 'Runtime configuration is unavailable'})
+                else:
+                    try:
+                        reply = controller.power.write(request)
+                    except PowerError as error:
+                        self.send(error.status, {'error': str(error), 'code': error.code})
+                    except RuntimeError as error:
+                        # A refusal that is the caller's: a rung this card has never been given, an
+                        # offset off the driver's step, a watt limit this board does not accept.
+                        self.send(400, {'error': str(error)})
+                    except Exception:
+                        self.send(503, {'error': 'The card could not be written. Read it again before '
+                            'trying once more, and check controller diagnostics for the detail.'})
+                    else:
+                        self.send(200, reply)
+                return
             if not operations:
                 self.send(503, {'error': 'Runtime switching is unavailable'})
                 return
@@ -202,6 +230,13 @@ def refresh(controller, state, operations):
         operations.publish_status(controller.status())
     except Exception:
         state['status'] = {'ready': False, 'error': 'Runtime checks unavailable'}
+    # The cards' power state is asked about on its own, slower cadence, in a pass that this loop does
+    # not wait for: a container start for five cards behind a five-second poll would make the page
+    # slower to say anything at all, and a hung daemon would make it say nothing.
+    try:
+        controller.power.refresh_if_due()
+    except Exception:
+        pass
     # ...and keeps saying what this machine is serving, because a router that was never told is a
     # fact the page has to show and then let someone go and fix. It goes after the status and in its
     # own attempt: whether the catalog reached the router is news *about* the state, and a pass that

@@ -53,11 +53,63 @@ def listed(config_dir, host=None, aliases=None):
     return '\n'.join(rows)
 
 
+def power_card(power, wanted):
+    """A card from `--gpu`, which may name it by UUID or by enough of a name to be unambiguous.
+
+    A full UUID is 40 characters and nobody types one from memory on a terminal; the script this
+    command replaces took a moniker like `3090`. What it must never take is an ambiguous one, because
+    the whole point of a UUID here is that it is the card and not a card of that model.
+    """
+    cards = power.cards()
+    for uuid, name in cards:
+        if uuid.lower() == wanted.lower():
+            return uuid
+    matches = [uuid for uuid, name in cards if wanted.lower() in uuid.lower()
+        or wanted.lower() in (name or '').lower()]
+    require(len(matches) == 1, 'power --gpu %r matches %s; name one card, or give its full UUID' % (
+        wanted, ', '.join(matches) if matches else 'nothing this machine reports'))
+    return matches[0]
+
+
+def power_command(controller, args):
+    """The card power state from a terminal: what every card is doing, and one rung written to one.
+
+    The same table, the same refusals and the same read-back as the page, because both read
+    config/undervolt.json and one cache. `power` with no card reports what the driver last said about
+    each card; `--gpu … --read` asks the driver again right now; `--rung`, `--revert` and `--set`
+    write. Nothing here survives a reboot, by design: the reboot is the recovery method, and this
+    command does not arrange one.
+    """
+    power = controller.power
+    if args.plans:
+        registry = power.registry()
+        require(registry, 'The rung table could not be read: ' + str(power.registry_error()))
+        return {'envelope': registry['envelope'], 'plans': registry['plans'],
+            'this_machine': power.host_plans()}
+    if not args.gpu:
+        return power.status()
+    body = {'gpu': power_card(power, args.gpu)}
+    if args.rung:
+        body.update(action='apply', rung=args.rung)
+    elif args.revert:
+        body.update(action='revert')
+    elif getattr(args, 'set'):
+        parts = [part.strip() for part in getattr(args, 'set').split(',')]
+        require(len(parts) == 3, '--set takes POWER,CLOCK_MAX,OFFSET in watts and MHz, '
+            'for example --set 330,1905,75')
+        watts, clock_max, offset = parts
+        body.update(action='custom', power=int(watts), clock_max=int(clock_max), offset=int(offset))
+    else:
+        body.update(action='read')
+    body['override'] = bool(args.override)
+    return power.write(body)
+
+
 def main():
     parser = argparse.ArgumentParser(prog='ai-runtime')
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
         'deploy', 'adopt', 'install', 'recover', 'restore', 'rollback-release', 'publish', 'retire',
-        'serve',
+        'serve', 'power',
         'list', 'check', 'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
     # Not `choices`: argparse prints "invalid choice" and exits 2, which tells an operator that a
@@ -66,6 +118,15 @@ def main():
     parser.add_argument('--profile')
     parser.add_argument('--phase', choices=['provision', 'warm'], default='provision')
     parser.add_argument('--full-hash', action='store_true')
+    # Only `power` reads these. A card is named by UUID or by enough of its name to be one card;
+    # `--plans` prints the rung table without touching a driver.
+    parser.add_argument('--gpu')
+    parser.add_argument('--rung')
+    parser.add_argument('--set', default=None, metavar='POWER,CLOCK_MAX,OFFSET')
+    parser.add_argument('--revert', action='store_true')
+    parser.add_argument('--plans', action='store_true')
+    parser.add_argument('--override', action='store_true',
+        help='with power: write even when the model on that card is not healthy')
     args = parser.parse_args()
     if args.profile:
         require(args.profile in CONFIGURATIONS or args.profile in PROFILE_ALIASES,
@@ -131,6 +192,8 @@ def main():
         result = controller.retire()
     elif args.action.startswith('router-maintenance-'):
         result = controller.router_maintenance(args.action.endswith('begin'))
+    elif args.action == 'power':
+        result = power_command(controller, args)
     print(json.dumps(result, indent=2))
     if args.action == 'inspect' and not result['matches_live']:
         raise RuntimeError('Requested profile does not match the healthy live runtime')

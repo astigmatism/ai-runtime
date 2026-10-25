@@ -63,6 +63,12 @@
         </div>
       </section>
 
+      <!-- A card's power state is a fact about this machine as it runs, so it opens under the map that
+           shows the card — never beside the configuration choice. A rung belongs to a physical card, it
+           outlives every switch, and writing one drains nothing. Opened by one tile's Power button, and
+           only ever for that one card. -->
+      <section id="power" class="power" aria-live="polite" hidden></section>
+
       <!-- The progress of a change belongs under the configuration it is changing, not beside the
            choice it has already stopped needing. -->
       <section class="panel" id="operation" aria-labelledby="operation-title" hidden>
@@ -104,7 +110,9 @@
   </div>
 
   <footer>
-    <span>The GPU map shows assignments and model-service health, not hardware telemetry.</span>
+    <span>The GPU map shows assignments and model-service health. The one hardware fact a tile carries
+      is its power state, read from the driver on a slower cadence than this page polls — the panel says
+      how old that reading is.</span>
     <span id="updated">Waiting for status</span>
   </footer>
 </main>

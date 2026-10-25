@@ -123,6 +123,9 @@ function cardNode(card, owner, preview = false) {
     ? 'image encoder' + (owner.shared === undefined ? '' : owner.shared ? ' · shared' : ' · exclusive')
     : owner ? (owner.model.exclusive ? 'every text card' : 'text cards') : 'free';
   add(tile, node('p', preview && !owner ? 'stays free' : detail, 'own'));
+  /* A preview has no power state to show: a rung is what the driver is doing to this card right now,
+     and a promise about next week's models does not change it. */
+  if (!preview) add(tile, powerRow(card));
   return tile;
 }
 function healthOf(service) {
@@ -599,7 +602,317 @@ function renderDetails() {
       deployment.revision?.slice(0, 12), deployment.error].filter(Boolean).join(' · ')
     : 'No source deployment recorded. Profile switches are reported above, separately from source releases.';
 }
+
+/* ------------------------------------------------------ the power state of one physical card, on the page
+   The three knobs a GPU can be asked to sit at — power limit, maximum SM clock, and the voltage/frequency
+   offset that is the actual undervolt — are the host script's, and so is the rule that makes them safe:
+   nothing on this page says a rung is applied until the driver has said it back. Everything below reads
+   `status.power`, which is a *cache* with an age, because reading five cards means starting a container
+   and the page polls every five seconds. Settings are volatile: a reboot returns a card to stock by
+   itself, which is the recovery method and the reason the panel never claims to remember. */
+const powerBlock = () => status?.power || {};
+const powerCards = () => powerBlock().cards || {};
+const powerCard = uuid => powerCards()[uuid] || null;
+const powerWrites = () => powerBlock().writes || {};
+const watts = value => value === null || value === undefined ? '—' : `${Math.round(value)} W`;
+const mhz = value => value === null || value === undefined ? '—' : `${value} MHz`;
+/* The one word on a tile. The numbers that prove it live in the panel, because a 150px tile holds a
+   rung name or a watt figure, not a sentence an operator can trust. */
+function powerWords(entry) {
+  if (!entry) return {tone: '', dot: 'mute', text: 'no reading yet'};
+  if (entry.error) return {tone: 'bad', dot: 'bad', text: 'power unreadable'};
+  if (entry.state === 'unread') return {tone: '', dot: 'mute', text: 'no reading yet'};
+  if (entry.state === 'rung') return {tone: 'rung', dot: '', text: entry.rung};
+  if (entry.state === 'stock') return {tone: '', dot: 'mute', text: 'stock'};
+  if (entry.state === 'custom') return {tone: 'custom', dot: 'warn', text: 'custom'};
+  // The power limit read and the offset did not: never call that stock, which is a claim about both.
+  return {tone: 'bad', dot: 'bad', text: 'incomplete'};
+}
+function powerRow(card) {
+  const uuid = card.uuid, entry = powerCard(uuid), line = powerWords(entry);
+  const row = node('div', '', 'pwrow'), text = node('p', '', `pw ${line.tone}`);
+  add(text, node('i', '', `dot ${line.dot}`), node('b', line.text));
+  // One word, and only ever one: a tile is 150px wide, and a line that wraps to four pushes the four
+  // tiles beside it out of a row. That a card has no measured rungs is not a different state -- it is
+  // the reason the panel offers fewer things to do -- and the panel says so.
+  const button = node('button', powerOpen === uuid ? 'Close' : 'Power', 'ghost tiny');
+  button.type = 'button';
+  button.setAttribute('aria-label', `${powerOpen === uuid ? 'Close the power panel for' : 'Power state of'} ${card.name || 'this GPU'}`);
+  button.addEventListener('click', () => {
+    powerOpen = powerOpen === uuid ? null : uuid;
+    powerError = ''; powerReply = ''; powerChoice = {}; powerDraft = {}; render();
+  });
+  add(row, text, button);
+  return row;
+}
+/* Which of this card's rungs, if any, the panel should have picked for the operator: where the card
+   actually is. A card at an unknown or hand-set state starts with nothing chosen, because the honest
+   answer to "which rung?" is then "not one of these". */
+const powerTarget = entry => powerChoice.mode ? powerChoice
+  : {mode: entry?.state === 'rung' ? entry.rung : entry?.state === 'stock' ? 'revert' : null};
+const onCard = (service, uuid) => [service.vision_gpu_id, ...(service.gpu_ids || [])].includes(uuid);
+const powerIsServing = uuid => (status?.services || []).some(service => service.healthy && onCard(service, uuid));
+const powerUnwell = uuid => (status?.services || []).filter(service => !service.healthy && onCard(service, uuid));
+function powerSubmit(uuid, entry) {
+  const target = powerTarget(entry);
+  if (!target.mode || powerBusy) return;
+  const body = {gpu: uuid, action: target.mode === 'revert' ? 'revert' : target.mode === 'custom' ? 'custom' : 'apply'};
+  if (target.mode && target.mode !== 'revert' && target.mode !== 'custom') body.rung = target.mode;
+  if (body.action === 'custom') {
+    for (const key of ['power', 'clock_max', 'offset']) {
+      const value = Number(powerDraft[key]);
+      if (!Number.isFinite(value)) { powerError = `Fill in ${key === 'power' ? 'the power limit in watts'
+        : key === 'clock_max' ? 'the maximum clock in MHz' : 'the V/F offset in MHz'}.`; render(); return; }
+      body[key === 'power' ? 'power' : key === 'clock_max' ? 'clock_max' : 'offset'] = value;
+    }
+  }
+  body.override = !!powerGate[uuid];
+  // Writing under a serving model is the one act here worth pausing on: a rung two notches too
+  // aggressive does not fail, it produces strange turns hours later.
+  if (body.action !== 'read' && powerIsServing(uuid) && !confirm(
+      `${entry.name} is decoding for ${(status.services || []).filter(s => s.healthy
+        && [s.vision_gpu_id, ...(s.gpu_ids || [])].includes(uuid)).map(s => s.name).join(', ')} now. `
+      + `A rung that is too aggressive does not fail: it shows up later as strange turns or an Xid. `
+      + `The way back is Revert to stock, or a reboot, which returns this card to stock by itself.\n\n`
+      + `Write ${body.rung || body.action} to ${entry.name}?`)) return;
+  powerBusy = true; powerError = ''; render();
+  getJSON('/api/gpu-power', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
+    body: JSON.stringify(body)})
+    .then(reply => {
+      powerPatch = {gpu: uuid, read: reply.read, at: reply.read_at};
+      powerReply = reply.ok ? `Applied ${reply.to}; the driver agrees.` : '';
+      if (!reply.ok) powerError = `Applied ${reply.to}, and the read-back failed: `
+        + Object.entries(reply.readback || {}).filter(([, verdict]) => verdict === 'fail')
+          .map(([knob]) => knob).join(', ') + ' did not read back. This card is now between states — '
+        + 'Revert to stock is one click and needs no model to be healthy.';
+      if (reply.rounded_offset) powerError = powerError || 'The offset is taken in 15 MHz steps; the '
+        + 'driver was asked for the nearest one.';
+    })
+    .catch(error => { powerError = error.message || 'The card could not be written.'; })
+    .finally(() => { powerBusy = false; lastStatus = 0; render(); schedule(1000); });
+}
+function powerFacts(entry, read) {
+  const facts = node('dl', '', 'facts');
+  const line = (label, value, note) => {
+    const dt = node('dt', label), dd = node('dd');
+    add(dd, node('span', value)); if (note) add(dd, node('em', ' ' + note));
+    add(facts, dt, dd);
+  };
+  line('Power limit', watts(read.power_limit), `of this card's ${watts(read.power_default)} default, `
+    + `range ${watts(read.power_min)}–${watts(read.power_max)}`);
+  line('V/F offset', read.offset === null || read.offset === undefined ? 'not readable'
+    : `${read.offset > 0 ? '+' : ''}${mhz(read.offset)}`, read.offset_error
+    ? `NVML: ${read.offset_error}` : 'read back after every write; 15 MHz steps');
+  line('Observed SM clock', mhz(read.clock_sm), `this driver reports no clock-lock field and no voltage, `
+    + `so a cap is inferred from this number and nothing more. Ceiling the card offers: ${mhz(read.clock_max_sm)}`);
+  line('Draw', watts(read.draw), `average ${watts(read.draw_average)} · ${read.temperature === undefined
+    ? '—' : read.temperature} °C · p-state ${read.pstate || '—'}`
+    + (read.power_capped_hours ? ` · power-capped ${read.power_capped_hours} h since boot` : ''));
+  return facts;
+}
+function renderPower() {
+  const panel = el('power');
+  const entry = powerOpen ? powerCard(powerOpen) : null;
+  // Cleared before anything is drawn, on every path: this panel is rebuilt by the five-second poll
+  // while it is open, and a panel that appended instead of replacing grew a little taller every
+  // time the page looked at it.
+  panel.replaceChildren();
+  if (!entry) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const read = (powerPatch?.gpu === entry.uuid ? powerPatch.read : null) || entry.read || {};
+  const available = powerWrites(), target = powerTarget(entry);
+  const refused = available.available === false;
+  const head = node('div', '', 'head');
+  const when = node('span', '', 'when'), stamp = node('i', '', 'dot mute');
+  const reread = node('button', 'Re-read', 'ghost tiny');
+  reread.type = 'button';
+  reread.addEventListener('click', () => {
+    powerBusy = true; powerError = ''; render();
+    getJSON('/api/gpu-power', {method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
+      body: JSON.stringify({gpu: entry.uuid, action: 'read'})})
+      .then(reply => { powerPatch = {gpu: entry.uuid, read: reply.read, at: reply.read_at};
+        if (!reply.ok) powerError = reply.error || 'This card could not be read.'; })
+      .catch(error => { powerError = error.message || 'This card could not be read.'; })
+      .finally(() => { powerBusy = false; render(); });
+  });
+  add(when, stamp, node('span', powerPatch?.gpu === entry.uuid
+    ? `read from the driver just now` : entry.read_at
+    ? `read from the driver ${Math.max(0, Math.round((Date.now() - Date.parse(entry.read_at)) / 1000))} seconds ago`
+    : 'never read from the driver'), reread);
+  add(head, node('h2', `Power state · ${entry.name || 'GPU'}`), when);
+  add(panel, head);
+
+  if (refused) add(panel, node('p', available.reason, 'gate'));
+  if (entry.error) add(panel, node('p', entry.error, 'gate'));
+  if (!Object.keys(read).length && !entry.error) add(panel,
+    node('p', 'This card has not been read from the driver yet. The first reading arrives within '
+      + `${powerBlock().cadence_seconds || 30} seconds, or now if you ask for it.`, 'note'));
+  else add(panel, powerFacts(entry, read));
+
+  const words = powerWords(entry);
+  add(panel, node('p', '', 'note')).lastChild.textContent = entry.state === 'rung'
+    ? `At ${entry.rung}${entry.rung === entry.default ? `, this card's default rung` : ''}. `
+      + `Power limit and V/F offset both read back as that rung asks. A clock lock cannot be verified `
+      + `on GeForce: ${read.clock_sm} MHz observed against ${rungValue(entry, entry.rung, 'clock_max')} MHz `
+      + `asked is the whole evidence, which is why a rung is named from the two values that can be read.`
+    : entry.state === 'stock' ? `Stock: the power limit is at this card's own default and the offset is 0. `
+      + `Nothing is applied.`
+    : entry.state === 'custom' ? `Between rungs: what the driver reports matches none of this card's rungs. `
+      + `That is what a hand-set value or a half-landed write looks like from outside.`
+    : `The driver gave back ${words.text.toLowerCase()}. Reading it again is the first move; the way back `
+      + `from anything here is Revert to stock, and after that a reboot, which returns this card to stock `
+      + `on its own.`;
+
+  if (entry.note) add(panel, node('p', entry.note, 'sub'));
+
+  const rungs = node('div', '', 'rungs');
+  const rungRow = (name, values, why, tags, dashed) => {
+    const row = node('label', '', `rung${target.mode === name ? ' now' : ''}${dashed ? ' stock' : ''}`);
+    const radio = node('input'); radio.type = 'radio'; radio.name = 'power-rung';
+    radio.checked = target.mode === name;
+    radio.disabled = refused || powerBusy;
+    radio.addEventListener('change', () => { powerChoice = {mode: name}; powerError = ''; render(); });
+    const box = node('div');
+    const title = node('p', '', 'name');
+    add(title, node('span', name === 'revert' ? 'Stock' : name));
+    const marks = node('span', '', 'tags');
+    for (const tag of tags) add(marks, node('span', tag, `tag ${tag === 'card default' ? 'def' : 'cur'}`));
+    if (tags.length) add(title, marks);
+    add(box, title, node('p', values, 'set'));
+    if (why) add(box, node('p', why, 'why'));
+    add(row, radio, box);
+    return row;
+  };
+  for (const rung of entry.rungs || []) {
+    add(rungs, rungRow(rung.name, `${watts(rung.power)} · max ${mhz(rung.clock_max)} · offset `
+      + `${rung.offset > 0 ? '+' : ''}${mhz(rung.offset)}`,
+      rung.name === entry.default && entry.measured ? entry.measured
+        : rung.default ? 'One rung toward stock: what you apply when a serving engine has been unwell '
+          + 'on anything lower.' : '',
+      [rung.default ? 'card default' : '', target.mode === rung.name && entry.state === 'rung'
+        && entry.rung === rung.name ? 'where it is now' : ''].filter(Boolean)));
+  }
+  add(rungs, rungRow('revert', `-rgc · offset 0 · power limit ${watts(read.power_default)}`,
+    `Back to the driver's own numbers, live, with no restart of anything that is serving. This is the `
+    + `action to take first when a card is misbehaving.`, ['revert'], true));
+  if (!entry.rungs?.length) add(rungs, node('p', entry.plan_error
+    // Operational state naming a plan source does not have: say which, in the words the runtime used.
+    ? entry.plan_error : entry.plan
+    ? `This plan has no rungs, so there is nothing to choose: it has been measured and found to have no `
+      + `rung worth recommending. Revert and values by hand still work.`
+    : `No measured rungs, so nothing to choose. This card is not in the rung table, and `
+      + `${watts(read.power_limit)} / ${mhz(read.clock_max_sm)} / +75 is another card's measured result `
+      + `that means nothing here. Measure it, or move it with numbers of your own.`, 'note'));
+  add(panel, rungs);
+
+  const custom = node('details', '', 'custom');
+  const summary = node('summary', powerDraft.power !== undefined
+    ? `Values by hand — ${watts(powerDraft.power)} · ${mhz(powerDraft.clock_max)} · `
+      + `${powerDraft.offset > 0 ? '+' : ''}${mhz(powerDraft.offset)}`
+    : `Values by hand — a trial rung this machine has not measured`);
+  const fields = node('div', '', 'fields');
+  const field = (key, label, hint, bounds) => {
+    const box = node('label', '', target.mode === 'custom' && powerBad(key, read, powerBlock().envelope) ? 'bad' : '');
+    const input = node('input');
+    input.type = 'text'; input.value = powerDraft[key] ?? (key === 'power' ? read.power_limit ?? ''
+      : key === 'clock_max' ? read.clock_sm ?? '' : read.offset ?? '');
+    input.placeholder = hint.placeholder;
+    input.setAttribute('aria-label', label);
+    input.addEventListener('input', () => {
+      powerDraft = {...powerDraft, [key]: input.value};
+      if (target.mode !== 'custom') powerChoice = {mode: 'custom'};
+    });
+    const bad = powerBad(key, read, powerBlock().envelope);
+    add(box, node('span', label), input, node('span', bad || hint.hint, bad ? 'bad' : 'hint'));
+    return box;
+  };
+  add(fields,
+    field('power', 'Power limit (W)', {placeholder: `${watts(read.power_min)}–${watts(read.power_max)}`,
+      hint: `this card reports ${watts(read.power_min)}–${watts(read.power_max)}`}),
+    field('clock_max', 'Max SM clock (MHz)', {placeholder: '15 MHz bins',
+      hint: `locked from ${mhz(powerBlock().envelope?.clock_min)} up; this card's ceiling is ${mhz(read.clock_max_sm)}`}),
+    field('offset', 'V/F offset (MHz)', {placeholder: '−150 … +150',
+      hint: `15 MHz steps; ±${powerBlock().envelope?.offset_max || 150} is what this driver has been held at`}));
+  add(custom, summary, fields, node('p', `Hand-set values are the script's \`set\`: a trial rung, never offered `
+    + `as though it had been measured. Applying them changes only this card, right now.`, 'sub'));
+  add(panel, custom);
+
+  add(panel, node('p', '', 'volat')).lastChild.append(node('b', `Nothing is installed in the boot path, by design. `),
+    `These are volatile driver settings: a reboot returns this card to stock on its own, and that is the `
+    + `way back. This page reads and writes them; it never re-applies one by itself. A rung belongs to the `
+    + `card, so switching configuration leaves it exactly where it is.`);
+
+  // The health gate, mirrored here from the same rule the runtime refuses by: a model on this card
+  // that is not healthy means the write waits for an explicit "apply anyway". The page is not the
+  // gate — it is the place that says so before you click rather than after.
+  const unwell = powerUnwell(entry.uuid);
+  const gate = powerGate[entry.uuid];
+  if (unwell.length) {
+    const notice = node('div', '', 'gate');
+    const many = unwell.length > 1;
+    const stopped = unwell.some(service => !service.running);
+    // The sentence agrees with what it counts, because the count is the fact: one engine down is
+    // "it is not running", two is "at least one of them", and an operator reading either is being
+    // told how much of the machine is already hurting.
+    add(notice, node('p', `${unwell.map(service => service.name).join(', ')} `
+      + `${many ? 'are' : 'is'} not healthy on this card`
+      + `${stopped ? (many ? ', and at least one of them is not running' : ', and it is not running')
+        : ''}. Nothing has been changed and nothing will be. Say you know better, or fix the model `
+      + `first.`));
+    const label = node('label'), check = node('input');
+    check.type = 'checkbox'; check.checked = !!gate;
+    check.addEventListener('change', () => { powerGate[entry.uuid] = check.checked; render(); });
+    add(label, check, node('span', 'Apply anyway — this engine is not what I am worried about'));
+    add(notice, label);
+    add(panel, notice);
+  }
+
+  const acts = node('div', '', 'acts');
+  const apply = node('button', powerBusy ? 'Writing…' : powerLabel(entry, target), '');
+  apply.type = 'button';
+  apply.disabled = !target.mode || powerBusy || refused || (unwell.length > 0 && !gate);
+  apply.addEventListener('click', () => powerSubmit(entry.uuid, entry));
+  const close = node('button', 'Close', 'ghost');
+  close.type = 'button';
+  close.addEventListener('click', () => { powerOpen = null; render(); });
+  add(acts, apply, close);
+  add(panel, acts);
+  add(panel, node('p', powerError || powerReply || `Nothing is drained and nothing is paused: the write is three `
+    + `driver calls and one read-back, a couple of seconds. It is refused while a switch, a restoration or a `
+    + `source deployment has the machine.`, powerError ? 'gate' : 'sub'));
+
+  const wrote = entry.last_write;
+  if (wrote) add(panel, node('p', `Written from this page ${wrote.at}: ${wrote.from} → ${wrote.to}, `
+    + `read-back ${wrote.ok ? 'OK' : 'FAILED'}. The last ${20} writes are kept on this machine, and none of `
+    + `them survived a reboot.`, 'hist'));
+}
+const rungValue = (entry, name, key) => (entry.rungs || []).find(rung => rung.name === name)?.[key] ?? '—';
+function powerLabel(entry, target) {
+  if (target.mode === 'revert') return `Revert ${entry.name} to stock`;
+  if (target.mode === 'custom') return `Write these values to ${entry.name}`;
+  return (entry.state === 'rung' && entry.rung === target.mode ? 'Re-apply ' : 'Apply ')
+    + `${target.mode} to ${entry.name}`;
+}
+/* Client-side because it is a hint and not a gate: the driver and runtime refuse whatever they are
+   going to refuse, and a field that says so before the write costs nothing. */
+function powerBad(key, read, envelope) {
+  const raw = powerDraft[key];
+  if (raw === undefined || raw === '') return '';
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return 'a number is expected';
+  if (key === 'power' && read.power_max != null && value > read.power_max) return `this card's ceiling is ${watts(read.power_max)}`;
+  if (key === 'power' && read.power_min != null && value < read.power_min) return `this card's floor is ${watts(read.power_min)}`;
+  if (key === 'offset' && Math.abs(value) > (envelope?.offset_max || 150)) return `±${envelope?.offset_max || 150} MHz is what this driver has been held at`;
+  if (key === 'offset' && Math.round(value / 15) * 15 !== value) return `the driver takes 15 MHz steps; this would be applied as ${Math.round(value / 15) * 15 > 0 ? '+' : ''}${Math.round(value / 15) * 15} MHz`;
+  if (key === 'clock_max' && envelope?.clock_min && value <= envelope.clock_min) return `a max clock at or below the floor leaves the card no P-state to idle in`;
+  return '';
+}
+
+
 function render() {
+  renderPower();
   // One guard over the whole render: a page that has drawn half its facts and stopped is worse than
   // one that says it cannot read the runtime, because half a picture of a serving machine is what an
   // operator trusts and then acts on.
@@ -617,6 +930,11 @@ let status = null, operation = null, selected = null, connected = false, submitt
 let mapSignature = '', registrySignature = '', detailsSignature = '', lastStatus = 0, timer;
 let pending = null, restorePending = null, requestUnknown = false, polling = false, actionError = '';
 let editing = null, aliasDraft = '', aliasError = '', aliasSaving = false;
+/* The power panel is open on one card at a time, and what is chosen inside it is a draft rather than a
+   fact: the fact is what the driver says, and that arrives with the next status. `powerGate` remembers
+   an "apply anyway" tick so a re-render does not silently un-tick the thing that let the write through. */
+let powerOpen = null, powerChoice = {}, powerDraft = {}, powerError = '', powerReply = '', powerBusy = false;
+let powerPatch = null, powerGate = {};
 function schedule(delay) { clearTimeout(timer); timer = setTimeout(tick, delay); }
 try { pending = JSON.parse(sessionStorage.getItem('runtime-switch-request')); } catch (_) { /* may be disabled */ }
 if (pending && typeof pending.request_id !== 'string') pending = null;

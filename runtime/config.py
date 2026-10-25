@@ -557,6 +557,167 @@ def gpu_names(host, definition):
     return [name for group in groups for name in names.get(group, [])]
 
 
+# ------------------------------------------------------------------------------------ card power
+# A card's power state is the one hardware fact this runtime writes as well as reads, and it is the
+# one that comes from a campaign on a specific board rather than from a configuration. The split
+# follows the house rule: the rungs, their numbers, the envelope they have to sit inside and the
+# evidence behind them are source (config/undervolt.json), and which physical card runs which plan is
+# operational state (`.state/host.json` -> `power_plans`). A card with no plan is offered no rung --
+# `330 W / 1905 MHz / +75` is a GA102 result and means nothing for an Ada board -- but it can still be
+# reverted to stock or moved with numbers of your own, because those need no measurement.
+
+POWER_FILE = 'undervolt.json'
+POWER_RUNGS = ('safe', 'sensible', 'assertive')
+
+
+def read_power_registry(config_dir):
+    """The rung table, validated. A malformed table is a refusal that names the key to fix.
+
+    Validation is strict because these numbers are written to a live GPU: a rung whose offset is off
+    the driver's step, or whose default names a rung that is not there, is a bug that only shows up
+    as a card that will not boost during a serving day.
+    """
+    path = Path(config_dir) / POWER_FILE
+    registry = read(path)
+    require(isinstance(registry, dict) and isinstance(registry.get('plans'), dict),
+        POWER_FILE + ': expected an object with a "plans" object inside it')
+    envelope = registry.get('envelope') or {}
+    require(all(isinstance(envelope.get(key), int) and envelope[key] > 0 for key in
+            ('offset_step', 'offset_max', 'clock_min')),
+        POWER_FILE + ': envelope needs integer offset_step, offset_max and clock_min, all positive')
+    for plan_id, plan in registry['plans'].items():
+        require(isinstance(plan_id, str) and re.fullmatch(r'[a-z0-9][a-z0-9-]*', plan_id),
+            POWER_FILE + ': plan ids are lowercase slugs, not ' + repr(plan_id))
+        require(isinstance(plan, dict) and isinstance(plan.get('name'), str) and plan['name'],
+            POWER_FILE + ': plan ' + plan_id + ' needs a name')
+        rungs = plan.get('rungs')
+        require(isinstance(rungs, dict) and rungs, 'plan ' + plan_id + ' needs at least one rung')
+        offsets = []
+        for name, rung in rungs.items():
+            require(name in POWER_RUNGS, 'plan ' + plan_id + ': unknown rung name ' + repr(name) +
+                '; a rung is one of ' + ', '.join(POWER_RUNGS) + ' so that "the middle one" means one thing')
+            require(isinstance(rung, dict) and all(isinstance(rung.get(key), (int, float))
+                    and rung[key] > 0 for key in ('power', 'clock_max', 'offset')),
+                'plan ' + plan_id + ' rung ' + name + ': power, clock_max and offset are positive numbers')
+            require(float(rung['offset']) % envelope['offset_step'] == 0,
+                'plan ' + plan_id + ' rung ' + name + ': offset must sit on the driver\'s '
+                + str(envelope['offset_step']) + ' MHz step')
+            require(-envelope['offset_max'] <= rung['offset'] <= envelope['offset_max'],
+                'plan ' + plan_id + ' rung ' + name + ': offset outside +/-' + str(envelope['offset_max']) +
+                ' MHz proven on this driver')
+            require(rung['clock_max'] > envelope['clock_min'],
+                'plan ' + plan_id + ' rung ' + name + ': a max clock at or below the floor locks the card up')
+            offsets.append(rung['offset'])
+        require(len(set(offsets)) == len(offsets), 'plan ' + plan_id + ': two rungs share an offset')
+        # The ladder is a ladder: the more a rung undervolts, the fewer watts it may ask for. A table
+        # that violates this is a rung that would raise the watt limit while lowering the voltage,
+        # which is not what any of these campaigns measured.
+        ladder = sorted(rungs.items(), key=lambda item: item[1]['offset'])
+        watts = [rung['power'] for _, rung in ladder]
+        require(all(watts[i] >= watts[i + 1] for i in range(len(watts) - 1)),
+            'plan ' + plan_id + ': rungs must get no more watts as their offset grows')
+        require(plan.get('default') in rungs, 'plan ' + plan_id + ': default must name one of its rungs ('
+            + ', '.join(sorted(rungs)) + ')')
+    return registry
+
+
+def power_plans(host):
+    """Which card runs which plan, from the deployment's private settings: {GPU-uuid: plan id}.
+
+    Absent is a real answer: it means nobody has measured this card. A malformed entry is reported
+    rather than dropped, because a typo'd UUID silently un-measures a card that was measured.
+    """
+    value = (host or {}).get('power_plans') or {}
+    require(isinstance(value, dict), 'host.json power_plans is an object of GPU UUID -> plan id')
+    for gpu, plan_id in value.items():
+        require(re.fullmatch(GPU_UUID, gpu or ''),
+            'host.json power_plans has a key that is not a full GPU UUID: ' + repr(gpu))
+        require(isinstance(plan_id, str) and plan_id,
+            'host.json power_plans entry for ' + gpu + ' must name a plan')
+    return dict(value)
+
+
+def power_plan(registry, plan_id):
+    """One plan by id, or a refusal that lists the plans this revision actually has."""
+    plans = (registry or {}).get('plans') or {}
+    known = (', '.join(sorted(plans)) if plans else 'none yet')
+    require(plan_id is not None, 'This card has no undervolt plan, so it has no rung to apply. A plan is '
+        'a measurement, and this card has not been through the ladder; this revision has plans for '
+        + known + '. It can still be reverted to stock or given values of your own')
+    require(plan_id in plans, 'no undervolt plan named ' + repr(plan_id) + '; this revision knows '
+        + known + '. A plan is a measurement, so a card that has not been through the ladder has no '
+        'rung to apply')
+    return plans[plan_id]
+
+
+def power_rung(plan, name):
+    """The three numbers of one rung, as the card agent takes them."""
+    rungs = plan['rungs']
+    require(name in rungs, 'plan ' + plan['name'] + ' has no rung ' + repr(name) + '; it has '
+        + ', '.join(rung for rung, _ in sorted(rungs.items(), key=lambda item: item[1]['offset']))
+        + ', in the order the ladder runs. Choose one of those, or set values of your own')
+    rung = dict(rungs[name])
+    rung['clock_min'] = None
+    return rung
+
+
+def power_request(body, envelope, limits=None):
+    """Validate and normalise a write request against the envelope and the card's own watt bounds.
+
+    `limits` is the card's reported (min, max) power limit from the last read: the driver is the only
+    authority on what a particular board accepts, and it is read rather than assumed because a card
+    swapped for another model of the same name changes the answer.
+    """
+    require(isinstance(body, dict), 'a JSON object naming the card and the action')
+    allowed = {'gpu', 'action', 'rung', 'power', 'clock_max', 'offset', 'override'}
+    require(not set(body) - allowed, 'power accepts only ' + ', '.join(sorted(allowed)) +
+        '; this request also carries ' + ', '.join(sorted(set(body) - allowed)))
+    gpu, action = body.get('gpu'), body.get('action')
+    require(isinstance(gpu, str) and re.fullmatch(GPU_UUID, gpu),
+        'gpu must be a full GPU UUID this machine reports')
+    require(action in ('apply', 'revert', 'custom', 'read'),
+        "action is 'apply' a named rung, 'revert' to stock, 'custom' with your own three numbers, or "
+        "'read' this card again right now")
+    require(isinstance(body.get('override', False), bool), 'override is true or false')
+    step, ceiling = envelope['offset_step'], envelope['offset_max']
+    request = {'gpu': gpu, 'action': action, 'override': bool(body.get('override')),
+        'rung': None, 'power': None, 'clock_max': None, 'offset': None, 'clock_min': envelope['clock_min']}
+    if action == 'read':
+        require(not {'rung', 'power', 'clock_max', 'offset', 'override'} & set(body),
+            'a read takes the card and nothing else')
+    if action == 'apply':
+        require(isinstance(body.get('rung'), str) and body['rung'],
+            'apply names the rung to put the card at')
+        request['rung'] = body['rung']
+        require(not {'power', 'clock_max', 'offset'} & set(body),
+            'apply takes a rung name, not numbers: use custom for numbers of your own')
+    if action == 'apply' or action == 'custom':
+        if action == 'custom':
+            require(all(isinstance(body.get(key), (int, float))
+                    for key in ('power', 'clock_max', 'offset')),
+                'custom needs power in watts, clock_max in MHz and offset in MHz')
+            request['power'] = body['power']
+            request['clock_max'] = body['clock_max']
+            request['offset'] = body['offset']
+            require(request['clock_max'] > envelope['clock_min'],
+                'a max clock at or below ' + str(envelope['clock_min']) +
+                ' MHz leaves the card no P-state to idle in, which is what makes it crash at rest')
+    raw = request['offset']
+    if raw is not None:
+        rounded = int(round(raw / step)) * step
+        require(-ceiling <= rounded <= ceiling, 'offset must sit within +/-' + str(ceiling) +
+            ' MHz: ' + str(ceiling) + ' is what this driver family has been held at without faulting, and'
+            ' acceptance is not serving safety')
+        request['offset'], request['offset_rounded'] = rounded, rounded != raw
+    if request['power'] is not None and limits:
+        low, high = limits
+        require(low is None or request['power'] >= low,
+            'this card reports a minimum of %.0f W' % low)
+        require(high is None or request['power'] <= high,
+            'this card reports a maximum of %.0f W' % high)
+    return request
+
+
 def service_key(definition):
     """The key this model's Compose service and manifest entry are filed under.
 

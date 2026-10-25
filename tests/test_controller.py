@@ -630,6 +630,27 @@ class ControllerTests(unittest.TestCase):
         self.c.host = {**self.c.host, 'gpu_architectures': ['75', 'Turing']}
         self.assertIn('error', self.c.status()['host'])
 
+    def test_the_power_block_is_always_there(self):
+        # The page draws the panel by reading status['power'] and nothing else, so the block has to
+        # arrive on a machine with no rung table, no card-to-plan mapping and no cache — which is the
+        # state every host is in until somebody edits its private settings. A missing key is a hole
+        # in the page, and a hole next to a GPU tile looks exactly like a card that is fine.
+        block = self.c.status()['power']
+        self.assertEqual(block['available'], True, 'the rung table ships in source, so it is always '
+            'there to read; what a host may lack is the mapping from its cards to it')
+        # Every card the host declares is in the block even with nothing cached and nothing mapped.
+        # A card that has merely never been read has to arrive looking unread, and a card with no plan
+        # has to arrive with nothing to choose: left out of the block, it would look from the page
+        # like a card that is fine, which is the one thing it is not.
+        self.assertTrue(block['cards'])
+        for card in block['cards'].values():
+            self.assertEqual(card['state'], 'unread')
+            self.assertIsNone(card['plan'])
+            self.assertEqual(card['rungs'], [])
+        self.assertEqual(block['writes'], {'available': True, 'reason': None},
+            'whether a write may be attempted at all is published, with the reason it may not')
+        self.assertIsInstance(block['cadence_seconds'], int)
+
     def test_a_host_that_names_itself_loads_what_it_was_built_for(self):
         # The same controller on a host that names itself: the registry it publishes is the share of
         # it that was built for this machine, which is the whole separation, seen from the surface.

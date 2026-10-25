@@ -222,3 +222,110 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
   .panel { padding: 18px }
   .badge { padding: 7px 10px }
 }
+
+/* =============================================================================================
+   The card power state: one line on an existing GPU tile and one panel that opens under the board.
+   No new column, no new colour: a tile already says who has the card, and the power line says
+   what the driver is doing with it. Everything visual is a state class, because the page is
+   served under `style-src 'self'`.
+   ============================================================================================= */
+
+/* The tile line. It has to survive a 120px tile, so it carries one state word — `sensible`, `stock`,
+   `custom`, `incomplete` — and the numbers that prove it live in the panel below the board. A watt
+   figure and a button did not both fit beside a card name; a rung name does. */
+/* `overflow-wrap` inherits, and `anywhere` on this line reached the text inside it: a rung named
+   `sensible` then had a min-content width of one character, the flex line collapsed to the dot, and
+   the tile spent its whole height spelling the word out one letter at a time. Words are the unit
+   here -- the longest of them is `measured`, and it fits. */
+.gpu .pw { display: flex; align-items: center; gap: 6px; font-size: 10.5px; margin: 0;
+  overflow-wrap: normal; color: var(--muted) }
+.gpu .pw b { font-weight: 650; letter-spacing: .02em; color: #cfe0e4 }
+.gpu .pw.rung b { color: var(--day) }
+.gpu .pw.custom b { color: var(--warn) }
+.gpu .pw.bad b, .gpu .pw.bad .dot { color: var(--bad) }
+/* The control rides at the right of the line it belongs to, in the same `ghost tiny` weight the
+   Rename door carries on a model line. A tile that is a button would be a second way to click a
+   card on a page that already has one. */
+/* A 150px tile holds a rung name or a button on one line, not both, and a name an operator cannot
+   read is the whole point of the line. The control goes under it, right-aligned, at the weight the
+   Rename door on a model line carries -- anything bigger and five tiles become five shouty buttons. */
+.gpu .pwrow { display: grid; gap: 8px }
+.gpu .pwrow button { justify-self: end; min-height: 26px; padding: 2px 9px; font-size: 11px }
+
+/* The panel. Same shape as the switch preview it sits beside: a heading, the machine's own
+   values, and what an action costs -- read before it is taken. */
+.power { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 22px;
+  margin-top: 18px; display: grid; gap: 16px; min-width: 0 }
+/* `.power` says how the panel lays its children out, and a `display` of any kind outranks the `hidden`
+   attribute the page sets when no card is open. Without this the panel of a closed card is a bordered
+   empty box under the map. */
+.power[hidden] { display: none }
+.power h2 { margin: 0 }
+.power .head { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; flex-wrap: wrap }
+.power .head .when { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 8px }
+.power .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 16px; font-size: 12px }
+.power .facts dt { color: #8ea3aa; font-weight: 550 }
+.power .facts dd { margin: 0; color: #d6e2e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere }
+.power .facts dd em { font-family: inherit; font-style: normal; color: var(--muted) }
+
+/* The rungs. A row per rung, in the same shape as a model line in the list: the thing's name,
+  what it does in the three units the driver takes, and a mark when it is the one this card ships
+  or the one it is sitting at now. */
+.power .rungs { display: grid; gap: 8px }
+.power .rung { border: 1px solid #2f4048; border-radius: 11px; background: #111c20; padding: 11px 13px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start }
+.power .rung:hover { border-color: #4a626c }
+.power .rung input { width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--day); cursor: pointer }
+.power .rung .name { font-size: 14px; font-weight: 600; margin: 0; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap }
+.power .rung .set { font-size: 11.5px; color: var(--muted); margin: 4px 0 0; font-family: ui-monospace,
+  SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere }
+.power .rung .why { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; line-height: 1.55 }
+.power .rung.now { border-color: #4b6f65; background: #16262a }
+.power .rung.stock { border-style: dashed }
+.power .rung .tags { display: flex; gap: 6px; flex-wrap: wrap }
+.power .tag.def { background: var(--night) }
+.power .tag.cur, .power .tag.off { background: #4d6068; color: #cfdde1 }
+
+/* Values you set by hand: three fields, each answering to the card's own reported bounds. */
+.power .custom { border-left: 2px solid #4a626c; padding: 2px 0 2px 14px; display: grid; gap: 12px }
+.power .custom .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px }
+.power .custom label { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  font-weight: 650; display: grid; gap: 5px }
+.power .custom input { font: inherit; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid #46606a; border-radius: 8px; background: #0d1417; color: #eef2f5; padding: 9px 11px;
+  min-height: 40px }
+.power .custom .hint { font-size: 11px; color: var(--muted); letter-spacing: 0; text-transform: none;
+  font-weight: 400 }
+.power .custom .bad .hint { color: var(--bad) }
+
+/* Two sentences that must never be cut: the state does not survive a reboot, and the write may be
+   refused. Both belong above the button, not under it. */
+.power .volat { font-size: 11.5px; color: var(--muted); line-height: 1.6; margin: 0 }
+.power .volat b { color: #dfeaec; font-weight: 600 }
+.power .gate { border: 1px solid #7a5548; background: #241a17; color: #ecd6c9; border-radius: 11px;
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.6 }
+.power .gate label { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: #e2d3c6;
+  font-size: 12px }
+.power .gate input { accent-color: var(--warn) }
+.power .acts { display: flex; gap: 10px; flex-wrap: wrap; align-items: center }
+.power .wide { width: 100% }
+.power .hist { font-size: 11px; color: var(--muted); margin: 0; line-height: 1.6 }
+.power .hist b { color: #cfe0e4; font-weight: 600 }
+
+/* The folded Custom block: a `<details>` whose summary is the state it is folded over, so a closed
+   expander still says what the card is set to rather than advertising an action nobody has taken. */
+.power .custom summary { cursor: pointer; font-size: 12px; color: #c8d9de; letter-spacing: .02em }
+.power .custom summary .mono { color: var(--muted) }
+
+@media (max-width: 900px) {
+  /* A phone has one column and a card that has to stay readable at 11px. The tile keeps its one word;
+     the button goes under it rather than beside it, because a 120px tile has no room for both. */
+  .power { gap: 14px }
+  .power .head { flex-direction: column; align-items: flex-start; gap: 8px }
+  .power .facts { grid-template-columns: minmax(0, 1fr); gap: 2px 0 }
+  .power .facts dd { margin-bottom: 8px }
+  .power .custom .fields { grid-template-columns: minmax(0, 1fr) }
+  .power .acts button { flex: 1 1 100% }
+}

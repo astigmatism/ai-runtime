@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>The states that must not look like success — proposal</title>
+  <link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">rosalina / AI Runtime — state sheet</p>
+      <h1>Four readings a power write can come back with</h1>
+      <p class="sub">Each panel below is the whole chooser as it stands in that state. The rule they all
+        follow is the one this machine is run by: a control that is disabled says why in the sentence under
+        it, and nothing on the page claims a rung is applied until the driver has said so back.</p>
+    </div>
+    <span class="badge pending">Refused</span>
+  </header>
+
+  <div class="column">
+    <section class="panel">
+      <h2>1 · Refused: the model on this card is not healthy</h2>
+      <p class="sub">The script's health gate, kept. The 4080 SUPER has an Xid 31 on record at 255 W, so a
+        rung is not quietly applied underneath an engine that is already in trouble — but the override is
+        one checkbox, because "nothing loaded and I want to try a number" is a real reason to write.</p>
+      <section class="power">
+        <div class="head">
+          <h2>Power state · RTX 4080 SUPER</h2>
+          <span class="when"><i class="dot mute"></i>read from the driver 6 seconds ago
+            <button class="ghost tiny" type="button">Re-read</button></span>
+        </div>
+        <div class="gate">
+          <b>Write refused: House standard is not healthy on this card.</b> Nothing has been changed and
+          nothing will be. The card answers <code>daytime</code>, and a rung that is too aggressive does not
+          announce itself — it shows up as strange turns, an empty response, or an Xid in
+          <code>journalctl -k</code>. Fix the model first, or say you know better.
+          <label><input type="checkbox"> Apply anyway, this engine is not what I am worried about</label>
+        </div>
+        <dl class="facts">
+          <dt>Power limit</dt>
+          <dd>270 W <em>of this card's 320 W default, range 205–320 W</em></dd>
+          <dt>V/F offset</dt>
+          <dd>+45 MHz <em>read back after the write</em></dd>
+          <dt>Observed SM clock</dt>
+          <dd>0 MHz <em>p-state P8: nothing is decoding on this card right now</em></dd>
+        </dl>
+        <div class="rungs">
+          <label class="rung now">
+            <input type="radio" name="a" checked disabled>
+            <div>
+              <p class="name">safe <span class="tags"><span class="tag def">card default</span><span class="tag cur">where it is now</span></span></p>
+              <p class="set">270 W · max 2760 MHz · offset +45 MHz</p>
+            </div>
+          </label>
+          <label class="rung">
+            <input type="radio" name="a" disabled>
+            <div>
+              <p class="name">sensible <span class="tags"></span></p>
+              <p class="set">255 W · max 2640 MHz · offset +75 MHz</p>
+              <p class="why">Won this card's ladder at −16 % energy per token, and then stopped the daytime
+                engine in service on 2026-10-20. Recorded as reported: the engine's own log starts after the
+                move, with no Xid or OOM line inside what survived. It stays in the table as a measured rung,
+                and it is not what <code>safe</code> means. Evidence:
+                <code>ops/reports/2026-10-19-4080super-undervolt/summary.md</code></p>
+            </div>
+          </label>
+          <label class="rung stock">
+            <input type="radio" name="a" disabled>
+            <div>
+              <p class="name">Stock <span class="tags"><span class="tag off">revert</span></span></p>
+              <p class="set">-rgc · offset 0 · power limit 320 W</p>
+            </div>
+          </label>
+        </div>
+        <div class="acts">
+          <button type="button" disabled>Apply safe to RTX 4080 SUPER</button>
+          <button class="ghost" type="button">Close</button>
+        </div>
+        <p class="sub">The write becomes available with the checkbox ticked. Ticking it does not change what
+          is written, only whether the health check is allowed to refuse it — the same rule as
+          <code>--skip-health</code>.</p>
+      </section>
+    </section>
+
+    <section class="panel">
+      <h2>2 · Written, and the driver did not agree</h2>
+      <p class="sub">The apply→read-back→retry loop gave up. This is a 200 with the truth in it, not an
+        error with the numbers thrown away: the card is in a half state, and the page has to say which half.
+        It is the only panel that offers Revert before it offers Retry.</p>
+      <section class="power">
+        <div class="head">
+          <h2>Power state · RTX 3080 Ti</h2>
+          <span class="when"><i class="dot bad"></i>re-read 3 times, 1 second apart
+            <button class="ghost tiny" type="button">Re-read</button></span>
+        </div>
+        <div class="gate">
+          <b>Applied, and the read-back failed: the power limit took and the V/F offset did not.</b>
+          The card is now at 300 W with an offset of 0, which is a state no rung of this card describes.
+          Two attempts were made and both read the same way back. Nothing else was touched.
+        </div>
+        <dl class="facts">
+          <dt>Power limit</dt>
+          <dd>300 W <em>asked 300 W — ok</em></dd>
+          <dt>V/F offset</dt>
+          <dd>0 MHz <em>asked +105 MHz — FAIL. NVML accepted the call and the driver kept 0</em></dd>
+          <dt>Observed SM clock</dt>
+          <dd>1890 MHz <em>lock asked for 210–1800 MHz, and the observed clock is above it: the lock did not
+            hold either</em></dd>
+        </dl>
+        <p class="note"><b>A rung that reads back wrong is a card between states.</b> The watt limit is the
+          one with an effect on serving, so it is what the tile shows: <code>custom · 300 W</code>. Revert is
+          one click and needs no model to be healthy.</p>
+        <div class="acts">
+          <button type="button">Revert this card to stock</button>
+          <button class="ghost" type="button">Try assertive again</button>
+          <button class="ghost" type="button">Close</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel">
+      <h2>3 · A card nobody has measured</h2>
+      <p class="sub">The RTX 3080 and the RTX 4080 are in this machine and have no plan. The script refuses
+        to invent rungs for them, and so does the page: <code>330 W / 1905 / +75</code> is a GA102 result and
+        means nothing for an Ada card. Only Revert and hand-set values are offered.</p>
+      <section class="power">
+        <div class="head">
+          <h2>Power state · RTX 3080</h2>
+          <span class="when"><i class="dot mute"></i>read from the driver 6 seconds ago
+            <button class="ghost tiny" type="button">Re-read</button></span>
+        </div>
+        <dl class="facts">
+          <dt>Power limit</dt>
+          <dd>320 W <em>of this card's 320 W default, range 165–320 W</em></dd>
+          <dt>V/F offset</dt>
+          <dd>0 MHz</dd>
+          <dt>Observed SM clock</dt>
+          <dd>1035 MHz <em>p-state P2: the image encoder is on this card</em></dd>
+          <dt>Plan</dt>
+          <dd>none <em>this card is not in <code>config/undervolt.json</code></em></dd>
+        </dl>
+        <p class="note"><b>No measured rungs, so nothing to choose.</b> This card carries the shared image
+          encoder; a rung here moves the encoder's decode speed and nothing else. Measure it first — the
+          ladder and gates are written up in <code>docs/runbooks/rtx3090-undervolt.md</code>, and the
+          campaign for each measured card is under <code>ops/reports/</code> — or move it by hand with the
+          numbers you choose. Do not copy the 3090's numbers onto it.</p>
+        <details class="custom" open>
+          <summary>Values by hand</summary>
+          <div class="fields">
+            <label>Power limit (W)<input type="text" placeholder="165–320">
+              <span class="hint">this card takes 165–320 W</span></label>
+            <label>Max SM clock (MHz)<input type="text" placeholder="15 MHz bins">
+              <span class="hint">locked from 210 MHz up</span></label>
+            <label>V/F offset (MHz)<input type="text" placeholder="−150 … +150">
+              <span class="hint">15 MHz steps; positive undervolts</span></label>
+          </div>
+        </details>
+        <div class="acts">
+          <button type="button" disabled>Enter all three values</button>
+          <button class="ghost" type="button">Revert this card to stock</button>
+        </div>
+        <p class="sub">A card with no plan still gets Revert: a hand-set value written by an earlier trial is
+          exactly what a clean number is for. This is the same shape Daisy's two RTX 2080 Ti draw — no plan
+          line in <code>.state/host.json</code>, no rung offered, and no error anywhere.</p>
+      </section>
+    </section>
+
+    <section class="panel">
+      <h2>4 · The machine is doing something more important</h2>
+      <p class="sub">A write does not queue and does not interrupt: while a switch, a restoration or a source
+        deployment owns the machine, the chooser reads and refuses. The values shown are still the live ones,
+        because they are only ever a read.</p>
+      <section class="power">
+        <div class="head">
+          <h2>Power state · RTX 3090</h2>
+          <span class="when"><i class="dot mute"></i>read from the driver 3 seconds ago</span>
+        </div>
+        <div class="gate">
+          <b>Write refused: a configuration switch is in progress.</b> A drain moves models off cards and
+          back onto them, and a rung written in the middle of one would be a second hand on the same card.
+          Try again when the switch has reported. Nothing here is queued, and nothing needs to be: the card
+          keeps whatever it is at.
+        </div>
+        <dl class="facts">
+          <dt>Power limit</dt>
+          <dd>330 W <em>sensible, unchanged by the switch</em></dd>
+          <dt>V/F offset</dt>
+          <dd>+75 MHz</dd>
+        </dl>
+        <div class="acts">
+          <button type="button" disabled>A switch has the machine</button>
+          <button class="ghost" type="button">Close</button>
+        </div>
+        <p class="sub">The other two refusals say the same way: inspection mode says the runtime is not
+          writing to anything, and a machine whose one-shot GPU container cannot run says
+          <code>power unreadable</code> on the tile, with the reason in the panel and the map unaffected.</p>
+      </section>
+    </section>
+  </div>
+
+  <footer>
+    <span>The GPU map shows assignments, model-service health, and the power state last read 3 seconds ago —
+      not a telemetry history.</span>
+    <span>Status updated 06:41:02</span>
+  </footer>
+</main>
+</body>
+</html>

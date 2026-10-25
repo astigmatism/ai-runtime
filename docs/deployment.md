@@ -1013,3 +1013,90 @@ During an agreed reboot window, verify that the selected configuration remains u
 ## Optional vision GPU
 
 See [shared vision GPU configuration](shared-vision.md) for a separately selected encoder device, CUDA ordering, memory qualification, and rollback. CPU projector placement remains the default.
+
+## Card power state
+
+Every GPU in the machine has an undervoltage setting the driver will accept: a power limit, a maximum
+SM clock, and a NVML V/F offset. Until now the only way to touch it was
+`/home/astigmatism/ops/scripts/gpu-undervolt` on Rosalina, over SSH, with the numbers remembered by
+hand. The runtime now shows the same thing and writes it: one word per card on the map — a measured
+rung's name, `stock`, `custom`, or `power unreadable` — and a panel under the map that reads the
+driver, lists the rungs measured for that model of card, and applies one. See
+[`docs/ui/8-power-refusal.png`](ui/8-power-refusal.png) for the shape of it and
+[`config/undervolt.json`](../config/undervolt.json) for the numbers. Nothing about the script changed;
+it stays the way to do this without the page, and it stays the reference this feature was checked
+against.
+
+**The split is the usual one.** `config/undervolt.json`, in source, holds the rung tables — the three
+rungs per card model, their watts, clock caps and offsets, which one is the card's default, what each
+ladder measured and where the evidence lives, and the envelope the values are validated against (a
+V/F offset must land on a 15 MHz step inside ±150 MHz, a clock cap must clear 210 MHz, watts must fall
+as offsets rise, and a table that breaks any of that is refused rather than half-loaded). Which UUID
+is which card model is not a source fact: `power_plans` in `.state/host.json` maps card UUID to plan
+id.
+
+```json
+"power_plans": {
+  "GPU-1a2b…": "rtx3090",
+  "GPU-3c4d…": "rtx4080-super"
+},
+"power_image": "local/ai-runtime:git-…"
+```
+
+**Absent `power_plans`, nothing is offered and nothing is wrong.** A card with no plan gets no rungs,
+and the panel says so and offers only **Revert** and values by hand; it is never given another card's
+numbers because a 3090 happened to be in the same chassis. Rosalina's `host.json` does not state
+`power_plans` yet, so every card there reads its state and offers nothing to apply until an operator
+adds the mapping — one edit to private settings, no release. `power_image` is optional and exists for
+the case where the controller should not use its own image for the privileged card container.
+
+**The controller has no GPUs, so every read and every write is a container.** One `docker run -i --rm
+--pull=never --privileged --user 0:0 --gpus all --network none --label ai-runtime.power=1`, the
+project's own image, running `python3 -m runtime.gpucard`, which prints exactly one JSON object and
+never a traceback. Cards are named by UUID inside the container rather than selected with
+`--gpus device=…`, which is what the script does too: device-level selection works, but it makes a
+card invisible to a driver query that has to answer for the whole machine. Root lives in that
+container and nowhere else; the controller stays unprivileged.
+
+**Reads are cached, because the driver is slow and the page is not.** A daemon thread walks every card
+every 30 seconds into `.state/power/latest.json` plus a 20-entry `.state/power/history.json`, and
+`GET /api/status` only reads those files. A card whose driver hangs costs a stale reading and a
+"read … ago" on the page, never a stalled poll. The page can also be told to re-read now.
+
+**A write is three driver calls and one read-back**, a couple of seconds, no drain and no pause:
+`-pl`, `-lgc`, the NVML offset, then everything read again. Two things refuse it. The maintenance lock
+— a switch, a restoration, or a source deployment owns the machine — is a hard 409; the runtime will
+not write a card while it is moving the models off it. An unhealthy engine on that card is a 409 too,
+unless the request says `override`, which is exactly the script's `--skip-health`: the page shows the
+refusal and the tick that means it, and refuses to send the write until the tick is set. The clock
+lock cannot be read back on GeForce — there is no clock-lock field and no voltage — so the panel
+reports it as unverifiable and shows the observed SM clock beside the cap it asked for instead of
+claiming a verification it does not have.
+
+**Nothing is installed in the boot path, deliberately.** These are volatile driver settings: a reboot
+returns every card to stock on its own, and that is the way back when a card disagrees with the rung it
+was given. The runtime reads them and writes them and never re-applies one by itself, and a
+configuration switch leaves a card exactly where it is, because a rung belongs to the card and not to
+the model on it. That is also why `tests/test_restoration.py` does not change with this feature: a
+power write drains nothing, is refused outright while a lock is held, and cannot leave a router with
+nothing serving.
+
+Why the shipped defaults are cautious is in the table's own notes, and the sharpest of them is
+[Rosalina's own Xid 31](#what-the-pair-actually-measured-2026-10-20): an RTX 4080 SUPER at 255 W of a
+320 W default, `MMU Fault: ENGINE GRAPHICS GPC6`. The 4080 SUPER plan therefore ships `safe` — 270 W —
+as its default rung, not the deepest one, and the RTX 4080 plan carries a note saying in the owner's
+words that `sensible` stopped the daytime engine; validation catches a table that loses that note.
+
+From a terminal, the same thing:
+
+```sh
+docker exec local-ai-runtime python3 -m runtime power                       # every card, as read
+docker exec local-ai-runtime python3 -m runtime power --plans               # the table and the mapping
+docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --rung sensible
+docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --revert
+docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --set 320,1905,75 --override
+```
+
+`--gpu` takes a UUID or enough of a card's name to be one card. To see the panel without a card in
+front of you, `python3 scripts/preview-ui.py --port 8899 --power mixed` draws every state the driver
+can report and `--power gate` stops an engine so the refusals can be read.

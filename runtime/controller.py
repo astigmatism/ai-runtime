@@ -24,6 +24,7 @@ from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, PAIR_GROUPS,
     available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
     gpu_architectures, host_id, model_id, models_of, nameable_models, read, read_aliases, render,
     require, resolve_profile, router_target, service_engine)
+from .power import Power
 from .system import System, atomic_json, future, lock, now
 
 # How long a router that was not listening has to stay not-listening before this machine offers it
@@ -85,6 +86,11 @@ class Controller:
             'host.json states nowhere to publish: router_target (a router on another machine, with '
             'this machine\'s host_id) or router_state_dir (the directory this machine\'s own router '
             'reads). A runtime that starts publishing nowhere serves models nobody is told about.')
+
+        # The cards' power state, which this process can read and write but has no GPU of its own to
+        # touch: every read and write goes through a privileged one-shot container. Lazy about it --
+        # constructing it opens nothing -- so a controller that only renders and switches pays nothing.
+        self.power = Power(self)
 
     def load(self, filename, default=None):
         path = self.state / filename
@@ -1940,6 +1946,10 @@ class Controller:
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
             'host': {**host_report, 'gpu_inventory': self.gpu_inventory()},
+            # What the cards are actually doing with their power, from the driver, on its own cadence
+            # -- and the reason a write cannot start, when one cannot. The cache of it, never a read:
+            # this is what the five-second poll calls.
+            'power': self.power.status(),
             # What a client can still ask for out of this machine's catalog and nothing answers,
             # because the configuration that runs does not load the model that answers it. There is no
             # second fact about placement: a configuration loads models, a model it does not load is
