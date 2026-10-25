@@ -47,7 +47,13 @@ from pathlib import Path
 CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
     'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
     'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-    'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy')
+    'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy',
+    # The three trial configurations measured on daisy on 2026-10-25 (~/reports/20261025-free-levers):
+    # the tensor-core prompt path, that path widened to the 128K window, and the IQ3_S tier. Each is
+    # held to the same service-identity contract as the rest of the list, and each says on its own
+    # host line which machine may select it.
+    'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
+    'flash-next-strata-iq3-s-daisy')
 # The last entry is the first configuration of a second machine, and it is in this list rather than
 # in a list of its own because the updater reads this list out of a *target* revision that has no
 # host to ask. What separates it is its own "hosts" line: a machine that does not name itself is

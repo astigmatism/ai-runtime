@@ -863,7 +863,8 @@ class OnePairHostRestorationTests(unittest.TestCase):
         status = self.c.status()
         self.assertTrue(status['service']['serving'])
         self.assertEqual([(x['model'], x['aliases'], x['reason']) for x in status['offline_services']],
-            [(STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
+            [('qwen3.8-flash-next-iq3_s', ['daisy'], 'not_loaded_by_this_configuration'),
+                (STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
         self.assertEqual(status['host']['text_gpus'], 2)
 
     def test_a_switch_that_never_becomes_healthy_leaves_this_host_serving(self):

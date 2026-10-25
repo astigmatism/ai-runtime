@@ -1,0 +1,145 @@
+{
+ "id": "flash-next-strata-iq3-s-daisy",
+ "hosts": [
+  "daisy"
+ ],
+ "models": [
+  "flash-next-strata-iq3-s-daisy"
+ ],
+ "exclusive": true,
+ "display_name": "Qwen3.8 Flash-Next IQ3_S",
+ "variant_label": "two Turing cards, the 64K window, the IQ3_S tier",
+ "engine": "strata-sm75-296b59d2f73c",
+ "container_name": "qwen38-iq3s",
+ "host_port": 18080,
+ "gpu_group": "all",
+ "context_tokens": 65536,
+ "retention": {
+  "image": "local/strata:296b59d2f73c-sm75, built on this machine and on no other: its build host's instruction set has to be the one it runs on, so this tag is not a copy of anything and the rosalina-built sm_75 image that preceded it was never shipped. Released with the configuration, reference-aware; ops/reports/20261020-daisy-strata-feasibility/ states the retention the trial left on it.",
+  "model": "Its own first shard and a shard it shares. IQ3_S shard 1 of ISTA-DASLab's GSQ-RCO revision ed59f92082b1e93c0e96d60a8b11aab089b52f09, 54,817,524,224 bytes, downloaded to the library on 2026-10-25 and this configuration's to release. Shard 2 is not downloaded twice: it is byte-for-byte the PLE shard of the IQ3_XXS tier this machine already runs -- all 28,800,138,432 bytes were compared by SHA-256 before the link was made -- so this configuration is a hardlink to the library's single copy, which is why the tier costs 51 GiB of disk and not 78. No encoder projector: this engine is built without vision.",
+  "workspace": "This configuration's own, strata-daisy-iq3s/data, and the only thing it owns: the engine's pack build and the MTP draft it derives on first start, about 8 GB, re-derived here rather than shared with the 64K configuration because two configurations that write the same engine config in one workspace are one configuration wearing two names. Releasing this configuration frees that 8 GB and nothing else.",
+  "reports": "Measured on this machine on 2026-10-25 (~/reports/20261025-free-levers/, arm A7): IQ3_S starts and runs on the 64 GB box -- 52 GB used, no swap, arena 47,962 MiB -- so it is not the 128 GB prerequisite the morning evaluation assumed. What it costs is speed: 6.6 % of decode and 12.5 % of prompt processing, because experts of about 2 MiB leave 5,090 cache slots where IQ3_XXS leaves 6,426, and coverage falls to 95.2 % of the routed mass. What it buys is the tier table's step: 87.69 % top-1 against 84.46 %, mean KL 0.144 against 0.202. Deploy it when the quality is worth the 2-4 s a turn; the second tranche of VRAM is what makes it nearly free. Everything that decided it -- the control that reproduced production to 0.2 %, the A/A repeat that set the 0.4-1.1 % noise floor, and every arm this profile keeps or declines -- is in ~/reports/20261025-free-levers/, on the machine that took the measurements. None of it is released with it."
+ },
+ "argument_order": [
+  "--alias",
+  "--family",
+  "--quant",
+  "--model",
+  "--kv",
+  "--kv-streaming",
+  "--sampling",
+  "--tool-call-recovery",
+  "--conversation-cache-mib",
+  "--conversation-cache-min-free-mib",
+  "--ple-gguf",
+  "--vision",
+  "--gpus",
+  "--layer-split",
+  "--low-ram",
+  "--host",
+  "--port"
+ ],
+ "arguments": {
+  "--alias": "qwen3.8-flash-next-iq3_s",
+  "--family": "qwen",
+  "--quant": "IQ3_S",
+  "--model": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--kv": "k8v4",
+  "--kv-streaming": "auto",
+  "--sampling": "thinking",
+  "--tool-call-recovery": "on",
+  "--conversation-cache-mib": "off",
+  "--conversation-cache-min-free-mib": "12288",
+  "--ple-gguf": "off",
+  "--vision": "no",
+  "--gpus": "0,1",
+  "--layer-split": "auto",
+  "--low-ram": "off",
+  "--host": "0.0.0.0",
+  "--port": "8080"
+ },
+ "workspace": {
+  "path": "strata-daisy-iq3s/data",
+  "target": "/data"
+ },
+ "artifacts": [
+  {
+   "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "target": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "bytes": 54817524224,
+   "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+  },
+  {
+   "path": "llm/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revisions/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "target": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "bytes": 28800138432,
+   "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+  }
+ ],
+ "container": {
+  "read_only": false,
+  "stop_grace_period": "180s",
+  "ulimits": {
+   "core": 0,
+   "memlock": -1
+  },
+  "tmpfs": [
+   "/tmp:rw,nosuid,size=2g"
+  ],
+  "environment": {
+   "CUDA_VISIBLE_DEVICES": "0,1",
+   "STRATA_ALLOWED_HOSTS": "strata-trial,qwen38-strata,qwen38-iq3s",
+   "STRATA_BF16_TC": "1",
+   "STRATA_SELECT_SIMT": "1"
+  },
+  "networks": {
+   "router": {
+    "aliases": [
+     "strata-trial",
+     "qwen38-strata"
+    ]
+   }
+  },
+  "labels": {
+   "local-ai.profile": "primary",
+   "local-ai.retention": "reference-aware: tag, model revision and workspace are released with the profile"
+  }
+ },
+ "catalog": {
+  "backend_url": "http://qwen38-iq3s:8080",
+  "backend_kind": "strata",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "quantization": "ISTA-DASLab GSQ-RCO IQ3_S (3.65-bit i-quant, 78.0 GiB in two shards, 51.0 of them this configuration's own; the other shard is the PLE table it shares with the IQ3_XXS tier by hardlink)",
+  "input_modalities": [
+   "text"
+  ],
+  "mtp": {
+   "enabled": true,
+   "type": "strata-mtp-rt",
+   "detail": "the engine's own MTP draft layer, installed with its state on first start; automatic drafting is left on. 87-95 % draft acceptance measured on this host at this tier."
+  },
+  "capability_profile": {
+   "name": "qwen3.8-flash-next-iq3-xxs-strata-64k",
+   "text": true,
+   "streaming": true,
+   "vision": false,
+   "tools": true,
+   "reasoning": true,
+   "speculative": true,
+   "prompt_cache_volatile": true,
+   "prompt_cache_persistence": false,
+   "nsfw": false
+  },
+  "deployment_warnings": [
+   "Measured on 2026-10-20 on this machine (ops/reports/20261020-daisy-strata-feasibility/): IQ3_XXS warm 78-97 tok/s at 96.8-97.3 % expert-cache hits with 14.7 GiB of host RAM free, against IQ3_S at 7.6 GiB free and 87.8 % hits, which is the tier the engine itself calls tight and which parked on its own 8 GiB breaker. The window is capped at 65,536 rather than the trained 131,072 because the smaller quant fills each card with cached experts and aborts on a ~127k prompt at the full window: SIGABRT in prefill, exit -6, reproduced twice, ten minutes of arena reload after each. The alternative that keeps 128k alive was measured the same day, a 2,048 MiB per-card reserve, and it costs 13-18 % of warm decode and 26 % of the resident experts; this machine is a fast short-context box instead, on purpose, and its answer hashes came back byte-identical to the 3.5-bit tier's on both fixed-greedy cells, so nothing was given up in what the model says.",
+   "Nothing here is a number copied from the other machine. No --vram-reserve-mib, because the window cap is the fix that was chosen instead. No --resident-budget-gib, because the arm was measured with the engine's own sizing and a 55 GiB ceiling belongs to a box with 123 GiB of RAM. The conversation cache is stated off, and its floor is stated with it at 12,288 MiB because what the entry point writes sits in the workspace until a configuration says otherwise: with the pack pinning about 40 GiB of this machine's 60.7, a parked conversation may not spend any of the last 12 GiB of the 14.7 it leaves free. No control vector: the refusal direction is mounted and verified on the other host and was not part of any arm measured here.",
+   "The cards are not free when this starts. ComfyUI holds both on this machine (comfyui-gpu0, comfyui-gpu1, comfyui-promptgen, comfyui-image-frontend, all restart=unless-stopped), 2.8 GiB of RAM between them and VRAM on both cards; the trial stopped them for every run and started them again afterwards. A backend that starts beside them does not fail loudly \u2014 it starts, and serves slowly, and the arena fill that already takes ten minutes gets longer.",
+   "Cold is the character of this host and not a fault of this configuration: 579 s of arena fill at 0.08 GiB/s before the first token, 13.5 minutes for a first boot that also builds the pack, 11-17 tok/s cold against 73-97 tok/s warm. That is the spindle, and the readiness window on the engine says so. A cache drive for the model library changes this machine more than any tier or flag does.",
+   "It answers `daisy`, not `daytime`. Two machines whose clients reach one router cannot both answer `daytime`, and this one was given its own name so that the router question can be settled without relaunching anything; the clients that want this box have to be told its name, which is a setting on them and not here.",
+   "It does not answer `local-active`, and that is a decision and not an oversight. `local-active` is the name a router answers an unnamed request with, and it answers it from one host; the other machine is that host, so a catalog taking the name here would be refused by the router's collision rule, and if the rule did not exist two machines would be claiming to be the household's current model. When this machine becomes the default, the name belongs in this list, and moving it is a switch in its own right with the same drain rules as any other: clients that address `local-active` without naming a machine get whatever the router is answering with, and they will not have asked for it."
+  ],
+  "aliases": [
+   "daisy"
+  ]
+ }
+}

@@ -183,7 +183,9 @@ class OperationTests(OperationFixture, unittest.TestCase):
         # itself a machine with nothing built for it is entitled to and this one is not.
         offered = [x['profile'] for x in self.c.status()['configurations']['selectable']]
         self.assertNotIn(self.request()['profile'], offered)
-        self.assertEqual(offered, ['flash-next-strata-iq3-xxs-daisy'])
+        self.assertEqual(offered, ['flash-next-strata-iq3-xxs-daisy',
+            'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
+            'flash-next-strata-iq3-s-daisy'])
 
     def test_startup_maintenance_recovery_and_unhealthy_runtime_block_switches(self):
         for filename, record in [('router-maintenance.json', {'reserved': True}),

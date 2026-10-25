@@ -503,6 +503,9 @@ class ConfigurationTests(unittest.TestCase):
             'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
             'flash-next-strata-two-card-iq3-s': 'strata-vision-296b59d2f73c',
             'flash-next-strata-iq3-xxs-daisy': 'strata-sm75-296b59d2f73c',
+            'flash-next-strata-iq3-xxs-daisy-tc': 'strata-sm75-296b59d2f73c',
+            'flash-next-strata-iq3-xxs-daisy-128k': 'strata-sm75-296b59d2f73c',
+            'flash-next-strata-iq3-s-daisy': 'strata-sm75-296b59d2f73c',
             EVERYDAY_FILE: 'qwen38-dual-836d571'}
         # Every profile file in the tree is accounted for: a configuration, or a model one names. A
         # file that is neither is a launch no configuration renders and no test renders either.
@@ -658,7 +661,9 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
             'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
             'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-            'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy'))
+            'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy',
+            'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
+            'flash-next-strata-iq3-s-daisy'))
         # Loading more than one model is a statement about cards -- one model on one text pair and
         # another on the other -- and not about which engine the first of them runs, which is why a
         # Strata configuration joined this set on 2026-10-20 without either 27B pair changing.
@@ -1334,10 +1339,11 @@ class EnvironmentEngineTests(unittest.TestCase):
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
         environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 6, 'the environment-interface configurations are the '
-            'call-recovery, conversation-cache and rope-rung ones, the two two-card arms, and the second '
-            'machine; the greedy preset and the route-tail skip left with their configurations on '
-            '2026-10-18, and their measurements are in docs/deployment.md')
+        self.assertEqual(len(environment), 9, 'the environment-interface configurations are the '
+            'call-recovery, conversation-cache and rope-rung ones, the two two-card arms, and the four '
+            'of the second machine, three of them added there on 2026-10-25; the greedy preset and the '
+            'route-tail skip left with their configurations on 2026-10-18, and their measurements are '
+            'in docs/deployment.md')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -1400,7 +1406,8 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
             self.assertEqual(sorted(names), sorted(declared),
                 '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
                 'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
-        self.assertEqual(sorted(seen), ['strata-daisy-iq3xxs/data', 'strata-pair-iq3s/data',
+        self.assertEqual(sorted(seen), ['strata-daisy-iq3s/data', 'strata-daisy-iq3xxs-128k/data',
+            'strata-daisy-iq3xxs-tc/data', 'strata-daisy-iq3xxs/data', 'strata-pair-iq3s/data',
             'strata-pair-iq4xs/data', 'strata-trial/data'])
 
 
@@ -1483,7 +1490,10 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on'),
             'flash-next-strata-two-card-iq4-xs': ('thinking', 'on'),
             'flash-next-strata-two-card-iq3-s': ('thinking', 'on'),
-            'flash-next-strata-iq3-xxs-daisy': ('thinking', 'on')}
+            'flash-next-strata-iq3-xxs-daisy': ('thinking', 'on'),
+            'flash-next-strata-iq3-xxs-daisy-tc': ('thinking', 'on'),
+            'flash-next-strata-iq3-xxs-daisy-128k': ('thinking', 'on'),
+            'flash-next-strata-iq3-s-daisy': ('thinking', 'on')}
         # Every configuration this engine serves, derived rather than remembered: the two-card probe is
         # a different topology, and a topology is not an exemption from stating a switch the run config
         # will otherwise inherit from whoever booted into this workspace last -- nor is being a
@@ -1507,7 +1517,10 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
             'flash-next-strata-two-card-iq4-xs': ('16384', 'off'),
             'flash-next-strata-two-card-iq3-s': ('16384', 'off'),
-            'flash-next-strata-iq3-xxs-daisy': ('off', 'off')}
+            'flash-next-strata-iq3-xxs-daisy': ('off', 'off'),
+            'flash-next-strata-iq3-xxs-daisy-tc': ('off', 'off'),
+            'flash-next-strata-iq3-xxs-daisy-128k': ('off', 'off'),
+            'flash-next-strata-iq3-s-daisy': ('off', 'off')}
         self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):
@@ -2114,9 +2127,9 @@ class MoreThanOneMachineTests(unittest.TestCase):
                     name + ' belongs to the machine it was measured on and to no other')
         self.assertEqual([name for name in CONFIGURATIONS if DAISY in
                 read(ROOT / 'config/profiles' / (name + '.json'))['hosts']],
-            ['flash-next-strata-iq3-xxs-daisy'],
-            'The second machine has the one configuration it has been measured for; a launch nobody '
-            'has run there is not something it is offered')
+            ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'],
+            'The second machine has the four configurations it has been measured for, the last three '
+            'measured there on 2026-10-25; a launch nobody has run there is not something it is offered')
 
     def test_a_definition_that_names_no_machine_is_refused(self):
         # A default of "every machine" is how a configuration ends up rendered on hardware it was
@@ -2137,14 +2150,16 @@ class MoreThanOneMachineTests(unittest.TestCase):
     def test_a_named_host_sees_only_the_configurations_that_name_it_back(self):
         registry = available_profiles(ROOT / 'config', second_machine())
         self.assertEqual([x['profile'] for x in registry['selectable']],
-            ['flash-next-strata-iq3-xxs-daisy'],
-            'a machine is offered the launches it was measured on, which is now one and not none')
+            ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc',
+                'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'],
+            'a machine is offered the launches it was measured on, which is now four and not none')
         self.assertEqual(sorted({m['model'] for c in registry['selectable'] for m in c['models']}),
-            [STRATA_DAISY], 'a machine is shown the models of the configurations it names, and no others')
+            ['qwen3.8-flash-next-iq3_s', STRATA_DAISY],
+            'a machine is shown the models of the configurations it names, and no others')
         # Scoping one of Rosalina's launches to this machine *adds* it: the machine's own configuration
         # does not make way for it, and the order is the registry's, which is the order the page shows.
         self.assertEqual(configurations_for(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']),
-            second_machine()), (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy'))
+            second_machine()), (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'))
 
     def test_a_host_whose_registry_is_empty_says_so(self):
         with self.assertRaisesRegex(RuntimeError, 'No configuration of this revision names this host'):
@@ -2182,7 +2197,8 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # the other configuration of this machine answers -- scoping a Rosalina launch to this host
         # puts two configurations on it, and between them the second machine's name goes unanswered.
         self.assertEqual([service['model'] for service in bundle['catalog']['offline_services']],
-            [STRATA_DAISY], 'the service the other configuration of this host publishes, with the reason')
+            ['qwen3.8-flash-next-iq3_s', STRATA_DAISY],
+            'the services the other configurations of this host publish, with the reason')
         self.assertEqual(bundle['catalog']['offline_services'][0]['reason'],
             'not_loaded_by_this_configuration')
 
@@ -2304,7 +2320,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
 
         machine = blocks(second_machine())
         self.assertEqual([block[0].split(':')[0] for block in machine],
-            ['flash-next-strata-iq3-xxs-daisy'])
+            ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'])
         self.assertEqual(len(machine[0]), 2, 'a configuration is listed with the models it loads')
         self.assertIn('every text GPU of this host', machine[0][1])
         self.assertIn('daisy', machine[0][1], 'the service ID a client of this machine sends')

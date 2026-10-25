@@ -547,11 +547,17 @@ class ControllerTests(unittest.TestCase):
              # The second machine's configuration is listed on a host that does not name itself, which
              # is what an unscoped host means: the whole registry, with a reason on the rows it cannot
              # run. It is a configuration, not a candidate, and the page says which one it is.
-             'flash-next-strata-iq3-xxs-daisy'])
+             'flash-next-strata-iq3-xxs-daisy',
+              # The three trial configurations of that machine hold every card for the same
+              # reason: each fills both of them with cached experts.
+              'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
+              'flash-next-strata-iq3-s-daisy'])
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
             'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
             'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)',
-            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)'])
+            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)',
+             'Qwen3.8 Flash-Next IQ3_XXS TC (64K)', 'Qwen3.8 Flash-Next IQ3_XXS (128K)',
+             'Qwen3.8 Flash-Next IQ3_S (64K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one
@@ -565,7 +571,7 @@ class ControllerTests(unittest.TestCase):
         # the first configuration whose display name says something about the hardware. Two rows both
         # reading "Flash-Next (256K)" would be a page where the operator's choice is a coin flip.
         self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144, 524288, 262144, 262144, 65536])
+            [163840, 163840, 262144, 262144, 524288, 262144, 262144, 65536, 65536, 131072, 65536])
         # The Flash-Next configurations, named by prefix rather than by a trailing slice: what tells an
         # operator which of them is which is the variant label, and it also says what each one turns
         # on, because that is the only choice left to make here.
@@ -576,7 +582,10 @@ class ControllerTests(unittest.TestCase):
              'card sampling + call recovery + parked conversations + YaRN 2.0 window',
              'two cards, nothing else changed',
              'two cards, the 3.5-bit pack',
-             'two Turing cards, the 64K window'])
+             'two Turing cards, the 64K window',
+              'two Turing cards, the 64K window, tensor-core prompt path',
+              'two Turing cards, the 128K window, tensor-core prompt path',
+              'two Turing cards, the 64K window, the IQ3_S tier'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
@@ -589,11 +598,12 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['selectable'][0]['model_service_ids'], ['daytime', 'local-active'])
         # How many models a configuration loads is a fact about its file, and this is the one place the
         # page says it: one across the machine, two with the cards divided, and the same second model
-        # named by three of these eight files rather than carried by all eight. Nothing is always
+        # named by three of these eleven files rather than carried by all eleven. Nothing is always
         # included, and a row that stops naming a model is a row that stops loading it.
         self.assertEqual([[m['model'] for m in x['models']] for x in configs['selectable']],
             [[CODING, EVERYDAY], [CODING_Q6K, EVERYDAY], [STRATA_SOLO], [STRATA_SOLO], [STRATA_SOLO],
-                [STRATA_SOLO, EVERYDAY], [STRATA_PAIR, EVERYDAY], [STRATA_DAISY]])
+                [STRATA_SOLO, EVERYDAY], [STRATA_PAIR, EVERYDAY], [STRATA_DAISY], [STRATA_DAISY],
+                [STRATA_DAISY], ['qwen3.8-flash-next-iq3_s']])
         everyday = configs['selectable'][0]['models'][1]
         self.assertEqual((everyday['display_name'], everyday['service_ids'], everyday['gpu_names']),
             ('Qwen3.8 27B Abliterated Q6_K (96K)', ['nighttime'], HOST['gpu_names']['nighttime']))
@@ -675,8 +685,9 @@ class ControllerTests(unittest.TestCase):
         status = controller.status()
         self.assertEqual([x['profile'] for x in status['configurations']['selectable']],
             ['flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s',
-                'flash-next-strata-iq3-xxs-daisy'],
-            'the two configurations just scoped to this machine join the one that was written for it, '
+                'flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc',
+                'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'],
+            'the two configurations just scoped to this machine join the ones written for it, '
             'in registry order; what a host is offered is its share and nothing else')
         self.assertEqual(status['configurations']['active'], 'flash-next-strata-two-card-iq4-xs')
         self.assertEqual(status['host']['text_gpus'], 2)
@@ -686,7 +697,8 @@ class ControllerTests(unittest.TestCase):
         # an unscoped host is not consulted for it, because a host that names itself is offered only
         # its share of the registry.
         self.assertEqual([(x['model'], x['aliases'], x['reason']) for x in status['offline_services']],
-            [(STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
+            [('qwen3.8-flash-next-iq3_s', ['daisy'], 'not_loaded_by_this_configuration'),
+                (STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
         # With nothing else to load, the first configuration of this host is the one to fall back to.
         self.assertEqual(controller.desired()['profile'], 'flash-next-strata-two-card-iq4-xs')
 
@@ -718,7 +730,8 @@ class ControllerTests(unittest.TestCase):
         # fallback stated out loud rather than a bug in the catalog: an unscoped host is offered every
         # configuration there is, so it is responsible for saying which of their IDs are not loaded.
         self.assertEqual([(x['model'], x['aliases'], x['reason']) for x in catalog['offline_services']],
-            [(STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
+            [('qwen3.8-flash-next-iq3_s', ['daisy'], 'not_loaded_by_this_configuration'),
+                (STRATA_DAISY, ['daisy'], 'not_loaded_by_this_configuration')])
         # A previous release's bundle predates these fields; recovery still publishes an accurate id.
         legacy = copy.deepcopy(self.bundle)
         del legacy['catalog']['configuration'], legacy['catalog']['offline_services']
@@ -811,7 +824,8 @@ class ExclusiveProfileTests(unittest.TestCase):
         # holding that name is told the service is off. The second machine's own service ID is in the
         # list, because this fixture's host names no machine and is therefore offered the whole registry.
         self.assertNotIn('nighttime', [a for x in catalog['offline_services'] for a in x['aliases']])
-        self.assertEqual([x['model'] for x in catalog['offline_services']], [STRATA_DAISY])
+        self.assertEqual([x['model'] for x in catalog['offline_services']],
+            ['qwen3.8-flash-next-iq3_s', STRATA_DAISY])
         self.assertEqual([m['aliases'] for m in catalog['models']], [['local-active', 'daytime', 'nighttime']])
         self.assertEqual(events[-1], ('drain', False))
         tx = read(self.state / 'transaction.json')
@@ -856,7 +870,8 @@ class ExclusiveProfileTests(unittest.TestCase):
         """
         # The second machine's own service ID is in both lists: this fixture's host names no machine, so
         # it is offered the whole registry and answers for all of it.
-        self.assertEqual([x['model'] for x in self.c.status()['offline_services']], [STRATA_DAISY])
+        self.assertEqual([x['model'] for x in self.c.status()['offline_services']],
+            ['qwen3.8-flash-next-iq3_s', STRATA_DAISY])
         self.c.transition(self.SOLO)
         status = self.c.status()
         self.assertTrue(status['ready'])

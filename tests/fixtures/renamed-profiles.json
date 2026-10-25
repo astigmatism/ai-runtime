@@ -44,5 +44,23 @@
     "compose_sha256": "9b5facfe7a9b8f188291bf33f9c5ff09ac57d6ff1f3b002980f4900a8f769342",
     "coding_service_sha256": "acf268c83eeb509b884c59e2983366dd991f6515e9456f714beef6d3db4b53c3",
     "note": "New on 2026-10-20, not a rename: the first configuration of the second machine, and the first entry in this file pinned on a host that is not Rosalina. Its compose digest matters for the same reason the two-card probe's does -- it is the cheapest thing that notices an edit moving a launch flag, a mount or a variable along with it -- with one difference worth naming: this configuration has no second resident to protect, because the machine it runs on has one pair of cards and every configuration of it runs alone. The digest is therefore this launch entire, and the host it was computed on is two RTX 2080 Ti and no vision GPU, which is why `fixture_host` exists."
+  },
+  "flash-next-strata-iq3-xxs-daisy-tc": {
+    "previous_id": null,
+    "compose_sha256": "1b66390308c8c9f3f1c10deac70522025b87289607546d554fdd91ecda253492",
+    "coding_service_sha256": "13b6255d4fb969c2c531088dcaa294d90356ee48c882c3f701fe3c8bce6c7fba",
+    "note": "New on 2026-10-25, not a rename: the tensor-core prompt path measured on the second machine on that date (+11 % prompt, 10 % less time to the first token of a 58k prompt, decode inside the A/A band, answers identical). Pinned on the second machine for the same reason as the configuration it is one line apart from."
+  },
+  "flash-next-strata-iq3-xxs-daisy-128k": {
+    "previous_id": null,
+    "compose_sha256": "1e20e57d5b2ca0d1a0af414f9cc42c4eeefd5be47595bac06f76356391b2d75f",
+    "coding_service_sha256": "725196f6970611c67367b75a43fb36a38e3e31f6e998304417717005d0277b67",
+    "note": "New on 2026-10-25, not a rename: the 131,072-token window, measured serving a 118,514-token prompt on the 64 GB box with the tensor-core prompt path under it. Pinned because a window this size is exactly what a stray argument edit moves without saying so."
+  },
+  "flash-next-strata-iq3-s-daisy": {
+    "previous_id": null,
+    "compose_sha256": "2c7a10c91a3c20623ead952b6a2754a061775cee39a0d3ff9f0526e5d9153ca2",
+    "coding_service_sha256": "979c2a293958b720014aab94b934672f3ca05876680cc367d18cd48cca225a60",
+    "note": "New on 2026-10-25, not a rename: the IQ3_S tier on the second machine, measured at 6.6 % below IQ3_XXS for 87.69 % top-1 against 84.46 %, and the first configuration here whose second artifact is a hardlink to another tier's PLE shard rather than a second copy."
   }
 }
