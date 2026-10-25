@@ -319,19 +319,34 @@ class Power:
         loaded on it. It does need the machine not to be in the middle of changing its own shape,
         because a drain moving models across cards and a hand changing their clocks is two hands.
         """
+        # Both constants are the runtime's own, taken from the modules that write them, and read in the
+        # same order `Operations.blockers` reads them: a power write and a switch are refused for the
+        # same reasons or the two surfaces disagree about what the machine is doing. They are imported
+        # here rather than at the top of the file because `controller` is what imports this module.
+        from .controller import PENDING_PHASES
+        from .operations import OPERATION_ID
+
         c = self.controller
         if c.system.readonly:
             return 'The runtime is inspecting this machine and is not writing to the cards.'
         if c.load('router-maintenance.json', {}).get('reserved'):
             return 'A router deployment reserves the runtime.'
+        # A transaction does not delete itself when it works: it stays on disk with its terminal
+        # `succeeded`, which is not pending and must not be read as if it were. Reading it that way is
+        # not a refusal in a corner case — it refuses every card on every machine that has ever
+        # finished one, which is what the first deploy of this feature did on Rosalina.
+        if c.load('transaction.json', {}).get('phase') in PENDING_PHASES:
+            return 'Runtime maintenance or recovery must finish first.'
         if c.load('update-job.json', {}).get('phase') in ('prepared', 'controller-replacement'):
             return 'A source deployment must finish or be recovered first.'
         pointer = c.load('latest-operation.json', {})
-        operation = c.load('operations/' + pointer.get('id', '') + '.json') if pointer.get('id') else None
+        wanted = pointer.get('id')
+        # Guarded the way `Operations.read` guards it, because this runs on every status poll, and a
+        # pointer with something unexpected in it means "no operation", not an exception in the page.
+        operation = (c.load('operations/' + wanted + '.json')
+                     if isinstance(wanted, str) and OPERATION_ID.fullmatch(wanted) else None)
         if (operation or {}).get('status') == 'running':
             return 'A configuration switch is in progress.'
-        if c.load('transaction.json', {}).get('phase') not in (None, 'complete'):
-            return 'Runtime maintenance or recovery must finish first.'
         try:
             with lock(c.state / LOCK):
                 pass

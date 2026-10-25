@@ -357,12 +357,26 @@ class PowerTests(unittest.TestCase):
 
     def test_the_machine_being_busy_refuses_a_write_the_way_a_switch_does(self):
         self.cached(MEASURED, stock_read(MEASURED, CardAgent.names[MEASURED]))
-        self.c.save('transaction.json', {'phase': 'drain'})
+        self.c.save('transaction.json', {'phase': 'draining'})
         with self.assertRaises(PowerError) as refused:
             self.power.write({'gpu': MEASURED, 'action': 'apply', 'rung': 'safe'})
         self.assertEqual((refused.exception.status, refused.exception.code), (409, 'busy'))
         self.assertIn('maintenance', str(refused.exception).lower())
-        self.c.save('transaction.json', {'phase': 'complete'})
+        # A transaction that finished is not a machine still changing shape. It stays on disk with its
+        # terminal phase — `succeeded`, in this house's vocabulary, not `complete` — and a switch reads
+        # that as finished through `PENDING_PHASES`, so this has to read it the same way. Getting it
+        # wrong is not a refusal in a corner case: the first real deploy of this feature landed on a
+        # host whose transaction said `succeeded`, and every card there was refused forever.
+        self.c.save('transaction.json', {'phase': 'succeeded'})
+        self.assertTrue(self.power.availability()['available'], str(self.power.availability()))
+        self.c.save('latest-operation.json', {'id': '../transaction'})
+        self.assertTrue(self.power.availability()['available'],
+            'a pointer that names no operation is no operation, not an exception in the page')
+        self.c.save('latest-operation.json', {'id': 'f' * 32})
+        self.assertTrue(self.power.availability()['available'])
+        self.c.save('latest-operation.json', {'id': '27b79938-5be3-495d-b1b6-cad971efefdf'})
+        self.c.save('operations/27b79938-5be3-495d-b1b6-cad971efefdf.json', {'status': 'running'})
+        self.assertIn('switch', str(self.power.availability()['reason']))
         self.c.save('update-job.json', {'phase': 'prepared', 'started_at': '2026-10-25T00:00:00+00:00'})
         with self.assertRaises(PowerError) as refused:
             self.power.write({'gpu': MEASURED, 'action': 'apply', 'rung': 'safe'})

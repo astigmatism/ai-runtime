@@ -370,11 +370,15 @@ class PowerHttpTests(OperationFixture, unittest.TestCase):
         self.assertEqual(self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'apply',
             'rung': 'safe', 'override': True})[0], 200)
         self.system.containers['qwen38-daytime']['State']['Running'] = True
-        # A machine in the middle of changing its own shape says so, and the page keeps the draft.
-        self.c.save('transaction.json', {'phase': 'drain'})
+        # A machine in the middle of changing its own shape says so, and the page keeps the draft. The
+        # phases are the runtime's own: a transaction that finished stays on disk saying `succeeded`,
+        # and a page that read that as busy would never let anybody write a card again.
+        self.c.save('transaction.json', {'phase': 'draining'})
         code, reply = self.http('/api/gpu-power', {'gpu': test_power.MEASURED, 'action': 'revert'})
         self.assertEqual((code, reply['code']), (409, 'busy'))
-        self.c.save('transaction.json', {'phase': 'complete'})
+        self.c.save('transaction.json', {'phase': 'succeeded'})
+        self.assertEqual(self.http('/api/gpu-power', {'gpu': test_power.MEASURED,
+            'action': 'revert'})[0], 200)
         # And a request that is not about a card this machine reports is a 400, not a guess.
         code, reply = self.http('/api/gpu-power', {'gpu': 'GPU-00000000-0000-0000-0000-000000000000',
             'action': 'revert'})
