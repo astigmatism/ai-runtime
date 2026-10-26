@@ -2,7 +2,7 @@
   "id": "flash-next-strata-two-card-iq3-s",
   "hosts": ["rosalina"],
   "models": ["flash-next-strata-two-card-iq3-s", "everyday"],
-  "display_name": "Qwen3.8 Flash-Next Two-Card IQ3_S",
+  "display_name": "Qwen3.8 Flash-Next IQ3_S, two cards",
   "variant_label": "two cards, the 3.5-bit pack",
   "engine": "strata-vision-296b59d2f73c",
   "container_name": "qwen38-daytime",

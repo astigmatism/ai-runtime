@@ -22,8 +22,8 @@ import uuid
 from . import provision as provision_tool
 from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, PAIR_GROUPS,
     available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
-    gpu_architectures, host_id, model_id, models_of, nameable_models, read, read_aliases, render,
-    require, resolve_profile, router_target, service_engine)
+    gpu_architectures, host_display_name, host_id, model_id, models_of, nameable_models, read,
+    read_aliases, render, require, resolve_profile, router_target, service_engine)
 from .power import Power
 from .system import System, atomic_json, future, lock, now
 
@@ -1181,7 +1181,7 @@ class Controller:
         # publish the document they were handed, and a machine that had been renamed in the meantime
         # would otherwise put the old name back and keep it, because publication is an event and a
         # successful record of a stale name is never retried.
-        names = catalog_names(self.config_dir, self.host, self.aliases()[0])
+        names = catalog_names(self.config_dir, self.host, self.aliases()[0], bundle['profile'])
         for entry in catalog.get('offline_services', []):
             entry['display_name'] = names.get(entry['model'], entry['display_name'])
         for entry in catalog['models']:
@@ -1310,10 +1310,12 @@ class Controller:
         `display_name` for an operator-facing label — and refuses it unless the id is the machine the
         push authenticated as. Declaring the identity in the document, and not only in the URL and
         token that carry it, is what lets a shared router label each model by where it runs and lets
-        a client tell two machines apart when their model names collide.
+        a client tell two machines apart when their model names collide. The label is the same one that
+        prefixes this machine's model names, and it leaves here trimmed: a padded display name is a
+        refused publication, and a refusal costs the machine its whole catalog.
         """
         identity = {'id': self.target['host']}
-        name = self.host.get('display_name')
+        name = host_display_name(self.host)
         if name:
             identity['display_name'] = name
         return identity
@@ -1942,7 +1944,7 @@ class Controller:
         aliases, alias_note = self.aliases()
         # `published_names` and not `names`: the loop below already has a `names`, and it maps GPU
         # UUIDs to card names, which is a different question with a similar answer.
-        published_names = catalog_names(self.config_dir, self.host, aliases)
+        published_names = catalog_names(self.config_dir, self.host, aliases, bundle['profile'])
         result = {'revision': self.revision, 'deployed_revision': active['revision'] if active else None,
             'profile': bundle['profile'], 'ready': False, 'services': [],
             'host': {**host_report, 'gpu_inventory': self.gpu_inventory()},

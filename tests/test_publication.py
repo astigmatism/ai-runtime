@@ -286,6 +286,20 @@ class PublisherTests(unittest.TestCase):
         method, path, body, headers = self.system.push()[0]
         self.assertEqual(body['host'], {'id': 'rosalina', 'display_name': 'Rosalina'})
 
+    def test_a_host_label_is_pushed_trimmed_because_a_padded_one_is_refused(self):
+        # `host.json` is edited by hand, and the router is not tolerant about the label in the `host`
+        # block: a display name that is blank or still wearing the spaces around it is a refused
+        # publication. A machine must not lose its whole catalog to a space bar, so the label leaves
+        # here trimmed, and a label with nothing usable in it is not sent at all.
+        for label, expected in [('  Rosalina  ', 'Rosalina'), ('Rosalina\n', 'Rosalina'),
+                ('   ', None), ('', None), ('x' * 60, None)]:
+            with self.subTest(label=repr(label)):
+                controller = self.build(host_changes={'display_name': label})
+                controller.publish(self.bundle)
+                body = self.system.push()[0][2]
+                self.assertEqual(body['host'], {'id': 'rosalina',
+                    **({} if expected is None else {'display_name': expected})})
+
     def test_a_catalog_naming_another_machine_is_refused_at_the_door(self):
         # The host block is worth trusting because the door checks it: an id that is not the machine
         # the push authenticated as is a refusal, not a label taken on faith.

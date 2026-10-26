@@ -2,7 +2,7 @@
   "id": "flash-next-strata-solo-thinking-recovery-cache",
   "hosts": ["rosalina"],
   "models": ["flash-next-strata-solo-thinking-recovery-cache"],
-  "display_name": "Qwen3.8 Flash-Next",
+  "display_name": "Qwen3.8 Flash-Next UD-IQ4",
   "variant_label": "card sampling + call recovery + parked conversations",
   "engine": "strata-vision-296b59d2f73c",
   "container_name": "qwen38-daytime",

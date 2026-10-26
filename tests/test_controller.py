@@ -290,6 +290,38 @@ class ControllerTests(unittest.TestCase):
             ['Qwen3.8 27B Q8 (160K)', 'Night owl'])
         self.assertEqual(json.loads((self.state / 'aliases.json').read_text())['aliases'], {'qwen3.8-27b-abliterated-q6_k': 'Night owl'})
 
+    def test_a_published_name_says_which_machine_the_model_runs_on(self):
+        # A client reads one model list for a household of machines, so the name a machine publishes
+        # says where the model is: the operator's word for the box when they chose one, and the slug it
+        # states otherwise. Nothing is renamed in this machine -- these are the defaults, published by
+        # a machine that has no aliases written for it.
+        serving = ['Rosalina: Qwen3.8 27B Q8 (160K)', 'Rosalina: Qwen3.8 27B Abliterated Q6_K (96K)']
+        self.c.host = {**self.c.host, 'host_id': 'rosalina', 'display_name': 'Rosalina'}
+        self.c.publish(self.active['bundle'])
+        self.assertEqual([x['display_name'] for x in self.published()['models']], serving)
+        self.assertEqual([x['name'] for x in self.c.status()['services']], serving)
+        # A rename is the operator naming the model, machine and all, and clearing it brings the
+        # machine back as part of the default it was never separate from.
+        self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', 'Workhorse')
+        self.assertEqual([x['display_name'] for x in self.published()['models']], ['Workhorse', serving[1]])
+        self.c.set_alias('qwen3.8-27b-q8_0-tensor-next', None)
+        self.assertEqual([x['display_name'] for x in self.published()['models']], serving)
+        # A machine that states only its slug is still a machine, and says so in the same shape.
+        self.c.host = {k: v for k, v in self.c.host.items() if k != 'display_name'}
+        self.c.publish(self.active['bundle'])
+        self.assertEqual([x['display_name'] for x in self.published()['models']],
+            ['rosalina: Qwen3.8 27B Q8 (160K)', 'rosalina: Qwen3.8 27B Abliterated Q6_K (96K)'])
+        # And a machine that has never said which one it is says nothing about itself: the names it
+        # published before there was a second box, unchanged, and a router with one machine in it
+        # reads exactly the document it read yesterday.
+        self.c.host = {k: v for k, v in self.c.host.items() if k != 'host_id'}
+        self.c.publish(self.active['bundle'])
+        self.assertEqual([x['display_name'] for x in self.published()['models']],
+            ['Qwen3.8 27B Q8 (160K)', 'Qwen3.8 27B Abliterated Q6_K (96K)'])
+        # The name says where a model runs; what a client sends is untouched by it.
+        self.assertEqual([x['model'] for x in self.published()['models']],
+            [x['model'] for x in self.bundle['catalog']['models']])
+
     def test_naming_a_model_touches_no_launch_and_needs_no_drain(self):
         # A name is not a release. The launch this machine is serving with stays the byte-for-byte
         # document it was switched with, and no container is asked to do anything about a rename.
@@ -548,17 +580,21 @@ class ControllerTests(unittest.TestCase):
              # is what an unscoped host means: the whole registry, with a reason on the rows it cannot
              # run. It is a configuration, not a candidate, and the page says which one it is.
              'flash-next-strata-iq3-xxs-daisy',
-              # The three trial configurations of that machine hold every card for the same
-              # reason: each fills both of them with cached experts.
-              'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
-              'flash-next-strata-iq3-s-daisy'])
+             # The three trial configurations of that machine hold every card for the same reason: each
+             # fills both of them with cached experts.
+             'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
+             'flash-next-strata-iq3-s-daisy'])
+        # Each name says which pack it is, so the two 256K rows that differ only by whether
+        # conversations are parked are the pair the page still separates with its variant label, and the
+        # rows that differ by cards say so where a person reads.
         self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
-            'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)',
-            'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)',
-             'Qwen3.8 Flash-Next IQ3_XXS, faster prompts (64K)',
-             'Qwen3.8 Flash-Next IQ3_XXS, long context (128K)',
-             'Qwen3.8 Flash-Next IQ3_S, higher quality (64K)'])
+            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next UD-IQ4 (256K)',
+            'Qwen3.8 Flash-Next UD-IQ4 (256K)', 'Qwen3.8 Flash-Next UD-IQ4 (512K)',
+            'Qwen3.8 Flash-Next UD-IQ4, two cards (256K)',
+            'Qwen3.8 Flash-Next IQ3_S, two cards (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)',
+            'Qwen3.8 Flash-Next IQ3_XXS, faster prompts (64K)',
+            'Qwen3.8 Flash-Next IQ3_XXS, long context (128K)',
+            'Qwen3.8 Flash-Next IQ3_S, higher quality (64K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one

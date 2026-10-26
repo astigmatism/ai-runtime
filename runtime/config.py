@@ -129,6 +129,10 @@ def read(path):
 # that drifts -- aimed at the specific failure of rendering a measured launch onto hardware it was
 # never measured on, which spends a drain to arrive at a model that cannot start.
 HOST_ID = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?')
+# One budget for every name a person reads in a hurry -- a machine's label, an operator's rename --
+# because they are read in the same picker, and the part of a name that distinguishes two rows is the
+# end of it, which is what a long machine label pushes off the line.
+NAME_MAX = 48
 
 
 def host_id(host):
@@ -146,6 +150,38 @@ def host_id(host):
         "host_id, if a host states it at all, is a lowercase slug of letters, digits and '-', not a "
         "hostname, a path or a GPU UUID")
     return value
+
+
+def host_display_name(host):
+    """The operator's own word for this machine, or None when they have not chosen one.
+
+    It is the label a shared router shows for the machine and the prefix every model of the machine is
+    published with, so it is the one place both read it. It is handed on **trimmed**: a `host` block
+    whose display name is blank or padded is a refused publication, and a refusal there costs the
+    machine its whole catalog, not just the label an operator fat-fingered into a private setting. A
+    label of no usable shape -- blank, not one printable line, longer than any other name here -- is
+    not used at all, which leaves the machine called by the slug it also states.
+    """
+    value = (host or {}).get('display_name')
+    if not isinstance(value, str) or not value.strip() or not value.strip().isprintable():
+        return None
+    value = value.strip()
+    return value if len(value) <= NAME_MAX else None
+
+
+def host_name(host):
+    """What this machine is called when something of it needs a name said out loud.
+
+    The operator's label when they gave one and the `host_id` slug otherwise, because both are facts
+    the machine states about itself and a slug is still the truth a client can act on. None only when
+    the machine names itself neither way: the house rule for an unstated fact is that it is not
+    invented, and a model published by a machine that has not said which one it is gets the name it
+    always had.
+
+    Read tolerantly, like the rest of what a person edits in `host.json` -- a label that is not a
+    printable line falls back to the slug rather than becoming a page that will not load.
+    """
+    return host_display_name(host) or host_id(host)
 
 
 ENV_NAME = re.compile(r'[A-Z][A-Z0-9_]*')
@@ -355,25 +391,32 @@ def model_id(definition):
     return definition['arguments']['--alias']
 
 
-def default_name(definition):
-    """What a model is called when nobody has renamed it: the model and its session length.
+def default_name(definition, host=None):
+    """What a model is called when nobody has renamed it: the machine, the model, and its session length.
 
     This is the whole naming rule, and it is one rule on purpose. The pair of parentheses is what a
     person reads first when two configurations are the same model at two windows, which is a question
-    they ask from the page, the router's model list, and a terminal at the same rate.
+    they ask from the page, the router's model list, and a terminal at the same rate. The machine in
+    front of it is what a household with more than one box needs next: two machines can launch the same
+    weights, and a model list that cannot say which row answers from where is a list a person has to
+    remember. A machine that has not said which one it is says nothing, which is the name it had
+    before there was more than one machine.
     """
-    return f"{definition['display_name']} ({context_label(definition['context_tokens'])})"
+    name = f"{definition['display_name']} ({context_label(definition['context_tokens'])})"
+    machine = host_name(host)
+    return f"{machine}: {name}" if machine else name
 
 
-def display_name(definition, aliases=None):
+def display_name(definition, aliases=None, host=None):
     """The published display identity; the launch catalog, the CLI listing and the status page share it.
 
     An operator alias wins over the default, and nothing else about the launch changes when one is
     set. It is a name and not an identity: the model id, the service IDs a client sends, the Compose
     project and the container names are untouched by it, so renaming never drains, restarts or
-    re-renders anything.
+    re-renders anything. A rename replaces the name the whole way, machine included: it is the operator
+    saying what to call this model, and not a prefix handed to the default.
     """
-    return (aliases or {}).get(model_id(definition)) or default_name(definition)
+    return (aliases or {}).get(model_id(definition)) or default_name(definition, host)
 
 
 # Operator names live with the rest of the machine's private state, not in a profile file: a profile
@@ -383,7 +426,7 @@ def display_name(definition, aliases=None):
 # names for models this machine does not serve, which is what it is.
 ALIASES_FILE = 'aliases.json'
 ALIASES_VERSION = 2
-ALIAS_MAX = 48
+ALIAS_MAX = NAME_MAX
 
 
 def nameable_models(config_dir, host=None):
@@ -446,14 +489,32 @@ def read_aliases(path, nameable=None):
     return aliases, note
 
 
-def catalog_names(config_dir, host=None, aliases=None):
-    """{model id: display name} for every configuration of this host, as published today.
+def catalog_names(config_dir, host=None, aliases=None, profile=None):
+    """{model id: display name} as this machine publishes its catalog right now.
 
     Read back at publish time rather than baked into a stored bundle, because a restoration and a
     re-announcement publish the bundle they were handed and a name is not part of what they restore:
     a machine that comes back from a failed switch would otherwise republish a name it stopped using
     and stay that way, since publication is an event and a stale-but-successful record is not retried.
+
+    `profile` says *which* configuration is being published, and it is not a nicety. One model id can
+    be launched by several configurations of one machine that describe it differently -- the same
+    weights at two session lengths, or on two cards instead of four -- and a document about the launch
+    that is running should call it what the launch that is running calls it. Without a profile there is
+    no launch in hand to ask, so the registry answers and the first definition of each model stands.
     """
+    config_dir = Path(config_dir)
+    if profile is not None:
+        try:
+            definition = read(config_dir / 'profiles' / (resolve_profile(profile) + '.json'))
+            launched = {model_id(model): display_name(model, aliases, host)
+                for model in models_of(config_dir, definition)}
+        except Exception:
+            # A release can restore a bundle whose configuration has since left the registry, and a
+            # machine coming back is not the moment to refuse a name because a name went missing.
+            launched = {}
+        if launched:
+            return launched
     return {model: summary['display_name']
         for model, summary in registry_summaries(config_dir, host, aliases).items()}
 
@@ -1227,7 +1288,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     entry.update(model=options['--alias'], context_length=ctx,
         total_context_length=ctx * slots, max_active_requests=slots, gpu_uuids=text_devices,
         model_path=targets[model_target], backend_revision=engine['revision'],
-        display_name=display_name(definition, aliases), gpu_names=gpu_names(host, definition),
+        display_name=display_name(definition, aliases, host), gpu_names=gpu_names(host, definition),
         source='local-ai-runtime', updated_at=None)
     # What the profile declares is what this configuration is for; what the host has is what it
     # delivers, and the router is published the second. A profile that promises pictures on a host
@@ -1275,7 +1336,8 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
     return {'profile': definition['id'],
         'models': models,
         'service_ids': sorted({sid for model in models for sid in model['service_ids']}),
-        'display_name': display_name(definition, aliases), 'default_name': default_name(definition),
+        'display_name': display_name(definition, aliases, host),
+        'default_name': default_name(definition, host),
         **({'alias': aliases[model_id(definition)]}
             if (aliases or {}).get(model_id(definition)) else {}),
         'model': model_id(definition), 'context_tokens': tokens, 'engine': definition['engine'],
@@ -1360,8 +1422,8 @@ def model_summary(config_dir, definition, shared, host=None, aliases=None):
     engine = shared['engines'][definition['engine']]
     options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
         else dict(definition['arguments'])
-    return {'model': model_id(definition), 'display_name': display_name(definition, aliases),
-        'default_name': default_name(definition),
+    return {'model': model_id(definition), 'display_name': display_name(definition, aliases, host),
+        'default_name': default_name(definition, host),
         **({'alias': aliases[model_id(definition)]}
             if (aliases or {}).get(model_id(definition)) else {}),
         'context_tokens': definition['context_tokens'],
@@ -1579,7 +1641,7 @@ def render(config_dir, host, profile, aliases=None):
             backend_revision=engine['revision'], fit_target=options['--fit'],
             global_ram_prompt_cache_mib=int(options['--cache-ram']),
             kv_cache={'unified': False, 'key_type': options['--cache-type-k'], 'value_type': options['--cache-type-v']},
-            display_name=display_name(definition, aliases),
+            display_name=display_name(definition, aliases, host),
             # Card names of the text GPUs, in the same order as text_gpu_uuids/gpu_uuids; the
             # router publishes names and counts but never UUIDs.
             gpu_names=gpu_names(host, definition),

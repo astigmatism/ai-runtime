@@ -1,5 +1,6 @@
 {
   "host_id": "second-machine",
+  "display_name": "Second Machine",
   "gpu_architectures": [
     "75"
   ],

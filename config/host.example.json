@@ -1,5 +1,6 @@
 {
   "host_id": "REPLACE-host-id",
+  "display_name": "REPLACE-machine-name",
   "gpu_architectures": ["86", "89"],
   "model_root": "/home/operator/ai/models",
   "router_state_dir": "/home/operator/apps/local-ai-ollama-stack/runtime/router",

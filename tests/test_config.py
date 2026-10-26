@@ -8,11 +8,12 @@ import unittest
 
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
 from runtime.system import atomic_json
-from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT,
+from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT, NAME_MAX,
     DEFAULT_PROFILE, PROFILE_ALIASES, RETIRED_PROFILES,
     ALIASES_VERSION, available_profiles, belongs_to_host, catalog_names, clean_alias,
-    configurations_for, is_exclusive, model_id, models_of, nameable_models,
-    default_name, default_profile, digest, display_name, engine_interface, merge_settings, read,
+    configurations_for, host_display_name, host_name, is_exclusive, model_id, models_of,
+    nameable_models, default_name, default_profile, digest, display_name, engine_interface,
+    merge_settings, read,
     power_plan, power_plans, power_request, power_rung, read_aliases, read_power_registry, render,
     resolve_profile, service_engine, service_key, text_gpus, unknown_profile)
 
@@ -80,6 +81,10 @@ EVERYDAY_FILE = 'everyday'
 OWN = {name: service_key(profile_file(name)) for name in CONFIGURATIONS}
 # Every profile file the revision ships: the configurations, and the models their lists name.
 DEFINITIONS = tuple(sorted(path.stem for path in (ROOT / 'config/profiles').glob('*.json')))
+# Daisy's own configuration, named by its file rather than by the model id it loads.
+DAISY_PROFILE = 'flash-next-strata-iq3-xxs-daisy'
+
+
 ENGINES = read(ROOT / 'config/shared.json')['engines']
 # The one configuration that is not llama.cpp, and the only one that owns every card. Its engine is
 # configured by the environment, so the catalog fields that describe a flag the engine was handed (KV
@@ -677,9 +682,20 @@ class RegistryTests(unittest.TestCase):
             [NAMED[name] for name in CONFIGURATIONS])
         for name in CONFIGURATIONS:
             with self.subTest(profile=name):
-                entry = next(x for x in registry['selectable'] if x['profile'] == name)
-                rendered = render(ROOT / 'config', host_for(name), name)
+                # One machine on both sides of the comparison, because a name now says which machine
+                # it is talking about: a registry read on an unscoped host and a render on the machine
+                # the definition names are two statements, and this test is only worth anything when
+                # both are made about the same box.
+                host = host_for(name)
+                entry = next(x for x in available_profiles(ROOT / 'config', host)['selectable']
+                    if x['profile'] == name)
+                rendered = render(ROOT / 'config', host, name)
                 model = next(m for m in rendered['catalog']['models'] if m['model'] == entry['model'])
+                # And both say where the model runs: the machine the host settings name it by, on the
+                # front of the name, on the page's registry row and in the published catalog alike.
+                self.assertTrue(entry['display_name'].startswith(entry['default_name']))
+                self.assertTrue(entry['default_name'].startswith(host_name(host) + ': '),
+                    entry['default_name'])
                 engine = service_engine(rendered, OWN[name])
                 self.assertEqual(entry['display_name'], model['display_name'])
                 self.assertEqual(entry['context_tokens'], model['context_length'])
@@ -1997,6 +2013,104 @@ class ConfigurationNamingTests(unittest.TestCase):
                 # the same model in two configurations is one thing to name.
                 self.assertEqual(model_id(definition), definition['arguments']['--alias'])
 
+    def test_the_default_name_names_the_machine_the_model_and_the_session_size(self):
+        # A household with more than one machine needs the name to say which machine, because two boxes
+        # can launch the same weights and a picker that cannot tell a row from where it answers is a
+        # picker a person has to remember. The machine is named by its own settings: the operator's word
+        # for it when they chose one, the slug it states otherwise, and nothing at all when it has said
+        # neither -- which is the name it had before there was a second machine, and what an unstated
+        # fact has always meant here.
+        definition = profile_file(DAISY_PROFILE)
+        plain = definition['display_name'] + ' (' + str(definition['context_tokens'] // 1024) + 'K)'
+        self.assertEqual(default_name(definition, {'host_id': DAISY, 'display_name': 'Daisy'}),
+            'Daisy: ' + plain)
+        self.assertEqual(default_name(definition, {'host_id': DAISY}), 'daisy: ' + plain)
+        self.assertEqual(default_name(definition, {}), plain)
+        self.assertEqual(default_name(definition), plain)
+        # Every definition this revision ships is named by that one rule, on a machine that has said
+        # what it is called, with the machine in front and nothing between it and the model.
+        for name in DEFINITIONS:
+            with self.subTest(profile=name):
+                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                produced = default_name(definition, {'host_id': ROSALINA, 'display_name': 'Rosalina'})
+                self.assertTrue(produced.startswith('Rosalina: ' + definition['display_name'] + ' ('),
+                    produced)
+                self.assertTrue(produced.endswith(str(definition['context_tokens'] // 1024) + 'K)'),
+                    produced)
+
+    def test_a_rename_replaces_the_machine_along_with_the_rest_of_the_name(self):
+        # A rename is the operator saying what to call this model, not a prefix handed to the default.
+        # It wins whole -- machine included -- and it is only a name: what a client routes on, and what
+        # the machine launches, are untouched by it either way.
+        definition = profile_file(DAISY_PROFILE)
+        named_by = {'host_id': DAISY, 'display_name': 'Daisy'}
+        self.assertEqual(display_name(definition, {model_id(definition): 'Night shift'}, named_by),
+            'Night shift')
+        self.assertEqual(display_name(definition, {}, named_by), default_name(definition, named_by))
+        host = {'host_id': DAISY, 'display_name': 'Daisy', 'gpu_architectures': ['75']}
+        plain = render(ROOT / 'config', {**fixture_host(DAISY_PROFILE), **host},
+            DAISY_PROFILE)['catalog']['models'][0]
+        named = render(ROOT / 'config', {**fixture_host(DAISY_PROFILE), **host},
+            DAISY_PROFILE, {STRATA_DAISY: 'Night shift'})['catalog']['models'][0]
+        self.assertEqual(named['display_name'], 'Night shift')
+        self.assertEqual({k: plain[k] for k in ('model', 'aliases', 'context_length')},
+            {k: named[k] for k in ('model', 'aliases', 'context_length')})
+
+    def test_a_machine_label_that_is_not_a_usable_name_falls_back_to_the_slug(self):
+        # `host.json` is edited by hand and read again by the page every few seconds, so a label that
+        # is not a printable single line is not used rather than being a machine that will not report.
+        # The slug it also states is still the truth a client can act on.
+        for value in ('', '   ', 'two\nlines', 'tab\there', 'x' * (NAME_MAX + 1), 42, None, ['list']):
+            with self.subTest(value=repr(value)):
+                self.assertIsNone(host_display_name({'host_id': DAISY, 'display_name': value}))
+                self.assertEqual(host_name({'host_id': DAISY, 'display_name': value}), DAISY)
+        # A label with room around it is the operator's own word, and it reaches the router trimmed: a
+        # `host` block whose display name is padded is a refused publication, and the machine would
+        # lose its whole catalog to a space bar.
+        self.assertEqual(host_display_name({'host_id': ROSALINA, 'display_name': '  Rosalina  '}),
+            'Rosalina')
+        self.assertEqual(host_display_name({'host_id': ROSALINA}), None)
+        self.assertEqual(host_name({'host_id': ROSALINA}), ROSALINA)
+        self.assertIsNone(host_name({}))
+
+    def test_a_model_of_several_launches_is_published_the_name_of_the_launch_running(self):
+        # One model id, several launches: the IQ4 pack runs at 256K, at 512K through a YaRN ring, and on
+        # two cards instead of four, and each of those launches says in its own name what it does
+        # differently. What a switch publishes is the launch it brought up, so the name it stamps is the
+        # one that launch gives it -- and a name taken from whichever registry row mentioned the id
+        # first would publish a 512K model as a 256K one and lose the words that separate the arms.
+        host = deployed(vision_host(), ROSALINA)
+        for profile, name in (('flash-next-strata-solo-thinking-recovery',
+                'rosalina: Qwen3.8 Flash-Next UD-IQ4 (256K)'),
+                ('flash-next-strata-solo-thinking-recovery-cache',
+                 'rosalina: Qwen3.8 Flash-Next UD-IQ4 (256K)'),
+                ('flash-next-strata-solo-thinking-recovery-cache-yarn',
+                 'rosalina: Qwen3.8 Flash-Next UD-IQ4 (512K)'),
+                ('flash-next-strata-two-card-iq4-xs',
+                 'rosalina: Qwen3.8 Flash-Next UD-IQ4, two cards (256K)')):
+            with self.subTest(profile=profile):
+                published = catalog_names(ROOT / 'config', host, {}, profile)
+                rendered = render(ROOT / 'config', host, profile)['catalog']
+                self.assertEqual(published, {model['model']: model['display_name']
+                    for model in rendered['models']})
+                self.assertEqual(published['qwen3.8-flash-next-ud-iq4_xs'], name)
+        # The narrower launch is the one a registry row would have answered with, and it is not the one
+        # published: two of these four names belong to a model of a different size, and one of them to a
+        # machine with two cards in it.
+        self.assertNotEqual(catalog_names(ROOT / 'config', host, {},
+            'flash-next-strata-solo-thinking-recovery')['qwen3.8-flash-next-ud-iq4_xs'],
+            catalog_names(ROOT / 'config', host, {},
+                'flash-next-strata-solo-thinking-recovery-cache-yarn')['qwen3.8-flash-next-ud-iq4_xs'])
+        # An operator alias still outranks the launch, because a retired name must not come back with a
+        # restoration of a bundle rendered before it was retired.
+        self.assertEqual(catalog_names(ROOT / 'config', host,
+            {'qwen3.8-flash-next-ud-iq4_xs': 'Workhorse'},
+            'flash-next-strata-solo-thinking-recovery-cache-yarn')['qwen3.8-flash-next-ud-iq4_xs'],
+            'Workhorse')
+        # A bundle whose configuration has since left the registry is published with the registry's
+        # answer rather than a refusal: coming back is not the moment to argue about a name.
+        self.assertIn('qwen3.8-flash-next-ud-iq4_xs', catalog_names(ROOT / 'config', host, {}, 'retired-yesterday'))
+
     def test_an_alias_replaces_a_name_and_nothing_else_about_the_launch(self):
         # The refusal this test protects: a rename that changed a launch would mean a machine had to
         # be drained to be renamed, and an operator would stop renaming rather than drain for it.
@@ -2070,10 +2184,10 @@ class ConfigurationNamingTests(unittest.TestCase):
             {'qwen3.8-27b-q8_0-tensor-next': 'Workhorse'})
         entry = next(x for x in registry['selectable'] if x['profile'] == 'qwen27b-q8-pair')
         self.assertEqual((entry['display_name'], entry['default_name'], entry['alias']),
-            ('Workhorse', 'Qwen3.8 27B Q8 (160K)', 'Workhorse'))
+            ('Workhorse', 'rosalina: Qwen3.8 27B Q8 (160K)', 'Workhorse'))
         other = next(x for x in registry['selectable'] if x['profile'] == 'qwen27b-q6k-pair')
         self.assertEqual((other['display_name'], other['default_name']),
-            ('Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 27B Q6_K (160K)'))
+            ('rosalina: Qwen3.8 27B Q6_K (160K)', 'rosalina: Qwen3.8 27B Q6_K (160K)'))
         self.assertNotIn('alias', other)
         self.assertEqual(catalog_names(ROOT / 'config', host_for('qwen27b-q8-pair'),
             {'qwen3.8-27b-abliterated-q6_k': 'Night owl'})['qwen3.8-27b-abliterated-q6_k'], 'Night owl')
