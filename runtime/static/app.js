@@ -620,8 +620,67 @@ const powerBlock = () => status?.power || {};
 const powerCards = () => powerBlock().cards || {};
 const powerCard = uuid => powerCards()[uuid] || null;
 const powerWrites = () => powerBlock().writes || {};
+/* The reading this card's panel is drawn from: what a write or a Re-read just brought back for this
+   card, or the cached reading the status carries. The drawing, the boxes and the request are all
+   worked out of this one function, so a field cannot show one moment's number and send another's. */
+const powerRead = entry => (powerPatch && powerPatch.gpu === entry?.uuid ? powerPatch.read : null)
+  || entry?.read || {};
 const watts = value => value === null || value === undefined ? '—' : `${Math.round(value)} W`;
 const mhz = value => value === null || value === undefined ? '—' : `${value} MHz`;
+/* The three numbers a hand-written rung is made of, in the order the driver takes them and the order
+   the drawer draws them. They are also the three names the API takes, so one list draws the fields,
+   checks them and builds the request, instead of three mappings that can disagree. */
+const handKeys = ['power', 'clock_max', 'offset'];
+const handName = {power: 'the power limit in watts', clock_max: 'the maximum clock in MHz',
+  offset: 'the V/F offset in MHz'};
+const handShort = {power: 'power limit', clock_max: 'maximum clock', offset: 'V/F offset'};
+/* What one hand-written box holds: the operator's own text once they have typed in that box — and the
+   empty string counts, because clearing a box is how they say `not that` — and otherwise what this
+   card reports right now. One function answers both `what do I draw in this box` and `what goes in
+   the request`, because those two were worked out apart: the box showed the driver's number, the
+   draft under it stayed empty, and an operator who changed the two numbers they cared about was
+   refused for a third one they could plainly see filled in.
+   `clock_max` deliberately starts empty. This driver reports no clock-lock field, so `read.clock_sm`
+   is what the card is doing this instant and not what it is capped at — a vision card idling at its
+   floor offered `210 MHz` as its own maximum clock, and an operator who trusted that prefill wrote a
+   card that cannot boost. The placeholder and the hint carry the ceiling instead. */
+function powerHand(key, read) {
+  const typed = powerDraft[key];
+  if (typed !== undefined) return typed;
+  if (key === 'power') return read.power_limit;
+  if (key === 'offset') return read.offset;
+  return undefined;
+}
+// The same box as a finite number, or null for `this has nothing in it yet`.
+function handValue(key, read) {
+  const raw = powerHand(key, read);
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+const handMissing = read => handKeys.filter(key => handValue(key, read) === null);
+/* Why a hand-written write cannot go yet, worked out in one place: `powerSubmit` refuses in these
+   words and the drawer's own line says them, so the page never tells the operator to fill in a box
+   and then refuses over a different one. */
+function powerHandRefusal(read) {
+  const missing = handMissing(read);
+  return missing.length ? `Fill in ${handName[missing[0]]}.` : '';
+}
+const handSpelled = value => `${value > 0 ? '+' : ''}${mhz(value)}`;
+/* The drawer's line: the numbers that go to the driver if the button is pressed now, with anything
+   missing named instead of drawn as a dash. It used to print the prefilled display values as though
+   they were the values that would be written, which was the same over-claim as the boxes above it. */
+function powerSummary(read) {
+  const missing = handMissing(read);
+  if (missing.length === handKeys.length) {
+    return 'Values by hand — a trial rung this machine has not measured';
+  }
+  const said = handKeys.filter(key => !missing.includes(key)).map(key => key === 'power'
+    ? watts(handValue(key, read))
+    : key === 'offset' ? handSpelled(handValue(key, read)) : `${handValue(key, read)} MHz`);
+  const gone = missing.length ? ` · no ${missing.map(key => handShort[key]).join(' and no ')} yet` : '';
+  return `Values by hand — ${said.join(' · ')}${gone}`;
+}
 /* The one word on a tile. The numbers that prove it live in the panel, because a 150px tile holds a
    rung name or a watt figure, not a sentence an operator can trust. */
 function powerWords(entry) {
@@ -656,22 +715,46 @@ function powerRow(card) {
    answer to "which rung?" is then "not one of these". */
 const powerTarget = entry => powerChoice.mode ? powerChoice
   : {mode: entry?.state === 'rung' ? entry.rung : entry?.state === 'stock' ? 'revert' : null};
+/* Why the write button cannot be used right now, in one answer. Its label, its `disabled` and what
+   its click does all speak from the same choice, and the defect this closes was the button being
+   marked disabled once — when the panel was drawn — and staying that way while the choice under it
+   changed. An empty string means it can be pressed. */
+function powerBlocked(entry, target) {
+  if (!target.mode) return 'nothing is chosen yet';
+  if (powerBusy) return 'a write is already running';
+  if (powerWrites().available === false) return powerWrites().reason || 'this runtime is not writing';
+  const unwell = powerUnwell(entry.uuid);
+  if (unwell.length && !powerGate[entry.uuid]) {
+    return `${unwell.map(service => service.name).join(', ')} is not healthy on this card`;
+  }
+  // A hand-written rung with an empty box in it is deliberately *not* blocked here. A button that
+  // cannot be pressed says nothing; pressed, it names the box that is empty.
+  return '';
+}
 const onCard = (service, uuid) => [service.vision_gpu_id, ...(service.gpu_ids || [])].includes(uuid);
 const powerIsServing = uuid => (status?.services || []).some(service => service.healthy && onCard(service, uuid));
 const powerUnwell = uuid => (status?.services || []).filter(service => !service.healthy && onCard(service, uuid));
-function powerSubmit(uuid, entry) {
-  const target = powerTarget(entry);
-  if (!target.mode || powerBusy) return;
-  const body = {gpu: uuid, action: target.mode === 'revert' ? 'revert' : target.mode === 'custom' ? 'custom' : 'apply'};
+/* The request a chosen action turns into, worked out in one place: the drawer's boxes, the drawer's
+   summary line and this all read the same three numbers, which is the only way the page can promise
+   that what an operator is looking at is what the driver is asked for. */
+function powerBody(entry, target, read) {
+  const body = {gpu: entry.uuid,
+    action: target.mode === 'revert' ? 'revert' : target.mode === 'custom' ? 'custom' : 'apply'};
   if (target.mode && target.mode !== 'revert' && target.mode !== 'custom') body.rung = target.mode;
-  if (body.action === 'custom') {
-    for (const key of ['power', 'clock_max', 'offset']) {
-      const value = Number(powerDraft[key]);
-      if (!Number.isFinite(value)) { powerError = `Fill in ${key === 'power' ? 'the power limit in watts'
-        : key === 'clock_max' ? 'the maximum clock in MHz' : 'the V/F offset in MHz'}.`; render(); return; }
-      body[key === 'power' ? 'power' : key === 'clock_max' ? 'clock_max' : 'offset'] = value;
-    }
+  if (body.action === 'custom') for (const key of handKeys) body[key] = handValue(key, read);
+  return body;
+}
+function powerSubmit(uuid, entry) {
+  const target = powerTarget(entry), read = powerRead(entry);
+  if (!target.mode || powerBusy) return;
+  if (target.mode === 'custom') {
+    // Refused here in the same words the drawer's own line uses, and about a box that is visibly
+    // empty — never about one the operator can see a number in, which is what the old split between
+    // what a box displayed and what the draft held used to do.
+    const refusal = powerHandRefusal(read);
+    if (refusal) { powerError = refusal; render(); return; }
   }
+  const body = powerBody(entry, target, read);
   body.override = !!powerGate[uuid];
   // Writing under a serving model is the one act here worth pausing on: a rung two notches too
   // aggressive does not fail, it produces strange turns hours later.
@@ -747,7 +830,13 @@ function renderPower() {
   powerSignature = signature;
   panel.replaceChildren();
   panel.hidden = false;
-  const read = (powerPatch?.gpu === entry.uuid ? powerPatch.read : null) || entry.read || {};
+  const read = powerRead(entry);
+  /* The bounds this card's driver reported, on the card. `status.power` has no `envelope` — there is
+     one per card, because a 3090 and a 4080 do not share a floor — and the four places that read it
+     off the block got `undefined`: the clock hint drew "locked from — up", the offset limit worked
+     only because 150 is also the fallback, and the warning for a max clock at or below the floor,
+     the one setting that crashes a card at rest, never fired at all. */
+  const envelope = entry.envelope || {};
   const available = powerWrites(), target = powerTarget(entry);
   const refused = available.available === false;
   const head = node('div', '', 'head');
@@ -854,18 +943,24 @@ function renderPower() {
   // Open or closed is the operator's decision, not something the runtime gets to reset because a
   // reading arrived, so it is kept in module state and put back on every draw.
   custom.open = powerCustom;
-  custom.addEventListener('toggle', () => { powerCustom = custom.open; });
-  const summary = node('summary', powerDraft.power !== undefined
-    ? `Values by hand — ${watts(powerDraft.power)} · ${mhz(powerDraft.clock_max)} · `
-      + `${powerDraft.offset > 0 ? '+' : ''}${mhz(powerDraft.offset)}`
-    : `Values by hand — a trial rung this machine has not measured`);
+  custom.addEventListener('toggle', () => {
+    // A redraw hands a fresh `<details>` the open state it was drawn with, and the browser answers
+    // that with a `toggle` of its own. Only a change that came from the operator is a decision.
+    if (custom.open === powerCustom) return;
+    powerCustom = custom.open;
+    // Opening the drawer is somebody saying `by hand` — and on a card with no measured rungs it is the
+    // only way in, so taking it at its word is what enables the write. A rung that is already chosen
+    // stays chosen until they type, because opening a drawer to look at it is not an edit.
+    if (custom.open && !powerTarget(entry).mode) powerChoice = {mode: 'custom'};
+    render();
+  });
+  const summary = node('summary', powerSummary(read));
   summary.dataset.focus = 'power:custom';
   const fields = node('div', '', 'fields');
   const field = (key, label, hint, bounds) => {
-    const box = node('label', '', target.mode === 'custom' && powerBad(key, read, powerBlock().envelope) ? 'bad' : '');
+    const box = node('label', '', target.mode === 'custom' && powerBad(key, read, envelope) ? 'bad' : '');
     const input = node('input');
-    input.type = 'text'; input.value = powerDraft[key] ?? (key === 'power' ? read.power_limit ?? ''
-      : key === 'clock_max' ? read.clock_sm ?? '' : read.offset ?? '');
+    input.type = 'text'; input.value = powerHand(key, read) ?? '';
     input.placeholder = hint.placeholder;
     input.setAttribute('aria-label', label);
     // A stable name for the copy of this field that a redraw creates, so a poll landing while the
@@ -874,20 +969,32 @@ function renderPower() {
     input.addEventListener('input', () => {
       powerDraft = {...powerDraft, [key]: input.value};
       if (target.mode !== 'custom') powerChoice = {mode: 'custom'};
+      /* Every other control on this panel ends by drawing itself, and this one has to as loudly: the
+         button's label and its `disabled` are worked out from the choice, so a keystroke that changes
+         the choice leaves a button that says one thing and refuses to be pressed. That was the defect
+         — the drawer was the only control on the page that could not enable its own write, and the
+         click landed on a button still marked disabled from the draw. The caret survives because the
+         box names itself and `render()` hands focus and selection back. */
+      render();
     });
-    const bad = powerBad(key, read, powerBlock().envelope);
+    const bad = powerBad(key, read, envelope);
     add(box, node('span', label), input, node('span', bad || hint.hint, bad ? 'bad' : 'hint'));
     return box;
   };
   add(fields,
     field('power', 'Power limit (W)', {placeholder: `${watts(read.power_min)}–${watts(read.power_max)}`,
       hint: `this card reports ${watts(read.power_min)}–${watts(read.power_max)}`}),
-    field('clock_max', 'Max SM clock (MHz)', {placeholder: '15 MHz bins',
-      hint: `locked from ${mhz(powerBlock().envelope?.clock_min)} up; this card's ceiling is ${mhz(read.clock_max_sm)}`}),
+    field('clock_max', 'Max SM clock (MHz)', {placeholder: read.clock_max_sm ? `up to ${read.clock_max_sm}`
+        : '15 MHz bins',
+      hint: `this one has no honest default; locked above ${mhz(envelope.clock_min)}, `
+        + `this card's ceiling is ${mhz(read.clock_max_sm)}`}),
     field('offset', 'V/F offset (MHz)', {placeholder: '−150 … +150',
-      hint: `15 MHz steps; ±${powerBlock().envelope?.offset_max || 150} is what this driver has been held at`}));
+      hint: `15 MHz steps; ±${envelope.offset_max || 150} is what this driver has been held at`}));
   add(custom, summary, fields, node('p', `Hand-set values are the script's \`set\`: a trial rung, never offered `
-    + `as though it had been measured. Applying them changes only this card, right now.`, 'sub'));
+    + `as though it had been measured. What the three boxes hold is what the driver is asked for, and a `
+    + `box nobody typed in starts at what this card reports right now. The maximum clock starts empty `
+    + `because this driver reports no clock lock: the clock you can read below is what the card is doing, `
+    + `not what it is capped at. Applying them changes only this card, right now.`, 'sub'));
   add(panel, custom);
 
   add(panel, node('p', '', 'volat')).lastChild.append(node('b', `Nothing is installed in the boot path, by design. `),
@@ -924,7 +1031,11 @@ function renderPower() {
   const acts = node('div', '', 'acts');
   const apply = node('button', powerBusy ? 'Writing…' : powerLabel(entry, target), '');
   apply.type = 'button';
-  apply.disabled = !target.mode || powerBusy || refused || (unwell.length > 0 && !gate);
+  // One answer to `why is this not pressable`, recomputed on every draw — which is what a keystroke
+  // now forces, so the button can no longer be sitting there marked disabled from a draw the choice
+  // has moved past since.
+  apply.disabled = !!powerBlocked(entry, target);
+  if (apply.disabled) apply.title = powerBlocked(entry, target);
   apply.addEventListener('click', () => powerSubmit(entry.uuid, entry));
   const close = node('button', 'Close', 'ghost');
   close.type = 'button';
@@ -942,6 +1053,9 @@ function renderPower() {
 }
 const rungValue = (entry, name, key) => (entry.rungs || []).find(rung => rung.name === name)?.[key] ?? '—';
 function powerLabel(entry, target) {
+  // Nothing chosen yet — which is what a card at `custom`, at `incomplete` or with no rungs looks
+  // like before the operator has said anything. It asked for `null` to be applied to the card.
+  if (!target.mode) return 'Choose a rung, or write values by hand';
   if (target.mode === 'revert') return `Revert ${entry.name} to stock`;
   if (target.mode === 'custom') return `Write these values to ${entry.name}`;
   return (entry.state === 'rung' && entry.rung === target.mode ? 'Re-apply ' : 'Apply ')
@@ -950,8 +1064,8 @@ function powerLabel(entry, target) {
 /* Client-side because it is a hint and not a gate: the driver and runtime refuse whatever they are
    going to refuse, and a field that says so before the write costs nothing. */
 function powerBad(key, read, envelope) {
-  const raw = powerDraft[key];
-  if (raw === undefined || raw === '') return '';
+  const raw = powerHand(key, read);
+  if (raw === undefined || raw === '' || raw === null) return '';
   const value = Number(raw);
   if (!Number.isFinite(value)) return 'a number is expected';
   if (key === 'power' && read.power_max != null && value > read.power_max) return `this card's ceiling is ${watts(read.power_max)}`;

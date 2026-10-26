@@ -90,6 +90,23 @@ changed or not. Drawing that answer is a contract with whatever the operator's h
   to the operator that is the page taking the keyboard away at a moment they cannot predict.
 - Open and closed is the operator's state, so the drawer's open flag lives in the page's state
   alongside the draft values and is put back on every draw, not read off the element being replaced.
+- A control that changes what a second control can do redraws that second control, in the same
+  handler. The rung radios and the "apply anyway" tick both ended in `render()`; the hand-written
+  fields updated the draft and stopped, and since the write button's label and its `disabled` are
+  drawn from the choice, the button stayed marked disabled after the keystroke that chose `custom`.
+  The click landed on a dead button until the next poll redrew the panel and quietly saved it, which
+  is why it read as flaky. It only bit the cards with no measured rungs: everywhere else the operator
+  clicked a radio first, and a radio does redraw.
+- What a field shows is what pressing the button sends. The three boxes were prefilled from the last
+  reading while the object being submitted stayed empty until every one of them had been edited, so
+  changing two numbers was refused for the third — "Fill in the maximum clock in MHz", about a box
+  showing a number — and the clock's prefill was the clock the card was *observed* at, which on a
+  card idling at its floor was 210 MHz. A clock lock cannot be verified on this driver, so an
+  observed clock is not a cap, the box starts empty, and its placeholder carries the ceiling.
+- Bounds are read off the card they belong to. `status.power` publishes an `envelope` per card and
+  none on the block; the drawer read it off the block, got `undefined`, drew "locked from — up", and
+  never warned about a maximum clock at or below the floor — the one hand-written number that makes
+  a card crash while nothing is asking it for anything.
 
 ## What the design is for
 

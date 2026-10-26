@@ -1,5 +1,9 @@
 import json
 from http.server import ThreadingHTTPServer
+import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -470,6 +474,66 @@ class PowerHttpTests(OperationFixture, unittest.TestCase):
         self.assertIn('powerCustom = custom.open', source)
         self.assertIn('let powerCustom = false', source)
 
+    def test_typing_in_the_hand_fields_redraws_the_write_button(self):
+        """Every control on this panel ends by drawing itself, because the button that does the writing
+        is drawn from what is chosen, and picking something is what changes it. The hand-written fields
+        were the one exception: the keystroke updated the draft that a *click* honours and stopped
+        there, so the button kept the `disabled` it was given when the panel was drawn. On a card with
+        measured rungs it stayed invisible — a rung radio clicked first does redraw, and by then the
+        action is already enabled — but on an unmeasured card the drawer is the only way in, and the
+        operator's click landed on a dead button until the next poll rescued it.
+        """
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
+        handler = body.split("input.addEventListener('input', () => {")[1].split('});')[0]
+        self.assertIn('powerDraft = {...powerDraft, [key]: input.value};', handler)
+        self.assertTrue(handler.rstrip().endswith('render();'),
+            'the hand fields have to redraw like the radio above them does; the button\'s label and '
+            'its `disabled` are both worked out from the choice this keystroke just made')
+        # And the button asks one function why it cannot be pressed, rather than working it out again
+        # in a place the handler above cannot reach.
+        self.assertIn('apply.disabled = !!powerBlocked(entry, target);', body)
+        self.assertIn("if (apply.disabled) apply.title = powerBlocked(entry, target);", body,
+            'a button that cannot be pressed should say why to whoever tries')
+
+    def test_a_hand_written_box_shows_the_number_it_will_send(self):
+        """The three boxes were prefilled for display from the last reading while the object actually
+        submitted stayed empty until every one of them was edited, so an operator who changed the two
+        numbers they cared about was refused for a third they could plainly see filled in — "Fill in
+        the maximum clock in MHz", said about a box showing a number. Worse, that box was prefilled
+        with `clock_sm`, the clock the card is *observed* at: a vision card idling at its floor offered
+        to lock itself at 210 MHz. One resolver now answers both questions, and it has no honest
+        default for a clock cap on a driver that reports none, so that box starts empty."""
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
+        self.assertIn("input.type = 'text'; input.value = powerHand(key, read) ?? '';", body,
+            'what a box shows has to be what it sends')
+        self.assertIn('for (const key of handKeys) body[key] = handValue(key, read);', source,
+            'and what it sends has to be what it shows')
+        resolver = source.split('function powerHand(key, read) {')[1].split('\n}\n')[0]
+        self.assertNotIn('clock_sm', resolver,
+            'the observed SM clock is what a card is doing, not what it is capped at: a clock lock '
+            'cannot be verified on GeForce, which the panel says out loud two paragraphs above')
+        self.assertIn('function powerSummary(read) {', source)
+        self.assertIn('return `Values by hand — ${said.join(\' · \')}${gone}`;', source,
+            'the drawer\'s own line names the numbers that go to the driver, and what is missing')
+
+    def test_the_drawer_uses_the_bounds_of_the_card_it_is_drawn_under(self):
+        """`status.power` carries no `envelope`: there is one per card, because two models of card do
+        not share a clock floor. The drawer read it off the block four times and got `undefined` every
+        time, which drew the clock hint as "locked from — up", left the offset limit to the fallback
+        that happens to match this driver, and silently switched off the warning for a max clock at or
+        below the floor — the one hand-written number that makes a card crash while nothing is asking
+        it for anything, which is the failure the runtime's own refusal names.
+        """
+        source = urllib.request.urlopen(self.base + '/app.js').read().decode()
+        body = source.split('function renderPower() {')[1].split('\nfunction ')[0]
+        self.assertIn('const envelope = entry.envelope || {};', body)
+        self.assertNotIn('powerBlock().envelope', body,
+            'the bounds live on the card; the power block has never carried them')
+        self.assertIn('powerBad(key, read, envelope)', body,
+            'and the warning has to be computed from them, not from an undefined stand-in')
+
     def test_typing_in_the_rename_box_survives_a_poll(self):
         """The runtime gets asked about its own status every five seconds, and the box's draft text
         was in the list's signature. One keystroke changed the signature, so the next poll rebuilt the
@@ -502,3 +566,221 @@ class PowerHttpTests(OperationFixture, unittest.TestCase):
         for name in ("'alias:' + model.model", "'power:' + key", "'config:' + config.profile",
                      "'rung:' + name", "'gate:' + entry.uuid"):
             self.assertIn(name, source, 'a control without a name cannot be found again after a redraw')
+
+
+# --------------------------------------------------------------------------------------------- the
+# page's own arithmetic, run rather than read. The suite has no JS harness — there is no node in the
+# runtime image — so the page is normally tested by reading its source, which is good for "the panel
+# is cleared before it is drawn" and weak for "the button this operator is staring at can be pressed".
+# The power drawer is a small function of three things: the card's state, what the driver last said,
+# and what the operator has typed. Those four cards below are the shapes a real status carried on the
+# day this broke, and node is on every machine that develops the page. Where it is not, this skips and
+# the source assertions above still stand.
+
+PAGE_LOGIC = ['const watts =', 'const mhz =', 'const handKeys =', 'const handName =', 'const handShort =',
+              'function powerHand(', 'function handValue(', 'const handMissing =',
+              'function powerHandRefusal(', 'const handSpelled =', 'function powerSummary(',
+              'const powerTarget =', 'function powerBlocked(', 'function powerBody(',
+              'function powerLabel(', 'function powerBad(']
+PAGE_STATE = """
+// The page's module state and the two facts it reads from `status`, which is all the functions above
+// need. Everything else they are handed.
+const CARD = 'GPU-b0c40094-1111-2222-3333-444444444444';
+let powerDraft = {}, powerChoice = {}, powerBusy = false, powerGate = {};
+let WRITES = {available: true}, UNWELL = [];
+const powerWrites = () => WRITES;
+const powerUnwell = () => UNWELL;
+"""
+
+
+def shipped(source, head):
+    """The text of one definition from the page, from its header to its closing brace."""
+    if head not in source:
+        raise AssertionError('the page no longer defines `' + head + '`. This harness runs the page\'s '
+            'own arithmetic, so it is tied to those names on purpose: move the decision and this is '
+            'the test that says so, rather than one that quietly passes on a stub.')
+    if head.startswith('function '):
+        start, i = source.index(head), source.index('{', source.index(head))
+        depth = 0
+        while True:
+            depth += source[i] == '{'
+            depth -= source[i] == '}'
+            i += 1
+            if depth == 0:
+                return source[start:i]
+    start, end = source.index(head), source.index('\n', source.index(head))
+    while not source[start:end].rstrip().endswith(';'):
+        end = source.index('\n', end + 1)
+    return source[start:end]
+
+
+def run_page(source, script):
+    """Run a script against the page's own definitions and hand back what it printed."""
+    program = '\n'.join([PAGE_STATE] + [shipped(source, head) for head in PAGE_LOGIC] + [script])
+    handle = tempfile.NamedTemporaryFile('w', suffix='.js', delete=False)
+    handle.write(program)
+    handle.close()
+    try:
+        running = subprocess.run([shutil.which('node'), handle.name], capture_output=True,
+                                 text=True, timeout=120)
+    finally:
+        os.unlink(handle.name)
+    assert running.returncode == 0, 'the page\'s own code would not run:\n' + running.stderr
+    return json.loads(running.stdout)
+
+
+@unittest.skipUnless(shutil.which('node'), 'no node on this machine: the page is judged by its source')
+class HandWrittenRungTests(unittest.TestCase):
+    """What the drawer decides, on the four cards the page was showing when it could not be used.
+    The whole page is run once, in one node process, and the five tests below read that result."""
+
+    # The 4080 of the report: never measured, so no plan and no rungs, and read back as `custom`
+    # because a hand-set value matches no rung. The 210 MHz observed clock is a vision-card floor.
+    SCRIPT = r"""
+const card = over => Object.assign({uuid: CARD, name: 'NVIDIA GeForce RTX 4080', state: 'custom',
+  rung: null, rungs: [], plan: null, read: {power_limit: 255, power_default: 320, power_min: 100,
+  power_max: 340, offset: 105, clock_sm: 210, clock_max_sm: 2700}}, over);
+const out = {};
+let entry;
+
+// Opened, and nothing chosen: a card at `custom` has no rung to pick.
+powerDraft = {}; powerChoice = {}; entry = card({});
+out.nothing_chosen_label = powerLabel(entry, powerTarget(entry));
+out.nothing_chosen_blocked = powerBlocked(entry, powerTarget(entry));
+
+// The drawer opened on that card — the operator said `by hand`, and that is the only way in.
+powerChoice = {mode: 'custom'};
+out.opened_blocked = powerBlocked(entry, powerTarget(entry));
+out.opened_label = powerLabel(entry, powerTarget(entry));
+out.untouched_refusal = powerHandRefusal(entry.read);
+out.untouched_summary = powerSummary(entry.read);
+out.observed_clock_offered = handValue('clock_max', entry.read);
+
+// The numbers the operator came for: 255 W, 2640 MHz, +105. One box typed, two left as shown.
+powerDraft = {clock_max: '2640'};
+out.filled_refusal = powerHandRefusal(entry.read);
+out.filled_body = powerBody(entry, powerTarget(entry), entry.read);
+out.filled_summary = powerSummary(entry.read);
+
+// A box cleared to type into is not a zero.
+powerDraft = {power: ''};
+out.cleared_refusal = powerHandRefusal(card({}).read);
+out.cleared_shown = powerHand('power', card({}).read);
+
+// A card that has never been read has no numbers to offer at all.
+powerDraft = {}; powerChoice = {};
+out.unread_refusal = powerHandRefusal({});
+out.unread_summary = powerSummary({});
+
+// The three measured cards, unchanged: where they are is what the button offers.
+powerChoice = {}; entry = card({name: 'NVIDIA GeForce RTX 3090', state: 'rung', rung: 'sensible',
+  rungs: [{name: 'safe'}, {name: 'sensible'}, {name: 'assertive'}]});
+out.rung_body = powerBody(entry, powerTarget(entry), entry.read);
+out.rung_label = powerLabel(entry, powerTarget(entry));
+powerChoice = {}; entry = card({name: 'NVIDIA GeForce RTX 3080 Ti', state: 'rung', rung: 'assertive',
+  rungs: [{name: 'assertive'}]});
+out.ti_body = powerBody(entry, powerTarget(entry), entry.read);
+powerChoice = {}; entry = card({name: 'NVIDIA GeForce RTX 3080', state: 'stock'});
+out.stock_body = powerBody(entry, powerTarget(entry), entry.read);
+out.stock_label = powerLabel(entry, powerTarget(entry));
+
+// Why a button cannot be pressed, which is the other half of "the panel will not write this".
+powerChoice = {}; entry = card({state: 'stock'});
+UNWELL = [{name: 'qwen3-vl-8b'}];
+out.unwell_blocked = powerBlocked(entry, powerTarget(entry));
+powerGate[CARD] = true;
+out.gated_blocked = powerBlocked(entry, powerTarget(entry));
+powerGate = {}; WRITES = {available: false, reason: 'A source deployment has the machine.'};
+out.refused_blocked = powerBlocked(entry, powerTarget(entry));
+WRITES = {available: true}; powerBusy = true;
+out.busy_blocked = powerBlocked(entry, powerTarget(entry));
+powerBusy = false; UNWELL = [];
+
+// A hint, not a gate: the driver refuses what it refuses.
+powerDraft = {power: '1000'}; powerChoice = {mode: 'custom'}; entry = card({});
+out.over_ceiling = powerBad('power', entry.read, {clock_min: 210, offset_max: 150});
+out.odd_step = powerBad('offset', Object.assign({}, entry.read, {offset: 100}),
+  {clock_min: 210, offset_max: 150});
+// The floor one: a max clock at or below it is the setting that crashes a card at rest, and the page
+// has the sentence for it — which only fires if it is handed a card's envelope at all.
+powerDraft = {clock_max: '210'};
+out.at_the_floor = powerBad('clock_max', entry.read, {clock_min: 210, offset_max: 150});
+console.log(JSON.stringify(out));
+"""
+
+    def setUp(self):
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), handler(None, {'status': {}}))
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        base = 'http://127.0.0.1:' + str(self.server.server_address[1])
+        with urllib.request.urlopen(base + '/app.js') as response:
+            self.page = run_page(response.read().decode(), self.SCRIPT)
+
+    def test_an_unmeasured_card_can_be_moved_by_hand(self):
+        """`Power` on the 4080 → open the drawer → type 2640 → press the button. That is the whole
+        request the owner came to make, and the page drew the button `disabled` when the panel opened,
+        changed the choice under it as they typed, and never recomputed it: the click landed on a
+        control marked disabled, and only the next poll (which draws the panel from a signature that
+        covers the draft) quietly enabled it.
+        """
+        self.assertEqual(self.page['nothing_chosen_blocked'], 'nothing is chosen yet')
+        self.assertEqual(self.page['opened_blocked'], '',
+            'opening the drawer on a card with no rungs is the operator asking for a hand-written '
+            'rung; the button cannot stay disabled, because there is nothing else on that panel to click')
+        self.assertEqual(self.page['opened_label'], 'Write these values to NVIDIA GeForce RTX 4080')
+        self.assertEqual(self.page['filled_body'], {'gpu': 'GPU-b0c40094-1111-2222-3333-444444444444',
+            'action': 'custom', 'power': 255, 'clock_max': 2640, 'offset': 105},
+            'the card\'s own power limit and offset, plus the clock that was typed')
+        self.assertEqual(self.page['filled_refusal'], '')
+        self.assertEqual(self.page['filled_summary'], 'Values by hand — 255 W · 2640 MHz · +105 MHz',
+            'the line says what goes to the driver, because that is what goes to the driver')
+
+    def test_a_drawer_nobody_edited_names_the_box_that_is_empty(self):
+        """Pressing the button with a box still empty has to name that box. It used to refuse over a
+        field the operator could see filled in — and, worse, an untouched drawer could read as a
+        revert, which is a different action on a serving machine.
+        """
+        self.assertEqual(self.page['untouched_refusal'], 'Fill in the maximum clock in MHz.')
+        self.assertEqual(self.page['untouched_summary'],
+            'Values by hand — 255 W · +105 MHz · no maximum clock yet',
+            'the summary names what is missing instead of showing a dash and implying it knows')
+        self.assertIsNone(self.page['observed_clock_offered'],
+            'a card seen at 210 MHz is a card idling at its floor, not a card capped at 210 MHz')
+        self.assertEqual(self.page['cleared_refusal'], 'Fill in the power limit in watts.',
+            'an emptied box is a missing number, not zero watts')
+        self.assertEqual(self.page['cleared_shown'], '')
+        self.assertEqual(self.page['unread_refusal'], 'Fill in the power limit in watts.')
+        self.assertEqual(self.page['unread_summary'],
+            'Values by hand — a trial rung this machine has not measured')
+
+    def test_a_card_that_needs_no_decision_still_offers_the_one_it_needs(self):
+        """Nothing here was meant to move the three measured cards: a card at a rung is re-applied, a
+        card at stock is reverted, and neither is asked for numbers."""
+        self.assertEqual(self.page['rung_body'],
+            {'gpu': 'GPU-b0c40094-1111-2222-3333-444444444444', 'action': 'apply', 'rung': 'sensible'})
+        self.assertEqual(self.page['rung_label'], 'Re-apply sensible to NVIDIA GeForce RTX 3090')
+        self.assertEqual(self.page['ti_body']['rung'], 'assertive')
+        self.assertEqual(self.page['stock_body'],
+            {'gpu': 'GPU-b0c40094-1111-2222-3333-444444444444', 'action': 'revert'})
+        self.assertEqual(self.page['stock_label'], 'Revert NVIDIA GeForce RTX 3080 to stock')
+        # And a card that has nothing chosen asks for the choice in words rather than applying `null`.
+        self.assertEqual(self.page['nothing_chosen_label'], 'Choose a rung, or write values by hand')
+
+    def test_the_button_says_why_it_cannot_be_pressed(self):
+        """Disabled is the page's least informative answer, and it is the one it used to give for four
+        different reasons. Each of them now has a sentence, including the one the owner met.
+        """
+        self.assertIn('qwen3-vl-8b is not healthy', self.page['unwell_blocked'])
+        self.assertEqual(self.page['gated_blocked'], '', '"apply anyway" is what unticks the gate')
+        self.assertEqual(self.page['refused_blocked'], 'A source deployment has the machine.')
+        self.assertEqual(self.page['busy_blocked'], 'a write is already running')
+
+    def test_a_hint_stays_a_hint(self):
+        """The boxes warn before the write and the runtime refuses after it. A prefilled number that
+        happens to be one the driver dislikes is worth a sentence in the box.
+        """
+        self.assertEqual(self.page['over_ceiling'], 'this card\'s ceiling is 340 W')
+        self.assertIn('15 MHz steps', self.page['odd_step'])
+        self.assertIn('no P-state to idle in', self.page['at_the_floor'])
