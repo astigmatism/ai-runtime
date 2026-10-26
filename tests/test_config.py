@@ -10,12 +10,13 @@ from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRA
 from runtime.system import atomic_json
 from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT, NAME_MAX,
     DEFAULT_PROFILE, PROFILE_ALIASES, RETIRED_PROFILES,
-    ALIASES_VERSION, available_profiles, belongs_to_host, catalog_names, clean_alias,
+    ALIASES_VERSION, available_profiles, belongs_to_host, card_model, catalog_names, clean_alias,
     configurations_for, host_display_name, host_name, is_exclusive, model_id, models_of,
     nameable_models, default_name, default_profile, digest, display_name, engine_interface,
     merge_settings, read,
-    power_plan, power_plans, power_request, power_rung, read_aliases, read_power_registry, render,
-    resolve_profile, service_engine, service_key, text_gpus, unknown_profile)
+    power_plan, power_plan_for_name, power_plans, power_request, power_rung, read_aliases,
+    read_power_registry, render, resolve_profile, service_engine, service_key, text_gpus,
+    unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
@@ -2541,11 +2542,59 @@ class RungTableTests(unittest.TestCase):
         self.assertEqual(power_plans({'power_plans': {'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c':
             'rtx3090'}}), {'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': 'rtx3090'})
         self.assertEqual(power_plans({}), {})
+        # `null` is a decision and not a typo: this card is offered no rung even though its model has
+        # been through the ladder, which is what one board with a fault on it wants.
+        self.assertEqual(power_plans({'power_plans': {
+            'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': None}}),
+            {'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': None})
         # A moniker is how the host script named a card; a deployment settings file is where a full
         # UUID is written, because the whole point is that it names one physical card.
         self.assertRaises(RuntimeError, power_plans, {'power_plans': {'3090': 'rtx3090'}})
-        self.assertRaises(RuntimeError, power_plans, {'power_plans': {
-            'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': None}})
+        for empty in ('', 0, False, ['rtx3090']):
+            with self.subTest(plan=empty):
+                self.assertRaises(RuntimeError, power_plans, {'power_plans': {
+                    'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c': empty}})
+
+    def test_a_card_is_matched_to_the_plan_measured_for_its_own_model(self):
+        """A ladder measures a model of card, and the driver says which model is in the slot.
+
+        This is the rule that lets a machine with no `power_plans` at all — every machine in the house
+        until now — show the rungs its cards are already sitting at instead of calling them `custom`.
+        It is a match on the model and nothing else, so `RTX 4080` is not a short way of spelling the
+        board that has been measured.
+        """
+        table = self.table
+        self.assertEqual(power_plan_for_name(table, 'NVIDIA GeForce RTX 3090'), 'rtx3090')
+        self.assertEqual(power_plan_for_name(table, 'NVIDIA GeForce RTX 3080 Ti'), 'rtx3080-ti')
+        self.assertEqual(power_plan_for_name(table, 'NVIDIA GeForce RTX 4080 SUPER'), 'rtx4080-super')
+        # What an operator typed in `gpu_names` and what the plan calls the silicon both work.
+        self.assertEqual(power_plan_for_name(table, 'RTX 4080 SUPER'), 'rtx4080-super')
+        self.assertEqual(power_plan_for_name(table, 'RTX 3080 Ti (GA102)'), 'rtx3080-ti')
+        # A model no ladder has run has no plan, and a nearer model is not an answer.
+        self.assertIsNone(power_plan_for_name(table, 'NVIDIA GeForce RTX 4080'))
+        self.assertIsNone(power_plan_for_name(table, 'NVIDIA GeForce RTX 3080'))
+        self.assertIsNone(power_plan_for_name(table, 'vision'))
+        self.assertIsNone(power_plan_for_name(table, None))
+        self.assertIsNone(power_plan_for_name(table, ''))
+        self.assertEqual(card_model('NVIDIA GeForce RTX 4080 SUPER'), card_model('RTX 4080 SUPER'))
+        self.assertNotEqual(card_model('RTX 4080'), card_model('RTX 4080 SUPER'))
+
+    def test_two_plans_cannot_claim_one_model_of_card(self):
+        """A card is matched to a plan by its model string, so two plans saying one model is a card
+        whose rungs depend on the order a table happens to iterate in."""
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3090-second'] = {'name': 'RTX 3090 (GA102)', 'arch': 'ampere', 'default': 'safe',
+            'rungs': {'safe': {'power': 350, 'clock_max': 1920, 'offset': 45}}}
+        with self.assertRaises(RuntimeError) as refused:
+            read_power_registry(table_with(plans=plans))
+        self.assertIn('rtx3090', str(refused.exception))
+        self.assertIn('both the plan', str(refused.exception))
+        # A second plan for another model still loads, which is the case this rule has to leave alone.
+        plans.pop('rtx3090-second')
+        plans['rtx4000'] = {'name': 'RTX 4000 SFF Ada (AD104)', 'arch': 'ada', 'default': 'safe',
+            'rungs': {'safe': {'power': 70, 'clock_max': 1560, 'offset': 45}}}
+        self.assertEqual(sorted(read_power_registry(table_with(plans=plans))['plans']),
+            ['rtx3080-ti', 'rtx3090', 'rtx4000', 'rtx4080-super'])
 
     def test_a_write_names_a_card_and_one_kind_of_asking_and_nothing_else(self):
         card = 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c'

@@ -26,8 +26,8 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 
-from .config import (power_plan, power_plans, power_request, power_rung, read_power_registry,
-    require)
+from .config import (power_plan, power_plan_for_name, power_plans, power_request, power_rung,
+    read_power_registry, require)
 from .system import lock, now
 
 # How often the background pass may ask the driver, and how long one container run is allowed to take
@@ -91,11 +91,12 @@ class Power:
         return None
 
     def host_plans(self):
-        """{uuid: plan id} for this machine, or {} when the setting is malformed.
+        """{uuid: plan id} for this machine's overrides, or {} when the setting is malformed.
 
-        A typo in `power_plans` is reported in `status()` and degrades to no rungs rather than
-        taking the page down: the machine is serving either way, and the page is where the typo gets
-        read about.
+        This is the override table, not the plan of a card: a card absent from it is matched to the
+        plan measured for its own model. A typo in `power_plans` is reported in `status()` and falls
+        back to that inference rather than taking the page down: the machine is serving either way,
+        and the page is where the typo gets read about.
         """
         try:
             return power_plans(self.controller.host)
@@ -108,6 +109,55 @@ class Power:
         except Exception as error:  # noqa: BLE001
             return str(error)
         return None
+
+    def names_for(self, uuid, reading=None, declared=None):
+        """The names this card is known by, best evidence first.
+
+        The name the *driver* reported for the card in the slot is the first one, because it is the
+        only name that cannot be wrong about what is in the slot; the machine's own settings come
+        second, and they are decorative — one host's list calls two cards `RTX 4080` and `RTX 4080
+        SUPER` because an operator typed them, and a card nobody has read yet has nothing better.
+        """
+        if declared is None:
+            declared = dict(self.cards()).get(uuid)
+        return [(reading or {}).get('name'), declared]
+
+    def plan_for(self, uuid, names, registry=None, plans=None):
+        """Where one card's plan comes from: `(plan id, 'host')`, `(id, 'model')`, `(None, 'off')`.
+
+        `power_plans` wins when it names this card, because that is an operator overruling the
+        measurement for one board, and a `null` entry means this card is offered no rung even though
+        its model has been measured. With nothing written down, the plan is the one measured for the
+        model the driver reported — a ladder result belongs to a model of board, and the driver says
+        which board is in the slot. A model the table has never seen gets no plan and no rung: an RTX
+        4080 is not given the 4080 SUPER's numbers because they are nearby, and `330 W / +75` is not
+        given to it either.
+        """
+        plans = self.host_plans() if plans is None else plans
+        if uuid in plans:
+            return (None, 'off') if plans[uuid] is None else (plans[uuid], 'host')
+        registry = self.registry() if registry is None else registry
+        for name in names if registry else []:
+            plan_id = power_plan_for_name(registry, name)
+            if plan_id:
+                return plan_id, 'model'
+        return None, None
+
+    def plans_for_cards(self):
+        """Every card this machine declares, with what it resolves to and why.
+
+        `power --plans` prints this next to the table: a card whose rungs come from a name the driver
+        reported is worth knowing about when the reason they are missing elsewhere is a model nobody
+        has measured.
+        """
+        registry, plans, cached = self.registry(), self.host_plans(), self.latest()
+        resolved = {}
+        for uuid, name in self.cards():
+            reading = (cached.get(uuid) or {}).get('read') or {}
+            plan_id, source = self.plan_for(uuid, self.names_for(uuid, reading, name), registry, plans)
+            resolved[uuid] = {'name': name, 'reported': reading.get('name'), 'plan': plan_id,
+                'source': source}
+        return resolved
 
     def cards(self):
         """Every physical GPU this machine declares, text cards first, in reservation order."""
@@ -207,7 +257,10 @@ class Power:
         """The block `/api/status` carries: the cache, resolved against the plan table.
 
         Reads only files this process already has, because the five-second poll calls it. A card that
-        has never been read is `unread`, which is not the same claim as `stock`.
+        has never been read is `unread`, which is not the same claim as `stock`. Each card also says
+        where its plan came from — `host` for the override in the private settings, `model` for the
+        plan measured for the card the driver reported, `off` for one an operator switched off — so a
+        page that offers no rung can say which of three reasons it has.
         """
         registry = self.registry()
         plans, error = self.host_plans(), self.plan_error() or self.registry_error()
@@ -217,24 +270,19 @@ class Power:
         block = {'available': bool(registry), 'cadence_seconds': CADENCE_SECONDS, 'error': error,
             'writes': writes, 'cards': {}}
         for uuid, name in self.cards():
-            plan_id = plans.get(uuid)
-            plan = None
-            if registry and plan_id:
-                try:
-                    plan = power_plan(registry, plan_id)
-                except Exception:  # noqa: BLE001 - one bad line, not a page that does not load
-                    plan = None
             card = dict(cached.get(uuid) or {})
+            reading = card.get('read') or {}
             # A host that names a plan this revision does not have is a typo in operational state, and
             # the page is where it gets read about: the card still reports its reading and its Revert,
             # and says why there is nothing to choose.
-            plan_error = None
-            if registry and plan_id and plan is None:
+            plan_id, plan_source = self.plan_for(uuid, self.names_for(uuid, reading, name), registry,
+                plans)
+            plan, plan_error = None, None
+            if registry and plan_id:
                 try:
-                    power_plan(registry, plan_id)
-                except Exception as error:  # noqa: BLE001
+                    plan = power_plan(registry, plan_id)
+                except Exception as error:  # noqa: BLE001 - one bad line, not a page that does not load
                     plan_error = str(error)
-            reading = card.get('read') or {}
             # `error` is its own state: a card that could not be read is a different sentence from one
             # that was read and matches nothing, and the tile says `power unreadable` for it.
             if card.get('error'):
@@ -242,7 +290,8 @@ class Power:
             else:
                 state, rung = classify(reading, plan) if card else ('unread', None)
             block['cards'][uuid] = {
-                'uuid': uuid, 'name': name, 'plan': plan_id, 'plan_error': plan_error,
+                'uuid': uuid, 'name': name, 'plan': plan_id, 'plan_source': plan_source,
+                'plan_error': plan_error,
                 'read_at': card.get('read_at'), 'error': card.get('error'),
                 'state': state, 'rung': rung,
                 # The envelope numbers, and only those: the table carries its reasoning as `_why`
@@ -392,22 +441,21 @@ class Power:
         return True, '%s is healthy on this card.' % on_card[0][0]
 
     # --------------------------------------------------------------------------------------- writes
-    def wants_for(self, request, registry, reading):
-        """The three numbers to write, from a validated request plus the rung table or the driver."""
+    def wants_for(self, request, registry, reading, plan):
+        """The three numbers to write, from a validated request plus the card's plan or the driver."""
         if request['action'] == 'apply':
-            plan = power_plan(registry, self.host_plans().get(request['gpu']))
             rung = power_rung(plan, request['rung'])
             envelope = registry['envelope']
             return {'power': rung['power'], 'clock_max': rung['clock_max'], 'offset': rung['offset'],
-                'clock_min': envelope['clock_min'], 'label': request['rung']}, plan
+                'clock_min': envelope['clock_min'], 'label': request['rung']}
         if request['action'] == 'revert':
             default = (reading or {}).get('power_default')
             require(default, 'This card has never been read, so there is no stock power limit to '
                 'revert to. Read it first — the Re-read control does that — and ask again.')
             return {'power': default, 'clock_max': None, 'offset': 0, 'clock_min': None,
-                'label': 'stock'}, None
+                'label': 'stock'}
         return {'power': request['power'], 'clock_max': request['clock_max'], 'offset': request['offset'],
-            'clock_min': registry['envelope']['clock_min'], 'label': 'custom'}, None
+            'clock_min': registry['envelope']['clock_min'], 'label': 'custom'}
 
     def write(self, body):
         """Apply a validated request to one card and report what the driver said afterwards."""
@@ -440,7 +488,24 @@ class Power:
             raise PowerError(409, 'busy', blocker)
         if cached.get('error'):
             raise PowerError(409, 'unread', 'This card cannot be read right now: ' + cached['error'])
-        wants, plan = self.wants_for(request, registry, reading)
+        # The same resolution the page drew its radio list from, so a rung offered here is a rung the
+        # write can carry out; a `null` in `power_plans` is the operator saying no to a card whose
+        # model has been measured, and that deserves its own sentence rather than the generic one. It
+        # says no to rungs, not to the writes that need no measurement.
+        plan_id, plan_source = self.plan_for(request['gpu'], self.names_for(request['gpu'], reading),
+            registry)
+        require(request['action'] != 'apply' or plan_source != 'off',
+            'This machine\'s settings turn the measured rungs off for this card, so it has no rung to '
+            'apply. Its entry in `.state/host.json` is what turns them off; Revert and values by hand '
+            'work regardless.')
+        plan = None
+        try:
+            plan = power_plan(registry, plan_id) if plan_id else None
+        except Exception:  # noqa: BLE001 - a typo'd mapping is reported in status(); Revert needs no plan
+            plan = None
+        if request['action'] == 'apply' and plan is None:
+            power_plan(registry, plan_id)
+        wants = self.wants_for(request, registry, reading, plan)
         allowed, why = self.gate(request['gpu'])
         if not allowed and not request['override']:
             raise PowerError(409, 'engine', why + ' Tick "apply anyway" to write regardless.')

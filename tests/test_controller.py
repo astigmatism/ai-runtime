@@ -679,21 +679,29 @@ class ControllerTests(unittest.TestCase):
 
     def test_the_power_block_is_always_there(self):
         # The page draws the panel by reading status['power'] and nothing else, so the block has to
-        # arrive on a machine with no rung table, no card-to-plan mapping and no cache — which is the
-        # state every host is in until somebody edits its private settings. A missing key is a hole
-        # in the page, and a hole next to a GPU tile looks exactly like a card that is fine.
+        # arrive on a machine with no card-to-plan mapping and no cache — which is the state every
+        # host in the house is in. A missing key is a hole in the page, and a hole next to a GPU tile
+        # looks exactly like a card that is fine.
         block = self.c.status()['power']
         self.assertEqual(block['available'], True, 'the rung table ships in source, so it is always '
             'there to read; what a host may lack is the mapping from its cards to it')
         # Every card the host declares is in the block even with nothing cached and nothing mapped.
-        # A card that has merely never been read has to arrive looking unread, and a card with no plan
-        # has to arrive with nothing to choose: left out of the block, it would look from the page
-        # like a card that is fine, which is the one thing it is not.
+        # A card that has merely never been read has to arrive looking unread: left out of the block,
+        # it would look from the page like a card that is fine, which is the one thing it is not.
         self.assertTrue(block['cards'])
         for card in block['cards'].values():
             self.assertEqual(card['state'], 'unread')
-            self.assertIsNone(card['plan'])
-            self.assertEqual(card['rungs'], [])
+        # And nothing mapped is not the same as nothing offered: this machine has never been told
+        # which card is which, and its cards declare their own models, so three of them arrive with
+        # the ladder measured for those models and one — the RTX 4080, a model no ladder has run —
+        # arrives with nothing to choose.
+        by_name = {card['name']: card for card in block['cards'].values()}
+        for name, plan in (('RTX 3090', 'rtx3090'), ('RTX 3080 Ti', 'rtx3080-ti'),
+                ('RTX 4080 SUPER', 'rtx4080-super')):
+            self.assertEqual((by_name[name]['plan'], by_name[name]['plan_source']), (plan, 'model'))
+            self.assertEqual([rung['name'] for rung in by_name[name]['rungs']],
+                ['safe', 'sensible', 'assertive'])
+        self.assertEqual((by_name['RTX 4080']['plan'], by_name['RTX 4080']['rungs']), (None, []))
         self.assertEqual(block['writes'], {'available': True, 'reason': None},
             'whether a write may be attempted at all is published, with the reason it may not')
         self.assertIsInstance(block['cadence_seconds'], int)

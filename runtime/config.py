@@ -629,12 +629,51 @@ def gpu_names(host, definition):
 # one that comes from a campaign on a specific board rather than from a configuration. The split
 # follows the house rule: the rungs, their numbers, the envelope they have to sit inside and the
 # evidence behind them are source (config/undervolt.json), and which physical card runs which plan is
-# operational state (`.state/host.json` -> `power_plans`). A card with no plan is offered no rung --
-# `330 W / 1905 MHz / +75` is a GA102 result and means nothing for an Ada board -- but it can still be
-# reverted to stock or moved with numbers of your own, because those need no measurement.
+# operational state (`.state/host.json` -> `power_plans`). That mapping is an override and not a
+# prerequisite: a ladder result belongs to a *model of board*, and the driver says which model is in
+# the slot, so a card whose machine never spelled out the mapping still gets the rungs measured for
+# its own model. `power_plans` then has three uses -- point a card at another plan, name a plan for a
+# card the operator wants under different numbers, or say `null` for a card that must be offered
+# nothing even though its model has been measured. A card no ladder has ever run -- `RTX 4080`,
+# `RTX 3080` -- is offered no rung, because `330 W / 1905 MHz / +75` is a GA102 result and means
+# nothing for an Ada board; it can still be reverted to stock or moved with numbers of your own.
 
 POWER_FILE = 'undervolt.json'
 POWER_RUNGS = ('safe', 'sensible', 'assertive')
+# What a driver puts in front of the words a plan is keyed by. Nothing here is a match on its own:
+# `NVIDIA GeForce RTX 4080 SUPER` and `RTX 4080 SUPER (AD103)` have to say the same card and nothing
+# else, which is why `RTX 4080` never matches the SUPER's plan by being a shorter way of spelling it.
+CARD_NAME_NOISE = ('nvidia', 'geforce', 'corp', 'corporation', 'company', 'limited', 'inc')
+
+
+def card_model(name):
+    """The model string of a card, from whatever words a driver or a human used for it.
+
+    `NVIDIA GeForce RTX 4080 SUPER` -> `rtx4080super`, `RTX 4080 SUPER (AD103)` -> `rtx4080super`,
+    `RTX 3080 Ti (GA102)` -> `rtx3080ti` and the plan id `rtx3080-ti` -> `rtx3080ti`. Everything that
+    compares the result does it by equality: the codename in a plan's name is a comment about the
+    silicon, and the vendor in a driver's name is a brand.
+    """
+    text = re.sub(r'\(.*?\)', '', str(name if name is not None else ''))
+    return ''.join(word for word in re.split(r'[^a-z0-9]+', text.lower())
+        if word and word not in CARD_NAME_NOISE)
+
+
+def power_plan_for_name(registry, name):
+    """The plan measured for this model of card, or None when the table has never seen one.
+
+    This is what makes the feature work on a machine whose private settings never named a plan: the
+    driver reports the model of what is in the slot, and a plan is a measurement of that model. It is
+    never a guess across models -- no plan, no rungs -- and an explicit `power_plans` entry wins over
+    it, because that is the operator overruling the measurement for one card.
+    """
+    model = card_model(name)
+    if not model:
+        return None
+    for plan_id, plan in ((registry or {}).get('plans') or {}).items():
+        if model in (card_model(plan_id), card_model((plan or {}).get('name'))):
+            return plan_id
+    return None
 
 
 def read_power_registry(config_dir):
@@ -652,11 +691,20 @@ def read_power_registry(config_dir):
     require(all(isinstance(envelope.get(key), int) and envelope[key] > 0 for key in
             ('offset_step', 'offset_max', 'clock_min')),
         POWER_FILE + ': envelope needs integer offset_step, offset_max and clock_min, all positive')
+    claimed = {}
     for plan_id, plan in registry['plans'].items():
         require(isinstance(plan_id, str) and re.fullmatch(r'[a-z0-9][a-z0-9-]*', plan_id),
             POWER_FILE + ': plan ids are lowercase slugs, not ' + repr(plan_id))
         require(isinstance(plan, dict) and isinstance(plan.get('name'), str) and plan['name'],
             POWER_FILE + ': plan ' + plan_id + ' needs a name')
+        # A card that has no entry in `power_plans` is matched to a plan by the model string the
+        # driver reported, so two plans claiming one model would make that card's rungs depend on the
+        # order a table happens to iterate in.
+        for model in {card_model(plan_id), card_model(plan.get('name'))} - {''}:
+            require(model not in claimed or claimed[model] == plan_id,
+                POWER_FILE + ': ' + repr(claimed.get(model)) + ' and ' + repr(plan_id) + ' are both '
+                'the plan for a ' + model + ' card, and a card is matched to one plan')
+            claimed[model] = plan_id
         rungs = plan.get('rungs')
         require(isinstance(rungs, dict) and rungs, 'plan ' + plan_id + ' needs at least one rung')
         offsets = []
@@ -691,16 +739,21 @@ def read_power_registry(config_dir):
 def power_plans(host):
     """Which card runs which plan, from the deployment's private settings: {GPU-uuid: plan id}.
 
-    Absent is a real answer: it means nobody has measured this card. A malformed entry is reported
-    rather than dropped, because a typo'd UUID silently un-measures a card that was measured.
+    Absent is a real answer, and it is the common one: it means the machine has never been told, and
+    the card is matched to the plan measured for its own model instead. A plan id here overrides that
+    -- it is how a card is pointed at another card's numbers, or at none: `null` turns the measured
+    rungs off for one card even though its model has been through the ladder, which is what a board
+    with a fault on it wants. A malformed entry is reported rather than dropped, because a typo'd
+    UUID silently un-measures a card that was measured.
     """
     value = (host or {}).get('power_plans') or {}
     require(isinstance(value, dict), 'host.json power_plans is an object of GPU UUID -> plan id')
     for gpu, plan_id in value.items():
         require(re.fullmatch(GPU_UUID, gpu or ''),
             'host.json power_plans has a key that is not a full GPU UUID: ' + repr(gpu))
-        require(isinstance(plan_id, str) and plan_id,
-            'host.json power_plans entry for ' + gpu + ' must name a plan')
+        require(plan_id is None or (isinstance(plan_id, str) and plan_id),
+            'host.json power_plans entry for ' + gpu + ' must name a plan, or be null to offer this '
+            'card no rung even though its model has a measured plan')
     return dict(value)
 
 
@@ -708,9 +761,10 @@ def power_plan(registry, plan_id):
     """One plan by id, or a refusal that lists the plans this revision actually has."""
     plans = (registry or {}).get('plans') or {}
     known = (', '.join(sorted(plans)) if plans else 'none yet')
-    require(plan_id is not None, 'This card has no undervolt plan, so it has no rung to apply. A plan is '
-        'a measurement, and this card has not been through the ladder; this revision has plans for '
-        + known + '. It can still be reverted to stock or given values of your own')
+    require(plan_id is not None, 'This card has no undervolt plan, so it has no rung to apply. A plan '
+        'is a measurement of one model of card, and neither the driver nor this machine has said it '
+        'is a model that has been through the ladder; this revision has plans for ' + known
+        + '. It can still be reverted to stock or given values of your own')
     require(plan_id in plans, 'no undervolt plan named ' + repr(plan_id) + '; this revision knows '
         + known + '. A plan is a measurement, so a card that has not been through the ladder has no '
         'rung to apply')

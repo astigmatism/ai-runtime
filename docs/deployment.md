@@ -1038,24 +1038,31 @@ against.
 rungs per card model, their watts, clock caps and offsets, which one is the card's default, what each
 ladder measured and where the evidence lives, and the envelope the values are validated against (a
 V/F offset must land on a 15 MHz step inside ±150 MHz, a clock cap must clear 210 MHz, watts must fall
-as offsets rise, and a table that breaks any of that is refused rather than half-loaded). Which UUID
-is which card model is not a source fact: `power_plans` in `.state/host.json` maps card UUID to plan
+as offsets rise, and a table that breaks any of that is refused rather than half-loaded). Which UUID is
+which card model is not a source fact, so `power_plans` in `.state/host.json` can map card UUID to plan
 id.
 
 ```json
 "power_plans": {
   "GPU-1a2b…": "rtx3090",
-  "GPU-3c4d…": "rtx4080-super"
+  "GPU-3c4d…": null
 },
 "power_image": "local/ai-runtime:git-…"
 ```
 
-**Absent `power_plans`, nothing is offered and nothing is wrong.** A card with no plan gets no rungs,
-and the panel says so and offers only **Revert** and values by hand; it is never given another card's
-numbers because a 3090 happened to be in the same chassis. Rosalina's `host.json` does not state
-`power_plans` yet, so every card there reads its state and offers nothing to apply until an operator
-adds the mapping — one edit to private settings, no release. `power_image` is optional and exists for
-the case where the controller should not use its own image for the privileged card container.
+**That table is an override, not a prerequisite.** A ladder is a measurement of one *model of card*,
+and the driver reports which model is in the slot, so a card with no entry is matched to the plan
+measured for the name the driver gave it — which is how Rosalina's three measured cards got their rungs
+without anyone typing three UUIDs into private settings, and why the same page there called them
+`custom` and had nothing to offer until this rule existed. An entry is for the two cases a model match
+cannot speak for: pointing one card at another plan's numbers, or `null`, which offers a card no rung at
+all even though its model has been measured — what a board with a fault on it wants. A card whose model
+appears in no table — the RTX 4080, the RTX 3080 — still gets no rungs, the panel says so, and it is
+never handed another card's numbers because a 3090 happened to be in the same chassis; it keeps
+**Revert** and values by hand, which need no measurement. The panel and `power --plans` both say which
+of these a card is in: `host` for the entry above, `model` for the driver's name, `off` for a `null`.
+`power_image` is optional and exists for the case where the controller should not use its own image for
+the privileged card container.
 
 **The controller has no GPUs, so every read and every write is a container.** One `docker run -i --rm
 --pull=never --privileged --user 0:0 --gpus all --network none --label ai-runtime.power=1`, the

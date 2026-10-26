@@ -88,6 +88,14 @@ class PowerCliTests(unittest.TestCase):
             def host_plans(self):
                 return {PowerCliTests.CARDS[0][0]: 'rtx3090'}
 
+            def plans_for_cards(self):
+                """What each card resolves to: the settings table, plus the model match where not."""
+                first = PowerCliTests.CARDS[0][0]
+                return {uuid: {'name': name, 'reported': 'NVIDIA GeForce ' + name,
+                        'plan': 'rtx3090' if uuid == first else 'rtx3080-ti' if 'Ti' in name else None,
+                        'source': 'host' if uuid == first else 'model' if 'Ti' in name else None}
+                    for uuid, name in PowerCliTests.CARDS}
+
         controller = type('C', (), {'power': FakePower()})()
         out = io.StringIO()
         with mock.patch.object(cli, 'Controller', lambda **kwargs: controller), \

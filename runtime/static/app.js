@@ -791,6 +791,18 @@ function renderPower() {
       + `from anything here is Revert to stock, and after that a reboot, which returns this card to stock `
       + `on its own.`;
 
+  /* Which of the reasons a card has rungs, or has none, is the first thing an operator wants here:
+     "measured for the model the driver reported", "overridden by this machine's settings" and "this
+     model has never been through the ladder" are three different sentences with three different next
+     moves, and a page that shows only the radio list leaves the last two indistinguishable. */
+  if (entry.plan_source === 'model') add(panel, node('p', `Plan ${entry.plan}: nobody wrote this `
+    + `card's UUID into this machine's settings, and it never had to be. The driver named the card and `
+    + `this revision has that model's ladder. power_plans in the private settings is only for pointing `
+    + `one card at other numbers, or at none.`, 'sub'));
+  else if (entry.plan_source === 'off') add(panel, node('p', `This machine's settings offer this card `
+    + `no plan, whatever its model has been measured at — the entry for its UUID in power_plans is what `
+    + `says so. Revert and values by hand do not need a plan and still work.`, 'sub'));
+
   if (entry.note) add(panel, node('p', entry.note, 'sub'));
 
   const rungs = node('div', '', 'rungs');
@@ -829,9 +841,13 @@ function renderPower() {
     ? entry.plan_error : entry.plan
     ? `This plan has no rungs, so there is nothing to choose: it has been measured and found to have no `
       + `rung worth recommending. Revert and values by hand still work.`
-    : `No measured rungs, so nothing to choose. This card is not in the rung table, and `
-      + `${watts(read.power_limit)} / ${mhz(read.clock_max_sm)} / +75 is another card's measured result `
-      + `that means nothing here. Measure it, or move it with numbers of your own.`, 'note'));
+    : entry.plan_source === 'off'
+      // No plan because this machine says so, not because the model is unmeasured: different sentence.
+      ? `Nothing is offered here by decision. This machine's settings give this card no plan, whatever `
+        + `its model has been measured at, which leaves Revert and values by hand.`
+      : `No measured rungs, so nothing to choose. No plan in source is for this model of card, and `
+        + `${watts(read.power_limit)} / ${mhz(read.clock_max_sm)} / +75 is another card's measured result `
+        + `that means nothing here. Measure it, or move it with numbers of your own.`, 'note'));
   add(panel, rungs);
 
   const custom = node('details', '', 'custom');

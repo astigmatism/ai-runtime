@@ -178,12 +178,11 @@ def power_uuids(host):
     host.clear()
     host.update(rename(snapshot))
 
-    plans = {}
-    for group, names in host.get('gpu_names', {}).items():
-        for gpu, name in zip(host['gpu_ids'][group], names):
-            if CARDS.get(name):
-                plans[gpu] = CARDS[name]
-    host['power_plans'] = plans
+    # Nothing written down here on purpose. A card is offered the plan measured for the model its own
+    # name says it is, which is every machine in the house: `power_plans` is the override an operator
+    # reaches for only to point one card at other numbers, or at none, and a preview that set it for
+    # every card would draw a machine that does not exist.
+    host['power_plans'] = {}
     return host
 
 

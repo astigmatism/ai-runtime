@@ -84,8 +84,14 @@ def power_command(controller, args):
     if args.plans:
         registry = power.registry()
         require(registry, 'The rung table could not be read: ' + str(power.registry_error()))
+        # `this_machine` is what an operator wrote down; `for_cards` is what each card is actually
+        # offered, which is that table with the plan measured for the card's own model applied where
+        # nothing was written down. Printing both is how a card with no rungs gets explained from a
+        # terminal: "nobody has measured this model" and "this machine turned it off" are answers, and
+        # "the plan a card is offered is invisible" is the bug that started this.
+        resolved = power.plans_for_cards()
         return {'envelope': registry['envelope'], 'plans': registry['plans'],
-            'this_machine': power.host_plans()}
+            'this_machine': power.host_plans(), 'for_cards': resolved}
     if not args.gpu:
         return power.status()
     body = {'gpu': power_card(power, args.gpu)}

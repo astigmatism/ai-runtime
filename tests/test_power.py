@@ -37,15 +37,16 @@ def power_host():
     """The controller fixture's host, with cards that have real UUIDs and one card left unmeasured.
 
     A power request names a card the way the driver does, so the fixture's short `GPU-day-1` ids will
-    not do; and a machine where *every* card is measured would never exercise the state Daisy is in
-    today, where two of them have no plan and must not be offered one.
+    not do. The `power_plans` entry is the override table, and these three entries say what the names
+    the driver gives for these cards already say; the tests that delete the table show that deleting
+    it changes nothing, which is what makes the table an override rather than a prerequisite.
+    `UNMEASURED` is an RTX 4080, a model no ladder has ever run here, so it has no plan with or
+    without an entry, and it is the card that must never be handed a neighbour's numbers.
     """
     host = copy.deepcopy(base.HOST)
     host['gpu_ids'] = {'daytime': [MEASURED, OTHER], 'nighttime': [UNMEASURED, TI]}
     host['gpu_names'] = {'daytime': ['RTX 3090', 'RTX 4080 SUPER'],
         'nighttime': ['RTX 4080', 'RTX 3080 Ti']}
-    # Which card runs which measured plan is the operational half of the feature, and this is the file
-    # that holds it: `UNMEASURED` is left out, which is the state of Daisy's cards today.
     host['power_plans'] = {MEASURED: 'rtx3090', OTHER: 'rtx4080-super', TI: 'rtx3080-ti'}
     return host
 
@@ -202,24 +203,103 @@ class PowerTests(unittest.TestCase):
         # never claims a locked maximum it cannot see.
         self.assertNotIn('clock_lock', json.dumps(card))
 
-    def test_a_card_nobody_measured_offers_no_rung_and_says_why(self):
+    def test_a_card_whose_model_nobody_measured_offers_no_rung_and_says_why(self):
         """`330 W / 1905 MHz / +75` is a GA102 result. Handing it to an unmeasured card because the
-        page needs *something* in the radio list is how a card gets a rung nothing measured."""
-        # `Controller.host` is the document this process read at startup, and the power plan a card
-        # runs is read from it; a test changes the same document the runtime would restart to pick up.
-        host = self.c.host
-        plans = dict(host['power_plans']); plans.pop(TI)
-        host['power_plans'] = plans
-        self.c.save('host.json', host)
-        card = self.block()[TI]
-        self.assertEqual(card['rungs'], [])
-        self.assertIsNone(card['plan'])
-        self.assertEqual(card['state'], 'unread')
-        self.cached(TI, dict(stock_read(TI, CardAgent.names[TI])))
-        self.assertEqual(self.block()[TI]['state'], 'stock')
+        page needs *something* in the radio list is how a card gets a rung nothing measured.
+
+        This is the RTX 4080 and the shared RTX 3080: no plan in source names their models, and no
+        ladder has run them, so the honest page is the reading plus Revert.
+        """
+        self.cached(UNMEASURED, dict(stock_read(UNMEASURED, CardAgent.names[UNMEASURED],
+            power_limit=280, offset=60)))
+        card = self.block()[UNMEASURED]
+        self.assertEqual((card['plan'], card['plan_source'], card['rungs']), (None, None, []))
+        self.assertEqual(card['state'], 'custom')
         with self.assertRaises(RuntimeError) as refused:
-            self.power.write({'gpu': TI, 'action': 'apply', 'rung': 'sensible'})
+            self.power.write({'gpu': UNMEASURED, 'action': 'apply', 'rung': 'sensible'})
         self.assertIn('has no undervolt plan', str(refused.exception))
+        self.assertIn('rtx3090', str(refused.exception), 'a refusal names the plans that do exist')
+        self.assertEqual(self.agent.writes, [], 'a refusal must not reach the driver')
+        # Revert is the write that needs no measurement, which is the reason it is still offered.
+        self.assertEqual(self.power.write({'gpu': UNMEASURED, 'action': 'revert'})['to'], 'stock')
+
+    def test_a_card_with_no_entry_in_the_settings_gets_its_own_model_s_ladder(self):
+        """Rosalina's three measured cards: no `power_plans` anywhere, and a driver that says what it is.
+
+        A plan is a measurement of one *model of card*, and the driver reports the model in the slot, so
+        a machine where nobody typed three UUIDs into private settings was not a machine that had
+        nothing to offer: it was a machine showing a card at 300 W / +105 as `custom`, with Revert as
+        the only thing to press, and the rung it was already sitting at invisible.
+        """
+        host = self.c.host
+        host.pop('power_plans')
+        self.c.save('host.json', host)
+        self.cached(TI, dict(stock_read(TI, CardAgent.names[TI], power_default=400, power_min=100,
+            power_max=450, power_limit=300, offset=105, clock_max_sm=2100)))
+        self.cached(UNMEASURED, dict(stock_read(UNMEASURED, CardAgent.names[UNMEASURED])))
+        cards = self.block()
+        self.assertEqual((cards[TI]['plan'], cards[TI]['plan_source']), ('rtx3080-ti', 'model'))
+        self.assertEqual((cards[TI]['state'], cards[TI]['rung']), ('rung', 'assertive'))
+        self.assertEqual([rung['name'] for rung in cards[TI]['rungs']],
+            ['safe', 'sensible', 'assertive'])
+        self.assertEqual(cards[TI]['default'], 'assertive')
+        self.assertIn('-11.8% energy per token', cards[TI]['measured'])
+        # A model no ladder has run still has nothing to choose: `model` matching is not a licence to
+        # hand a card the nearest number in the table.
+        self.assertEqual((cards[UNMEASURED]['plan'], cards[UNMEASURED]['rungs']), (None, []))
+        # And the rung the page now offers is one the write can actually carry out, by the same
+        # resolution: a page that offered a rung `apply` refused was the other half of the bug.
+        reply = self.power.write({'gpu': TI, 'action': 'apply', 'rung': 'safe', 'override': True})
+        self.assertTrue(reply['ok'])
+        self.assertEqual(self.agent.writes[-1][self.agent.writes[-1].index('--power') + 1], '340')
+        self.assertEqual(self.agent.writes[-1][self.agent.writes[-1].index('--offset') + 1], '45')
+
+    def test_the_name_the_driver_reported_outranks_the_name_an_operator_typed(self):
+        """`gpu_names` is decorative — one host calls two cards `RTX 4080` and `RTX 4080 SUPER`.
+
+        So the driver's name decides and an operator's label decides nothing, which is also what a
+        card that has never been read is left with: the label, and no plan at all when the label does
+        not name a model the table knows.
+        """
+        host = self.c.host
+        host['gpu_names']['daytime'][0] = 'the fast one'
+        host.pop('power_plans')
+        self.c.save('host.json', host)
+        self.cached(MEASURED, stock_read(MEASURED, CardAgent.names[MEASURED]))
+        self.assertEqual((self.block()[MEASURED]['plan'], self.block()[MEASURED]['plan_source']),
+            ('rtx3090', 'model'))
+        # The reading is gone; the label is what is left, and it names nothing that has been measured.
+        self.c.save('power/latest.json', {})
+        self.assertEqual((self.block()[MEASURED]['plan'], self.block()[MEASURED]['rungs']), (None, []))
+
+    def test_an_entry_in_the_settings_overrides_the_card_s_own_model(self):
+        """The table is how an operator puts one board under different numbers than its model's."""
+        host = self.c.host
+        host['power_plans'] = {TI: 'rtx4080-super'}
+        self.c.save('host.json', host)
+        self.cached(TI, stock_read(TI, CardAgent.names[TI]))
+        card = self.block()[TI]
+        self.assertEqual((card['plan'], card['plan_source']), ('rtx4080-super', 'host'))
+        self.assertEqual([rung['power'] for rung in card['rungs']], [270, 255, 240])
+
+    def test_null_offers_one_card_no_rung_although_its_model_has_them(self):
+        """A board with a fault on it is taken out of the ladder without taking its model out."""
+        host = self.c.host
+        host['power_plans'] = {TI: None}
+        self.c.save('host.json', host)
+        self.cached(TI, dict(stock_read(TI, CardAgent.names[TI], power_default=400, power_min=100,
+            power_max=450, power_limit=300, offset=105)))
+        card = self.block()[TI]
+        self.assertEqual((card['plan'], card['plan_source'], card['rungs']), (None, 'off', []))
+        self.assertIsNone(card['plan_error'])
+        # What the driver says the card is doing is still what the page says.
+        self.assertEqual(card['read']['offset'], 105)
+        self.assertEqual(card['state'], 'custom')
+        with self.assertRaises(RuntimeError) as refused:
+            self.power.write({'gpu': TI, 'action': 'apply', 'rung': 'safe'})
+        self.assertIn('turn the measured rungs off', str(refused.exception))
+        self.assertEqual(self.agent.writes, [], 'a refusal must not reach the driver')
+        self.assertEqual(self.power.write({'gpu': TI, 'action': 'revert'})['to'], 'stock')
 
     def test_a_plan_that_is_not_in_source_is_reported_instead_of_ignored(self):
         host = self.c.host
