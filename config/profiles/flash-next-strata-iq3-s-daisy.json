@@ -7,8 +7,8 @@
   "flash-next-strata-iq3-s-daisy"
  ],
  "exclusive": true,
- "display_name": "Qwen3.8 Flash-Next IQ3_S",
- "variant_label": "two Turing cards, the 64K window, the IQ3_S tier",
+ "display_name": "Qwen3.8 Flash-Next IQ3_S, higher quality",
+ "variant_label": "two Turing cards, the 64K window, the IQ3_S tier: 87.69 % top-1 against 84.46 % on the IQ3_XXS tier, for 6.6 % of decode",
  "engine": "strata-sm75-296b59d2f73c",
  "container_name": "qwen38-iq3s",
  "host_port": 18080,

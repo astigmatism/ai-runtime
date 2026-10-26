@@ -7,8 +7,8 @@
   "flash-next-strata-iq3-xxs-daisy-128k"
  ],
  "exclusive": true,
- "display_name": "Qwen3.8 Flash-Next IQ3_XXS",
- "variant_label": "two Turing cards, the 128K window, tensor-core prompt path",
+ "display_name": "Qwen3.8 Flash-Next IQ3_XXS, long context",
+ "variant_label": "two Turing cards, the 128K window, the tensor-core prompt path: measured serving a 118,514-token prompt on these cards, for 483 expert-cache slots and 1.8-2.6 % of short-prompt decode",
  "engine": "strata-sm75-296b59d2f73c",
  "container_name": "qwen38-128k",
  "host_port": 18080,

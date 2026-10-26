@@ -10,8 +10,8 @@
     "qwen27b-q6k-pair": "f1cb58854d2ef59be4e4cdd867d58f8a20558791433bd035d4c34e6860a8a3ea",
     "qwen27b-q8-pair": "bf5eef333e2f6811bd881db1c88cde98796c113090d83d13149c5d3b8d8d97d8",
     "flash-next-strata-iq3-xxs-daisy": "818181444913892d92fe4b17261060dd473f2cc65c03d037f2c12894e7704bc6",
-    "flash-next-strata-iq3-xxs-daisy-tc": "81dd029a5048957e9683c170e0d1d5fa5e6e289ef25a6f804a0f6286b3a05069",
-    "flash-next-strata-iq3-xxs-daisy-128k": "726a36e6a98fbe18c88f2027e5bc0e436a9d721591f90b0ce9e70798be843cc5",
-    "flash-next-strata-iq3-s-daisy": "6e03e751bb05cae9f162a7ad461ac87f5bba6c5a1e37837cd888b3783d680a53"
+    "flash-next-strata-iq3-xxs-daisy-tc": "c178c68206617a549a50982c469815fdcdd46843a9aa3cc36c69a3d8b1ed6f28",
+    "flash-next-strata-iq3-xxs-daisy-128k": "3821bbbfb13c330627d85bbf3424745d301d436a9abb90cd1aa147d66b927f75",
+    "flash-next-strata-iq3-s-daisy": "3904881e04f485c495a3744d25860153bb336f1a7d681fba7d44df52858ae5b6"
   }
 }

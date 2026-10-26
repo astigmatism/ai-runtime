@@ -556,8 +556,9 @@ class ControllerTests(unittest.TestCase):
             'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next (256K)', 'Qwen3.8 Flash-Next (256K)',
             'Qwen3.8 Flash-Next (512K)', 'Qwen3.8 Flash-Next Two-Card (256K)',
             'Qwen3.8 Flash-Next Two-Card IQ3_S (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)',
-             'Qwen3.8 Flash-Next IQ3_XXS TC (64K)', 'Qwen3.8 Flash-Next IQ3_XXS (128K)',
-             'Qwen3.8 Flash-Next IQ3_S (64K)'])
+             'Qwen3.8 Flash-Next IQ3_XXS, faster prompts (64K)',
+             'Qwen3.8 Flash-Next IQ3_XXS, long context (128K)',
+             'Qwen3.8 Flash-Next IQ3_S, higher quality (64K)'])
         # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
         # ladder edited in the profile shows up on the page rather than only in the engine that boots
         # on it -- and the two 256K configurations move together on every rung: the run config is one
@@ -583,9 +584,9 @@ class ControllerTests(unittest.TestCase):
              'two cards, nothing else changed',
              'two cards, the 3.5-bit pack',
              'two Turing cards, the 64K window',
-              'two Turing cards, the 64K window, tensor-core prompt path',
-              'two Turing cards, the 128K window, tensor-core prompt path',
-              'two Turing cards, the 64K window, the IQ3_S tier'])
+              'two Turing cards, the 64K window, the tensor-core prompt path: +11 % prompt processing, 10 % less time to the first token of a 58k prompt, decode unchanged',
+              'two Turing cards, the 128K window, the tensor-core prompt path: measured serving a 118,514-token prompt on these cards, for 483 expert-cache slots and 1.8-2.6 % of short-prompt decode',
+              'two Turing cards, the 64K window, the IQ3_S tier: 87.69 % top-1 against 84.46 % on the IQ3_XXS tier, for 6.6 % of decode'])
         self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
         self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
         self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
