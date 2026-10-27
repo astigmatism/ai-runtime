@@ -1529,16 +1529,26 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         config the engine reads from its own workspace, so a configuration that leaves them unsaid
         inherits whatever the last one that started left behind. The budget and the table are stated
         by every configuration of this engine, and the two refinements appear only where a budget
-        makes them mean something."""
+        makes them mean something.
+
+        `off` means different things at three shards and at two, and this row is where that is held
+        apart. At three shards (this machine's UD-IQ4_XS pack) upstream's setup names no table and
+        the engine reads shard 2's table by itself, so `off` is that boot restated. Every pack on the
+        second machine is two shards, where setup.py names the table itself — its own `len(shards) <= 2`
+        branch, whose comment calls the explicit flag the measured setup — so `off` there is not a no-op:
+        it takes out a table every boot of that machine has run with. The second machine therefore names
+        its shard, and has since 2026-10-27, which is the day its tag was found to be running upstream's
+        entry point and nothing this file stated about a table had ever been read."""
+        ple = lambda tier: '/weights/Qwen3.8-Flash-Next-GSQ-RCO-%s-00002-of-00002.gguf' % tier
         stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
             'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
             'flash-next-strata-two-card-iq4-xs': ('16384', 'off'),
             'flash-next-strata-two-card-iq3-s': ('16384', 'off'),
-            'flash-next-strata-iq3-xxs-daisy': ('off', 'off'),
-            'flash-next-strata-iq3-xxs-daisy-tc': ('off', 'off'),
-            'flash-next-strata-iq3-xxs-daisy-128k': ('off', 'off'),
-            'flash-next-strata-iq3-s-daisy': ('off', 'off')}
+            'flash-next-strata-iq3-xxs-daisy': ('off', ple('IQ3_XXS')),
+            'flash-next-strata-iq3-xxs-daisy-tc': ('off', ple('IQ3_XXS')),
+            'flash-next-strata-iq3-xxs-daisy-128k': ('off', ple('IQ3_XXS')),
+            'flash-next-strata-iq3-s-daisy': ('off', ple('IQ3_S'))}
         self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
         for name, (budget, table) in stated.items():
             with self.subTest(profile=name):

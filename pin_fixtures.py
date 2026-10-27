@@ -13,6 +13,9 @@ import test_config as T                                          # noqa: E402
 from runtime.config import render                                 # noqa: E402
 
 NEW = {
+    'flash-next-strata-iq3-xxs-daisy':
+        'New on 2026-10-20, not a rename: the first configuration of the second machine, and the first '
+        'entry in this file pinned on a host that is not Rosalina.',
     'flash-next-strata-iq3-xxs-daisy-tc':
         'New on 2026-10-25, not a rename: the tensor-core prompt path measured on the second '
         'machine on that date (+11 % prompt, 10 % less time to the first token of a 58k prompt, '
@@ -28,6 +31,13 @@ NEW = {
         'second artifact is a hardlink to another tier\'s PLE shard rather than a second copy.',
 }
 
+# Said once, on every entry the day moves: a pin is the only place that says which launch was
+# agreed, so a rebuild that changes what a profile means has to be legible here as well as there.
+REASON = (" Re-pinned on 2026-10-27: the tag that machine runs was rebuilt to carry this house's entry "
+          "point, so its configurations finally state a refusal direction, a sampling preset, a "
+          "tool-call recovery and a PLE table that nothing on that machine had been reading, and the "
+          "launch moved with them.")
+
 renamed_path = Path('tests/fixtures/renamed-profiles.json')
 active_path = Path('tests/fixtures/active-bundles.json')
 renamed = json.loads(renamed_path.read_text())
@@ -37,8 +47,11 @@ for name, note in NEW.items():
     host = T.fixture_host(name)
     bundle = render(T.ROOT / 'config', host, name)
     service = bundle['compose']['services'][T.OWN[name]]
-    entry = {'previous_id': None, 'compose_sha256': T.digest(T.filed_by_role(bundle)['compose']),
-             'coding_service_sha256': T.digest(T.stamped(T.OWN[name], service)), 'note': note}
+    note = (renamed.get(name) or {}).get('note') or note
+    entry = {'previous_id': (renamed.get(name) or {}).get('previous_id'),
+             'compose_sha256': T.digest(T.filed_by_role(bundle)['compose']),
+             'coding_service_sha256': T.digest(T.stamped(T.OWN[name], service)),
+             'note': note if REASON in note else note + REASON}
     renamed[name] = entry
     active['bundles'][name] = T.digest(T.filed_by_role(bundle))
     print('pinned', name, 'alone' if name in T.ALONE else 'shares-a-model',

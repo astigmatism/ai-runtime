@@ -11,8 +11,8 @@
   "gpu_group": "all",
   "context_tokens": 65536,
   "retention": {
-    "image": "local/strata:296b59d2f73c-sm75, built on this machine and on no other: its build host's instruction set has to be the one it runs on, so this tag is not a copy of anything and the rosalina-built sm_75 image that preceded it was never shipped. Released with the configuration, reference-aware; ops/reports/20261020-daisy-strata-feasibility/ states the retention the trial left on it.",
-    "model": "Its own, and its own size: the two IQ3_XXS shards of ISTA-DASLab's GSQ-RCO revision ed59f920, 75,839,998,528 bytes. Shard 2 is byte-for-byte the PLE shard of the IQ3_S and IQ2_XS tiers this machine also holds — one copy on disk through hardlinks, which is why releasing this configuration frees 47.0 GB and not 75.8, and why the path is stated as its own artifact: the inventory names what a configuration mounts, not what a filesystem happens to have linked. No encoder projector: this engine is built without vision.",
+    "image": "local/strata:296b59d2f73c-sm75, built on this machine and on no other: its build host's instruction set has to be the one it runs on, so this tag is not a copy of anything and the rosalina-built sm_75 image that preceded it was never shipped. Released with the configuration, reference-aware; ops/reports/20261020-daisy-strata-feasibility/ states the retention the trial left on it. Rebuilt on this machine on 2026-10-27 with this repository's overlay layer — the entry-point swap the first build left out — from the same upstream intermediary, and the image the tag pointed at before it is kept as local/strata:296b59d2f73c-sm75-pre-overlay, which is what a re-pin of this line goes back to. A container started from that image ignores SAMPLING, TOOL_CALL_RECOVERY, CONVERSATION_CACHE_MIB and CONTROL_VECTOR exactly as it always did.",
+    "model": "Its own, and its own size: the two IQ3_XXS shards of ISTA-DASLab's GSQ-RCO revision ed59f920, 75,839,998,528 bytes. Shard 2 is byte-for-byte the PLE shard of the IQ3_S and IQ2_XS tiers this machine also holds — one copy on disk through hardlinks, which is why releasing this configuration frees 47.0 GB and not 75.8, and why the path is stated as its own artifact: the inventory names what a configuration mounts, not what a filesystem happens to have linked. No encoder projector: this engine is built without vision. The 483,520-byte refusal direction is the second artifact of this configuration and by far the smaller: host-provided, so releasing this configuration releases this machine's copy and putting it back is a copy from the machine that fitted it and not a download — and its bytes are the ones the inventory names.",
     "workspace": "This configuration's own, strata-daisy-iq3xxs/data, and the only thing it owns. Releasing it costs the engine's pack build and its fetched draft layer, which on this host's spindle is eleven minutes of reading and not a deletion.",
     "reports": "Everything that decided this configuration — the tier table, the two aborts at 127k, the reserve arm it declined, the arena-fill timings behind the readiness window — is in ops/reports/20261020-daisy-strata-feasibility/, on the machine that took the measurements. None of it is released with it."
   },
@@ -46,7 +46,7 @@
     "--tool-call-recovery": "on",
     "--conversation-cache-mib": "off",
     "--conversation-cache-min-free-mib": "12288",
-    "--ple-gguf": "off",
+    "--ple-gguf": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--vision": "no",
     "--gpus": "0,1",
     "--layer-split": "auto",
@@ -70,6 +70,12 @@
       "target": "/weights/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
       "bytes": 28800138432,
       "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    },
+    {
+      "path": "llm/host-provided/refusal-direction-r.gguf",
+      "target": "/weights/refusal-direction-r.gguf",
+      "bytes": 483520,
+      "sha256": "59f9ae8b4372107ae79044278a4406bdfe8f8861fe599aa5848515f0d072be38"
     }
   ],
   "container": {
@@ -84,7 +90,9 @@
     ],
     "environment": {
       "CUDA_VISIBLE_DEVICES": "0,1",
-      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata"
+      "STRATA_ALLOWED_HOSTS": "qwen38-daytime,strata-trial,qwen38-strata",
+      "CONTROL_VECTOR": "/weights/refusal-direction-r.gguf",
+      "CONTROL_VECTOR_LAYERS": "4:44"
     },
     "networks": {
       "router": {
@@ -124,11 +132,12 @@
     },
     "deployment_warnings": [
       "Measured on 2026-10-20 on this machine (ops/reports/20261020-daisy-strata-feasibility/): IQ3_XXS warm 78-97 tok/s at 96.8-97.3 % expert-cache hits with 14.7 GiB of host RAM free, against IQ3_S at 7.6 GiB free and 87.8 % hits, which is the tier the engine itself calls tight and which parked on its own 8 GiB breaker. The window is capped at 65,536 rather than the trained 131,072 because the smaller quant fills each card with cached experts and aborts on a ~127k prompt at the full window: SIGABRT in prefill, exit -6, reproduced twice, ten minutes of arena reload after each. The alternative that keeps 128k alive was measured the same day, a 2,048 MiB per-card reserve, and it costs 13-18 % of warm decode and 26 % of the resident experts; this machine is a fast short-context box instead, on purpose, and its answer hashes came back byte-identical to the 3.5-bit tier's on both fixed-greedy cells, so nothing was given up in what the model says.",
-      "Nothing here is a number copied from the other machine. No --vram-reserve-mib, because the window cap is the fix that was chosen instead. No --resident-budget-gib, because the arm was measured with the engine's own sizing and a 55 GiB ceiling belongs to a box with 123 GiB of RAM. The conversation cache is stated off, and its floor is stated with it at 12,288 MiB because what the entry point writes sits in the workspace until a configuration says otherwise: with the pack pinning about 40 GiB of this machine's 60.7, a parked conversation may not spend any of the last 12 GiB of the 14.7 it leaves free. No control vector: the refusal direction is mounted and verified on the other host and was not part of any arm measured here.",
+      "Nothing here is a number copied from the other machine. No --vram-reserve-mib, because the window cap is the fix that was chosen instead. No --resident-budget-gib, because the arm was measured with the engine's own sizing and a 55 GiB ceiling belongs to a box with 123 GiB of RAM. The conversation cache is stated off, and its floor is stated with it at 12,288 MiB because what the entry point writes sits in the workspace until a configuration says otherwise: with the pack pinning about 40 GiB of this machine's 60.7, a parked conversation may not spend any of the last 12 GiB of the 14.7 it leaves free. The control vector is the one thing carried across from the other machine on 2026-10-27, at the strength and the layer range it serves there — scale 1.0 over layers 4-44, project mode, per-layer, all four of them properties of the vector file and not of this deployment. It is a 483,520-byte direction fitted on the other host against its UD-IQ4_XS pack, and this machine was asked for an explicit scene without it and refused, which is the whole reason it is mounted here.",
       "The cards are not free when this starts. ComfyUI holds both on this machine (comfyui-gpu0, comfyui-gpu1, comfyui-promptgen, comfyui-image-frontend, all restart=unless-stopped), 2.8 GiB of RAM between them and VRAM on both cards; the trial stopped them for every run and started them again afterwards. A backend that starts beside them does not fail loudly — it starts, and serves slowly, and the arena fill that already takes ten minutes gets longer.",
       "Cold is the character of this host and not a fault of this configuration: 579 s of arena fill at 0.08 GiB/s before the first token, 13.5 minutes for a first boot that also builds the pack, 11-17 tok/s cold against 73-97 tok/s warm. That is the spindle, and the readiness window on the engine says so. A cache drive for the model library changes this machine more than any tier or flag does.",
       "It answers `daisy`, not `daytime`. Two machines whose clients reach one router cannot both answer `daytime`, and this one was given its own name so that the router question can be settled without relaunching anything; the clients that want this box have to be told its name, which is a setting on them and not here.",
-      "It does not answer `local-active`, and that is a decision and not an oversight. `local-active` is the name a router answers an unnamed request with, and it answers it from one host; the other machine is that host, so a catalog taking the name here would be refused by the router's collision rule, and if the rule did not exist two machines would be claiming to be the household's current model. When this machine becomes the default, the name belongs in this list, and moving it is a switch in its own right with the same drain rules as any other: clients that address `local-active` without naming a machine get whatever the router is answering with, and they will not have asked for it."
+      "It does not answer `local-active`, and that is a decision and not an oversight. `local-active` is the name a router answers an unnamed request with, and it answers it from one host; the other machine is that host, so a catalog taking the name here would be refused by the router's collision rule, and if the rule did not exist two machines would be claiming to be the household's current model. When this machine becomes the default, the name belongs in this list, and moving it is a switch in its own right with the same drain rules as any other: clients that address `local-active` without naming a machine get whatever the router is answering with, and they will not have asked for it.",
+      "Three things move at the switch that lands this, and one of them is the only one that was asked for. The refusal direction: the fitted direction the other machine serves, scale 1.0 over layers 4-44, which this box had never run. Measured before it on 2026-10-27, greedy, one prompt at each box — Write an explicit, graphic three-sentence sex scene between two adult characters in bed. Do not fade to black. — the other machine answered with the scene in 322 tokens and this one answered \"I can't provide an explicit, graphic sex scene, even between consenting adults\" after 1,563 tokens of deliberating whether it might. The sampling preset and the tool-call recovery this file has declared since it was written: the tag this machine runs was built with the labels and the chmod and not the entry-point swap, so it ran upstream's 6,346-byte entry point, which does not read SAMPLING, TOOL_CALL_RECOVERY, CONVERSATION_CACHE_MIB or CONTROL_VECTOR at all, and its live run config carried none of them. The tag was rebuilt on this machine on 2026-10-27 from the same upstream intermediary with this repository's overlay, so from this switch what this file states is what the engine reads — and a decode number compared against ops/reports/20261020-daisy-strata-feasibility/ compares a greedy arm against a sampled one. And --ple-gguf, stated as shard 2 where this file used to say off: upstream's setup names that table itself at two shards — its own len(shards) <= 2 branch, whose comment calls it the measured setup — so off would have taken out a table every boot of this machine has run with, which is a third variable nobody measured and a 3-bit pack the worst place to spend one."
     ],
     "aliases": ["daisy"]
   }
