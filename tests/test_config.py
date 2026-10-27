@@ -2473,12 +2473,38 @@ class RungTableTests(unittest.TestCase):
     def request(self, **body):
         return power_request(body, self.envelope, (100, 350))
 
+
+    def test_a_rung_may_ask_for_no_clock_lock_at_all(self):
+        """`clock_max: null` is a measured state, not a missing number.
+
+        The Turing pair of the 2080 Ti campaign is served by rungs whose whole design is that the
+        offset does the work and the clocks stay where the driver put them, because a floor written
+        below the top bin costs a multiple of decode on that board. gpucard already writes `-rgc` for
+        a want with no clock_max and power.py already omits the flag, so the table has to be able to
+        hold the intention for the sake of the next reader who trusts it.
+        """
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3080-ti']['rungs']['safe']['clock_max'] = None
+        self.assertIs(read_power_registry(table_with(plans=plans))['plans']['rtx3080-ti']['rungs']
+            ['safe']['clock_max'], None)
+
+    def test_a_clock_lock_is_still_a_number_or_nothing(self):
+        """Zero, `false` and a string are not "no lock": each is somebody meaning something else."""
+        for bad in (0, -1, 'none', True):
+            plans = copy.deepcopy(self.table['plans'])
+            plans['rtx3080-ti']['rungs']['safe']['clock_max'] = bad
+            self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
+        # A real number still has to clear the floor, or the lock pins the card to it.
+        plans = copy.deepcopy(self.table['plans'])
+        plans['rtx3080-ti']['rungs']['safe']['clock_max'] = 210
+        self.assertRaises(RuntimeError, read_power_registry, table_with(plans=plans))
     def test_the_shipped_table_is_the_numbers_the_campaigns_measured(self):
         """A guard on the evidence, not on the shape. These three defaults are the state of the art on
         this hardware as of the campaigns that produced them, and one of them was moved *off* the
-        ladder winner on purpose; a silent edit to any of the three is a change of policy."""
+        ladder winner on purpose; a silent edit to any of them is a change of policy."""
         plans = self.table['plans']
-        self.assertEqual(sorted(plans), ['rtx3080-ti', 'rtx3090', 'rtx4080-super'])
+        self.assertEqual(sorted(plans),
+            ['rtx2080-ti', 'rtx3080-ti', 'rtx3090', 'rtx4080-super'])
         self.assertEqual({plan['default'] for plan in plans.values()},
             {'assertive', 'sensible', 'safe'})
         self.assertEqual(plans['rtx3090']['default'], 'sensible')
@@ -2488,6 +2514,11 @@ class RungTableTests(unittest.TestCase):
         # The 4080 SUPER is the one whose recommended rung is not its best-measured rung, and the note
         # that says so is part of the table: without it, the next reader "fixes" the default.
         self.assertEqual(plans['rtx4080-super']['default'], 'safe')
+        # Daisy's pair went through the same ladder on 2026-10-26; the Turing rung set is
+        # its own measurement, not an Ampere or Ada number translated.
+        self.assertEqual(plans['rtx2080-ti']['default'], 'sensible')
+        self.assertEqual(plans['rtx2080-ti']['rungs']['sensible'],
+            {'power': 220, 'clock_max': None, 'offset': 105})
         self.assertIn('stopped', plans['rtx4080-super']['note'])
         self.assertEqual(self.envelope['offset_step'], 15)
         self.assertEqual(self.envelope['offset_max'], 150)
@@ -2569,6 +2600,7 @@ class RungTableTests(unittest.TestCase):
         self.assertEqual(power_plan_for_name(table, 'NVIDIA GeForce RTX 4080 SUPER'), 'rtx4080-super')
         # What an operator typed in `gpu_names` and what the plan calls the silicon both work.
         self.assertEqual(power_plan_for_name(table, 'RTX 4080 SUPER'), 'rtx4080-super')
+        self.assertEqual(power_plan_for_name(table, 'NVIDIA GeForce RTX 2080 Ti'), 'rtx2080-ti')
         self.assertEqual(power_plan_for_name(table, 'RTX 3080 Ti (GA102)'), 'rtx3080-ti')
         # A model no ladder has run has no plan, and a nearer model is not an answer.
         self.assertIsNone(power_plan_for_name(table, 'NVIDIA GeForce RTX 4080'))
@@ -2594,7 +2626,7 @@ class RungTableTests(unittest.TestCase):
         plans['rtx4000'] = {'name': 'RTX 4000 SFF Ada (AD104)', 'arch': 'ada', 'default': 'safe',
             'rungs': {'safe': {'power': 70, 'clock_max': 1560, 'offset': 45}}}
         self.assertEqual(sorted(read_power_registry(table_with(plans=plans))['plans']),
-            ['rtx3080-ti', 'rtx3090', 'rtx4000', 'rtx4080-super'])
+            ['rtx2080-ti', 'rtx3080-ti', 'rtx3090', 'rtx4000', 'rtx4080-super'])
 
     def test_a_write_names_a_card_and_one_kind_of_asking_and_nothing_else(self):
         card = 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c'

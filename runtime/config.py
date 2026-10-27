@@ -712,15 +712,25 @@ def read_power_registry(config_dir):
             require(name in POWER_RUNGS, 'plan ' + plan_id + ': unknown rung name ' + repr(name) +
                 '; a rung is one of ' + ', '.join(POWER_RUNGS) + ' so that "the middle one" means one thing')
             require(isinstance(rung, dict) and all(isinstance(rung.get(key), (int, float))
-                    and rung[key] > 0 for key in ('power', 'clock_max', 'offset')),
-                'plan ' + plan_id + ' rung ' + name + ': power, clock_max and offset are positive numbers')
+                    and not isinstance(rung[key], bool) and rung[key] > 0 for key in ('power', 'offset')),
+                'plan ' + plan_id + ' rung ' + name + ': power and offset are positive numbers')
+            # `clock_max: null` is a rung that asks for no clock lock at all, and on the machines that
+            # need one it is a measured state rather than a missing number: a Turing floor written
+            # below the top bin is not insurance, it is a decode penalty, so the honest rung leaves
+            # the clocks where the driver put them. gpucard writes `-rgc` for it, and power.py leaves
+            # `--clock-max` out of the argv.
+            require(rung.get('clock_max', 'missing') is None or (
+                isinstance(rung['clock_max'], (int, float)) and not isinstance(rung['clock_max'], bool)
+                and rung['clock_max'] > 0),
+                'plan ' + plan_id + ' rung ' + name + ': clock_max is a positive number, or null to '
+                'leave the clocks unlocked')
             require(float(rung['offset']) % envelope['offset_step'] == 0,
                 'plan ' + plan_id + ' rung ' + name + ': offset must sit on the driver\'s '
                 + str(envelope['offset_step']) + ' MHz step')
             require(-envelope['offset_max'] <= rung['offset'] <= envelope['offset_max'],
                 'plan ' + plan_id + ' rung ' + name + ': offset outside +/-' + str(envelope['offset_max']) +
                 ' MHz proven on this driver')
-            require(rung['clock_max'] > envelope['clock_min'],
+            require(rung.get('clock_max') is None or rung['clock_max'] > envelope['clock_min'],
                 'plan ' + plan_id + ' rung ' + name + ': a max clock at or below the floor locks the card up')
             offsets.append(rung['offset'])
         require(len(set(offsets)) == len(offsets), 'plan ' + plan_id + ': two rungs share an offset')

@@ -46,6 +46,18 @@
         "sensible": { "power": 255, "clock_max": 2640, "offset": 75 },
         "assertive": { "power": 240, "clock_max": 2520, "offset": 105 }
       }
+    },
+
+    "rtx2080-ti": {
+      "name": "RTX 2080 Ti (TU102)",
+      "arch": "turing",
+      "default": "sensible",
+      "measured": "2026-10-27: measured on two RTX 2080 Ti FE boards, which hold one Strata model between them, so every arm was applied to both and sampled on both. sensible: -8.9% joules/token and +1.8% decode against three quiet stock takes whose replay-window floor is +/-0.3%, answers identical, 86/76 C against 88/79 C at stock, at a cost of +1.16 W and +0.32 W of idle draw on cards a and b; 31.6 W saved while loaded, so it pays for itself after roughly 1.1 loaded hours a day. safe: -1.2% at stock watts - thermals and throughput, not a saving, and it clears none of the shipping gates. Campaign: /home/astigmatism/reports/2026-10-26-2080ti-undervolt/ (mirrored on Rosalina), closed early by decision with the 2 h soak replaced by observation under production traffic.",
+      "note": "No rung on this board carries a clock cap, and none may silently acquire one. The campaign measured power and offset with the driver's clock lock deleted after every window (instrument/measure.sh: drop_lock), because a positive V/F offset makes this board ask for clocks *above* its nominal top bin — at +150 a card ran 2175 MHz — so `-lgc 210,2160` is a real cap at exactly these offsets rather than a no-op. Whether a cap below the top bin is merely harmful or catastrophic is still open: the lock sweep (03:22-03:30) showed `-lgc` does hold and is invisible in `clocks.max.sm`, but its 30-second windows never left the ramp, and the earlier figure of a lost 82 % of decode turned out to be a log-parsing artifact. What is settled is the shipping shape: every long-window number here was taken unlocked, so a Turing rung states `clock_max: null` and the write drops the lock. The runtime already does the right thing with a null (runtime/gpucard.py:182 falls to -rgc, runtime/power.py:192 omits --clock-max); only the registry validator had to learn that null is an intention. The default sits on the rung the campaign recommends; a reboot returns both cards to stock by itself, which is the recovery method.",
+      "rungs": {
+        "safe": { "power": 260, "clock_max": null, "offset": 60 },
+        "sensible": { "power": 220, "clock_max": null, "offset": 105 }
+      }
     }
   }
 }
