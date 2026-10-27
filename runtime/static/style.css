@@ -329,3 +329,49 @@ footer { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wr
   .power .custom .fields { grid-template-columns: minmax(0, 1fr) }
   .power .acts button { flex: 1 1 100% }
 }
+
+/* Power sets: the machine-wide counterpart of the panel above. Deliberately the same vocabulary —
+   rows, tags, gates — because it is the same three knobs reached over the whole chassis, and a page
+   that invents a second visual language for one card and another for five invites the operator to read
+   the second one as something other than the first. What is new here is the per-card line: it is the
+   only place the page can say "this card is not in this machine any more" and "this slot changed hands"
+   apart, and both must be unmissable before Apply is pressed. */
+.sets { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 22px;
+  display: grid; gap: 16px; margin-top: 16px }
+.sets[hidden] { display: none }
+.sets h2 { margin: 0 }
+.sets h3 { margin: 0; font-size: 14px }
+.sets .head { display: grid; gap: 6px }
+.sets .head .sub { margin: 0 }
+.sets .set { border: 1px solid #2f4048; border-radius: 13px; background: #111c20; padding: 14px 16px;
+  display: grid; gap: 10px }
+.sets .set.builtin { border-style: dashed; border-color: #4a626c }
+.sets .set-head { display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  flex-wrap: wrap }
+.sets .set-head .name { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap }
+.sets .set-head .tags { display: flex; gap: 6px }
+.sets .sub { font-size: 11.5px; color: var(--muted); margin: 0; line-height: 1.55 }
+.sets .lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px }
+.sets .lines li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px;
+  color: #cfdde1; border-left: 2px solid #2f4048; padding-left: 10px }
+.sets .lines li b { font-weight: 600; color: #e6f0f2 }
+.sets .lines li i { color: var(--muted); font-style: normal; font-size: 11.5px; flex-basis: 100%;
+  padding-left: 12px }
+.sets .lines li.gone { border-left-color: #6b5340; color: var(--muted) }
+.sets .lines li.warns { border-left-color: var(--warn) }
+.sets .lines .omit { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted);
+  margin-left: auto; text-transform: uppercase; letter-spacing: .06em }
+.sets .lines .omit input { accent-color: var(--day); margin: 0 }
+.sets .save { display: grid; gap: 12px; border-left: 2px solid #4a626c; padding: 2px 0 2px 14px }
+.sets .save .name-field { display: grid; gap: 5px; font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--muted); max-width: 320px }
+.sets .save input[type=text] { font: inherit; font-size: 13px; font-family: ui-monospace,
+  SFMono-Regular, Menlo, monospace; background: #0d181c; color: #e6f0f2; border: 1px solid #2f4048;
+  border-radius: 9px; padding: 8px 10px; letter-spacing: 0; text-transform: none }
+.sets .acts { display: flex; gap: 10px; flex-wrap: wrap; align-items: center }
+.sets .gate { border: 1px solid #7a5548; background: #241a17; color: #ecd6c9; border-radius: 11px;
+  padding: 12px 14px; font-size: 12px; line-height: 1.55 }
+.sets .gate p { margin: 0 }
+.sets .gate label { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; color: #e2d3c6 }
+.sets .gate input { accent-color: var(--warn); margin-top: 2px }

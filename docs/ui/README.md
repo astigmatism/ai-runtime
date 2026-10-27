@@ -1,10 +1,10 @@
 # The page, as it is
 
-Nine states of `runtime/static/`, photographed from `scripts/preview-ui.py` — a real controller, the
+Ten states of `runtime/static/`, photographed from `scripts/preview-ui.py` — a real controller, the
 real registry, a real publication, and `runtime/system.py`'s fake Docker host, so every name, GPU,
 context window, refusal and sink below is what `GET /api/status` actually said, not invented copy.
-The first four are the machine; the last five are one GPU card's power state, which lives inside the
-same page.
+The first four are the machine; the next five are one GPU card's power state, which lives inside the
+same page; the last is that state for the whole machine at once, saved under names.
 
 | File | State |
 | --- | --- |
@@ -17,6 +17,7 @@ same page.
 | `7-power-unmeasured.png` | A card this machine has never measured: no rungs to choose, so the panel offers only **Revert** and **Values by hand**, and says why nothing is pre-filled. It never inherits a 3090's numbers because another card happens to have them. |
 | `8-power-refusal.png` | The health gate. The model on this card is unhealthy, so the panel refuses before the click instead of after, and the refusal carries the tick that means `--skip-health`: **Apply anyway — this engine is not what I am worried about**. The action button stays disabled until it is ticked. |
 | `9-power-phone.png` | The same power lines at phone width: still one word per tile, still legible, with the panel opening under the map rather than beside it. |
+| `10-power-sets.png` | Power sets: `stock`, which is every card this machine reports and cannot be deleted, beside three saved sets — one that fits, one naming a card that left the chassis (`left this machine — its line is skipped`), and one pointing at a slot whose card is now another model — each line saying what applying it would do to that card, and the line below naming the cards in the chassis it leaves alone. Under them, **Save what the cards are at now** with the refusal already shown: the 4080 is at hand-written values, its clock cap cannot be read back, so it would not be recorded and **leave out** is how to save without it. `--power sets` seeds exactly this.
 
 These images are documentation, not an asset the page loads: nothing in `runtime/static/` refers
 to this directory, and no HTML here is served.
@@ -30,6 +31,7 @@ python3 scripts/preview-ui.py --port 8899 --state restoration
 python3 scripts/preview-ui.py --port 8899 --profile qwen27b-q8-pair
 python3 scripts/preview-ui.py --port 8899 --power mixed      # every power state on a tile at once
 python3 scripts/preview-ui.py --port 8899 --power gate       # an engine stopped: writes refuse
+python3 scripts/preview-ui.py --port 8899 --power sets       # three saved sets and a card that left
 ```
 
 Then open `http://127.0.0.1:8899/`. Clicking a configuration redraws the map as a promise; clicking

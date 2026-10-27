@@ -1095,6 +1095,55 @@ the model on it. That is also why `tests/test_restoration.py` does not change wi
 power write drains nothing, is refused outright while a lock is held, and cannot leave a router with
 nothing serving.
 
+**A power set is the whole machine's power state, under a name.** Four cards running three different
+rungs is a state a person wants back, and it is not expressible as four trips to four panels. A set is
+one line per card saying *this card, this rung*, in `.state/power/sets.json`, written by the page or by
+`power --save-set <name>` — see
+[`docs/ui/10-power-sets.png`](ui/10-power-sets.png) for the shape of the whole of it; beside them sits
+`stock`, which is not a memory but every card this machine
+reports right now, back at the driver's own numbers, and therefore cannot be saved, overwritten or
+deleted. Names are one printable line of at most 40 characters, matched case-insensitively because a
+name is an id, and at most 24 sets are kept: a way back that has to be searched for is a way back that
+does not get used. **A set stores pointers, never copies.** Each line names a rung and the plan that
+rung belongs to — plus the watts and offset the driver was read at at save time — and applying the set
+writes what the ladder measures *today*. That is deliberate: a set saved before a campaign retuned a
+plan should follow the retune, and the page says `the rung has moved since you saved it` with both pairs
+of numbers rather than quietly writing the old ones.
+
+**Applying a set is one read pass, one gate, and then the cards.** The pass comes first, because every
+decision below is made against what the driver says now and not against a cache up to half a minute
+old. The health gate is then taken over every card the set would write, before any card is touched: an
+unhealthy model anywhere in the set refuses the whole set, because half a set is a machine in a state
+nobody saved, and `override` is the one word that says otherwise. After that each card gets the same
+write the panel does — three driver calls and a read-back, under the maintenance lock the panel takes —
+and a card whose driver says no is recorded and named while its neighbours carry on, with the reply
+saying which is which. Nothing is drained and no request is paused, and every entry in
+`.state/power/history.json` says which set it came from.
+
+**A set that does not name a card leaves it exactly where it is, and a card that left is skipped.** Both
+halves are the feature, not edge cases. A card added last week is running whatever it was set up to
+run, and `apply the saved set` must not mean `reset the new card`: cards in the chassis that the set
+does not name are reported as left alone and never written. A card that has gone out of the machine —
+pulled, swapped, dead — is a line that resolves to nothing, and stopping there would leave the other
+three where they were with no way to say "the rest of it, please". So it is skipped, with one sentence
+saying why, and the rest of the set is applied. The four ways a line can fail to fit are told apart,
+because they want four different next moves: the card is not in this machine any more; this slot holds
+another model of card now, and `sensible` is a number per model of board, so nothing is written there;
+the card resolves to another plan, or to none, which `power_plans` in `.state/host.json` is what says;
+or the rung it names is no longer in that plan, and the refusal lists the rungs that are. The page,
+`power --sets` and the apply reply all read the *same* resolution, so the table an operator read is the
+table the driver carries out.
+
+**A save refuses a card it cannot name.** A card sitting on hand-written values cannot be recorded as a
+rung, and the state cannot be reconstructed later either, because GeForce has no clock-lock query: so
+`--save-set` refuses, names the card, and offers `--omit <card>` — leave that one out on purpose and the
+set applies itself to the rest. A card whose driver will not answer is refused for the same reason. A
+save writes no card, so it is not refused while a switch has the machine: "what were the cards at,
+before this switch moves them" is the question most worth asking then. Sets are read tolerantly and
+written strictly — a file with a comma missing costs the page one line of complaint and does not stop
+the machine, but a save refuses to rewrite a file it cannot fully read, because losing a set while
+reporting a success is the worse failure.
+
 Why the shipped defaults are cautious is in the table's own notes, and the sharpest of them is
 [Rosalina's own Xid 31](#what-the-pair-actually-measured-2026-10-20): an RTX 4080 SUPER at 255 W of a
 320 W default, `MMU Fault: ENGINE GRAPHICS GPC6`. The 4080 SUPER plan therefore ships `safe` — 270 W —
@@ -1109,8 +1158,16 @@ docker exec local-ai-runtime python3 -m runtime power --plans               # th
 docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --rung sensible
 docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --revert
 docker exec local-ai-runtime python3 -m runtime power --gpu 3090 --set 320,1905,75 --override
+
+docker exec local-ai-runtime python3 -m runtime power --sets           # every set, and how each fits
+docker exec local-ai-runtime python3 -m runtime power --save-set service --omit "RTX 4080"
+docker exec local-ai-runtime python3 -m runtime power --use-set service  # and --use-set stock
+docker exec local-ai-runtime python3 -m runtime power --delete-set service
 ```
 
-`--gpu` takes a UUID or enough of a card's name to be one card. To see the panel without a card in
-front of you, `python3 scripts/preview-ui.py --port 8899 --power mixed` draws every state the driver
-can report and `--power gate` stops an engine so the refusals can be read.
+`--gpu` and `--omit` take a UUID or enough of a card's name to be exactly one card; `RTX 4080` is not,
+on a machine that also has an `RTX 4080 SUPER`. To see the panel without a card in front of you,
+`python3 scripts/preview-ui.py --port 8899 --power mixed` draws every state the driver can report,
+`--power gate` stops an engine so the refusals can be read, and `--power sets` leaves three saved sets
+behind — one that fits, one naming a card that left the chassis, and one pointing at a slot whose card
+is now another model — so every line a set can say is on the screen at once.

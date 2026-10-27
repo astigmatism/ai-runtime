@@ -1077,6 +1077,275 @@ function powerBad(key, read, envelope) {
 }
 
 
+/* ------------------------------------------------ power sets: the whole machine, saved and recalled
+   A rung is one card's state, a plan is one model of card's ladder, and neither answers the question
+   somebody with four cards actually asks: what were *all* of them doing before I changed them? A power
+   set is that answer — the rung every card in the machine was sitting at, under a name — beside the
+   built-in `stock`, which is not a memory but the cards this machine reports right now, at their own
+   numbers.
+
+   What a set does **not** touch is the rule that makes it safe to reach for: a card it does not name is
+   left exactly where it is, so a card that arrived last week keeps whatever it is doing. A card it names
+   and the machine no longer has is skipped and said, so a card that went out of a slot does not hold up
+   the four still in the others. Everything here is drawn from `status.power.sets`, which is files only:
+   reading this block never starts a container, and every line shows the same resolution the write itself
+   carries out — which is the only way the table an operator read is the table the driver obeys. */
+const setsBlock = () => powerBlock().sets || {};
+const setRows = () => setsBlock().sets || [];
+const setRow = name => setRows().find(row => row.name === name) || null;
+const setRungs = row => (row?.cards || []).filter(line => line.kind === 'rung');
+const setSummaryOf = row => {
+  const rungs = setRungs(row).length, stock = (row.cards || []).length - rungs;
+  return [rungs ? `${rungs} rung${rungs === 1 ? '' : 's'}` : '', stock ? `${stock} at stock` : '']
+    .filter(Boolean).join(' · ') || 'nothing in it';
+};
+/* One line of a set, in the words that say what applying it would do to that card. `ready` is the only
+   state that gets a number written; every other word is a card the set walks past, with the runtime's
+   own reason beside it rather than a paraphrase that can drift from it. */
+const setLineWords = line => ({absent: 'left this machine — its line is skipped',
+  unread: 'cannot be read right now — skipped',
+  'card-changed': 'another model of card is in this slot — skipped',
+  'plan-off': 'has no plan on this machine — skipped',
+  'plan-changed': 'resolves to another plan now — skipped',
+  'rung-gone': 'names a rung this revision does not have — skipped'}[line.state] || line.state || '');
+const setState = line => line.state === 'ready'
+  ? (line.kind === 'stock' ? 'stock' : line.rung)
+  : setLineWords(line);
+/* What a save would record, card by card, from the same cache the tiles are drawn from — so a refusal
+   arrives before the click, in words the runtime will stand by, and not after a container start. */
+function captureWords(entry) {
+  if (!entry || entry.state === 'unread') return {text: 'never read from the driver', keeps: false};
+  if (entry.error) return {text: 'cannot be read from the driver', keeps: false};
+  if (entry.state === 'rung') return {text: entry.rung, keeps: true};
+  if (entry.state === 'stock') return {text: 'stock', keeps: true};
+  if (entry.state === 'custom') return {text: 'at hand-written values, whose clock cap cannot be read '
+    + 'back — a set could not bring it back here', keeps: false};
+  return {text: 'has no readable offset, and a set does not record guesses', keeps: false};
+}
+function setsAvailability() {
+  if (setsBusy) return 'a set is being written';
+  const writes = powerWrites();
+  if (writes.available === false) return writes.reason || 'this runtime is not writing to the cards';
+  return '';
+}
+/* Why the Apply on this row cannot be pressed, in one answer that is also its tooltip — the rule the
+   single-card panel learned the hard way: a button marked disabled once and left that way while the
+   machine under it changed is a lie about the machine. */
+function setsBlocked(row) {
+  const blocked = setsAvailability();
+  if (blocked) return blocked;
+  if (!row) return 'no set is chosen';
+  if (!row.ready) return 'no line of this set fits the cards this machine has right now';
+  const unwell = (row.cards || []).filter(line => line.state === 'ready' && powerUnwell(line.gpu).length);
+  if (unwell.length && !setsGate) return `${unwell.map(line => line.name).join(', ')} `
+    + `${unwell.length > 1 ? 'have' : 'has'} an unhealthy model on it — say you know better below`;
+  return '';
+}
+const setsServing = row => (row?.cards || []).filter(line => line.state === 'ready'
+  && powerIsServing(line.gpu)).map(line => line.name);
+function setsApply(row) {
+  const reason = setsBlocked(row);
+  if (reason) { setsError = reason; render(); return; }
+  const serving = setsServing(row), what = row.builtin ? 'stock' : `the set "${row.name}"`;
+  if (serving.length && !confirm(`These cards are decoding now: ${serving.join(', ')}.\n\n`
+    + `Applying ${what} writes ${row.ready} card${row.ready === 1 ? '' : 's'} — three driver calls and `
+    + `a read-back each, a few seconds a card. Nothing is drained and no request is paused. Cards this `
+    + `set does not name are left alone, and a card it names that is no longer here is skipped.\n\n`
+    + `Apply ${what}?`)) return;
+  setsBusy = true; setsError = ''; setsReply = ''; render();
+  getJSON('/api/gpu-power-sets', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
+    body: JSON.stringify({action: 'apply', name: row.name, override: !!setsGate})}, 300000)
+    .then(reply => {
+      const failed = (reply.cards || []).filter(card => !card.ok);
+      const skipped = (reply.cards || []).filter(card => card.state !== 'applied' && card.state !== 'failed');
+      setsReply = !reply.applied
+        ? `Applied ${reply.set} and wrote nothing: every line of it was skipped, each for the reason it `
+          + `says on its own line.`
+        : reply.ok
+          ? `Applied ${reply.set}: ${reply.applied} card${reply.applied === 1 ? '' : 's'} written`
+            + `${skipped.length ? `, ${skipped.length} skipped` : ''}`
+            + `${(reply.left_out || []).length ? `, ${(reply.left_out || []).length} left alone` : ''}. `
+            + `Every one read back as asked.`
+          : `Applied ${reply.set}, and ${failed.length} card${failed.length === 1 ? '' : 's'} did not do `
+            + `what it was told: ${failed.map(card => `${card.name} — ${card.reason}`).join('; ')}. The `
+            + `others were written anyway; Revert to stock is one act and needs no model to be healthy.`;
+    })
+    .catch(error => { setsError = error.message || 'The set could not be applied.'; })
+    .finally(() => { setsBusy = false; lastStatus = 0; render(); schedule(1000); });
+}
+function setsSave() {
+  const name = (setName || '').trim();
+  if (!name) { setsError = 'Name the set first — the name is how you ask for it again.'; render(); return; }
+  if (setsAvailability()) { setsError = setsAvailability(); render(); return; }
+  const omit = Object.keys(setsOmit).filter(uuid => setsOmit[uuid]);
+  if (cards().length - omit.length <= 0) { setsError = 'Every card is left out, and a set of nothing is '
+    + 'a name with nothing behind it.'; render(); return; }
+  const overwrite = !!setRow(name);
+  if (overwrite && !confirm(`There is already a set named "${name}". Saving again replaces the rungs it `
+    + 'points at. Replace it?')) return;
+  setsBusy = true; setsError = ''; setsReply = ''; render();
+  getJSON('/api/gpu-power-sets', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
+    body: JSON.stringify({action: 'save', name, omit, overwrite})}, 60000)
+    .then(reply => {
+      setsReply = `Saved "${reply.set}" — ${reply.cards} card${reply.cards === 1 ? '' : 's'}. Nothing `
+        + `was written to a card: a save is a photograph, not a change.`
+        + (reply.note ? ` ${reply.note}` : '');
+      setName = ''; setsOmit = {};
+    })
+    .catch(error => { setsError = error.message || 'The set could not be saved.'; })
+    .finally(() => { setsBusy = false; lastStatus = 0; render(); schedule(1000); });
+}
+function setsDelete(row) {
+  if (setsAvailability()) { setsError = setsAvailability(); render(); return; }
+  if (!confirm(`Forget "${row.name}"? Nothing is written to a card: the machine stays exactly where it `
+    + 'is, and the set is gone.')) return;
+  setsBusy = true; setsError = ''; setsReply = ''; render();
+  getJSON('/api/gpu-power-sets', {method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Runtime-CSRF': status.csrf_token},
+    body: JSON.stringify({action: 'delete', name: row.name})}, 30000)
+    .then(reply => { setsReply = `Forgot "${reply.set}". No card was touched.`; })
+    .catch(error => { setsError = error.message || 'The set could not be deleted.'; })
+    .finally(() => { setsBusy = false; lastStatus = 0; render(); schedule(1000); });
+}
+function setRowNode(row) {
+  const box = node('div', '', `set${row.builtin ? ' builtin' : ''}`);
+  const head = node('div', '', 'set-head');
+  const title = node('p', '', 'name');
+  add(title, node('span', row.name));
+  const marks = node('span', '', 'tags');
+  add(marks, node('span', row.builtin ? 'always here' : `${row.ready} of ${row.cards.length} fit`,
+    `tag ${row.builtin ? 'def' : ''}`));
+  add(title, marks);
+  const acts = node('div', '', 'acts');
+  const apply = node('button', row.builtin ? 'Revert every card to stock'
+    : `Apply to ${row.ready} card${row.ready === 1 ? '' : 's'}`, row.builtin ? 'ghost' : '');
+  apply.type = 'button';
+  apply.disabled = !!setsBlocked(row);
+  if (apply.disabled) apply.title = setsBlocked(row);
+  apply.addEventListener('click', () => setsApply(row));
+  add(acts, apply);
+  if (!row.builtin) {
+    const forget = node('button', 'Forget', 'ghost tiny');
+    forget.type = 'button';
+    forget.disabled = !!setsAvailability();
+    if (forget.disabled) forget.title = setsAvailability();
+    forget.addEventListener('click', () => setsDelete(row));
+    add(acts, forget);
+  }
+  add(head, title, acts);
+  add(box, head);
+  add(box, node('p', (row.saved_at ? `saved ${String(row.saved_at).slice(0, 16).replace('T', ' ')} · `
+    : 'not saved; this is what the driver calls stock · ') + setSummaryOf(row), 'sub'));
+  const list = node('ul', '', 'lines');
+  for (const line of row.cards || []) {
+    const li = node('li', '', line.state === 'ready' ? '' : 'gone');
+    add(li, node('b', line.name || line.gpu), node('span', ` — ${setState(line)}`));
+    /* The runtime's own sentence, and only where it carries a fact the state word cannot: which card
+       is in the slot now, which plan the card resolves to today, which setting says it has none. The
+       states the word already finishes — a card that left, a rung that is not there — are not said
+       twice, because a line that repeats itself teaches an operator to skim. */
+    const detail = ['card-changed', 'plan-changed', 'plan-off', 'rung-gone', 'unread'].includes(line.state)
+      ? line.reason : '';
+    if (detail) add(li, node('i', ` ${detail}`));
+    if (line.moved) add(li, node('i', ` that rung measured ${watts(line.witness?.power)} / `
+      + `${line.witness?.offset > 0 ? '+' : ''}${mhz(line.witness?.offset)} when this set was saved, and `
+      + 'the ladder is what gets written, not the memory of it.'));
+    add(list, li);
+  }
+  add(box, list);
+  if ((row.left_out || []).length) add(box, node('p', `${row.left_out.map(card => card.name).join(', ')} `
+    + `${row.left_out.length > 1 ? 'are' : 'is'} in this machine and not in this set. Applying the set `
+    + 'leaves them exactly where they are: a card that arrived later gets nothing from a set that does '
+    + 'not name it.', 'sub'));
+  return box;
+}
+function renderSets() {
+  const panel = el('sets');
+  const block = setsBlock(), rows = setRows();
+  if (!status?.power || !rows.length) { panel.replaceChildren(); panel.hidden = true; setsSignature = ''; return; }
+  /* Drawn from a signature for the same reason the power panel is: this section holds a name field and
+     a row of checkboxes, and a five-second poll rebuilding it would take the caret out of a half-typed
+     name mid-word. */
+  const signature = JSON.stringify([rows, block.error, setsAvailability(), setName, setsOmit, setsError,
+    setsReply, setsBusy, setsGate, (status.services || []).map(service => [service.name, service.healthy])]);
+  if (signature === setsSignature) return;
+  setsSignature = signature;
+  panel.replaceChildren();
+  panel.hidden = false;
+  const head = node('div', '', 'head');
+  add(head, node('h2', 'Power sets'), node('p', 'What every card in this machine is sitting at, under a '
+    + 'name, ready to put back. A set points at measured rungs, so it writes what the ladder measures '
+    + 'today and not the watts it remembered; cards it does not name are left alone. Nothing is drained '
+    + 'and nothing is paused.', 'sub'));
+  add(panel, head);
+  if (block.error) add(panel, node('p', block.error, 'gate'));
+  for (const row of [...rows.filter(row => row.builtin), ...rows.filter(row => !row.builtin)])
+    add(panel, setRowNode(row));
+
+  /* The save row: a name, and a card-by-card statement of what saving now would record. Refusals are
+     shown before the click because they are computable from the cache the page already has; a save that
+     failed only after reading the driver would be a container start spent to say what could have been
+     read off the screen. */
+  const save = node('div', '', 'save');
+  add(save, node('h3', 'Save what the cards are at now'));
+  const field = node('label', '', 'name-field');
+  const input = node('input');
+  input.type = 'text'; input.value = setName; input.placeholder = 'night-quiet';
+  input.setAttribute('aria-label', 'Name for the power set');
+  input.dataset.focus = 'sets:name';
+  input.addEventListener('input', () => { setName = input.value; });
+  add(field, node('span', 'Name'), input);
+  add(save, field);
+  const list = node('ul', '', 'lines');
+  for (const card of cards()) {
+    const entry = powerCard(card.uuid), words = captureWords(entry);
+    const li = node('li', '', words.keeps ? '' : 'warns');
+    add(li, node('b', card.name || card.uuid), node('span', ` — ${words.text}`));
+    const label = node('label', '', 'omit'), check = node('input');
+    check.type = 'checkbox'; check.checked = !!setsOmit[card.uuid];
+    check.dataset.focus = 'sets:omit:' + card.uuid;
+    check.addEventListener('change', () => { setsOmit[card.uuid] = check.checked; render(); });
+    add(label, check, node('span', 'leave out'));
+    add(li, label);
+    add(list, li);
+  }
+  add(save, list);
+  const acts = node('div', '', 'acts');
+  const button = node('button', setsBusy ? 'Reading the cards…' : 'Save this machine', '');
+  button.type = 'button';
+  button.disabled = !!setsAvailability();
+  if (button.disabled) button.title = setsAvailability();
+  button.addEventListener('click', () => setsSave());
+  add(acts, button);
+  add(save, acts);
+  add(save, node('p', 'Saving reads the driver once, now, and writes a file: no card is changed, so a '
+    + 'save is not refused while a switch has the machine. Applying one later is the act that touches '
+    + 'hardware, and that is where the health gate lives.', 'sub'));
+  add(panel, save);
+  const unwell = cards().filter(card => powerUnwell(card.uuid).length);
+  if (unwell.length) {
+    const notice = node('div', '', 'gate');
+    const label = node('label'), check = node('input');
+    check.type = 'checkbox'; check.checked = !!setsGate;
+    check.dataset.focus = 'sets:gate';
+    check.addEventListener('change', () => { setsGate = check.checked; render(); });
+    add(label, check, node('span', 'Apply anyway — an unhealthy model on '
+      + `${unwell.map(card => card.name).join(', ')} is not what I am worried about`));
+    add(notice, node('p', `${unwell.map(card => card.name).join(', ')} `
+      + `${unwell.length > 1 ? 'have cards' : 'has a card'} with a model on it that is not healthy. A set `
+      + 'is refused whole rather than half-applied, because half a set is a machine in a state nobody '
+      + 'saved.'), label);
+    add(panel, notice);
+  }
+  const blocked = setsAvailability();
+  if (blocked) add(panel, node('p', blocked, 'gate'));
+  add(panel, node('p', setsError || setsReply || 'Nothing is installed in the boot path, by design: a '
+    + 'reboot returns every card to stock on its own, and that stays the way back. A set is something '
+    + 'you recall, never something that recalls itself.', setsError ? 'gate' : 'sub'));
+}
+
 /* A redraw is the runtime telling the page something new, and it must not cost the operator what they
    were in the middle of doing. Controls that can legitimately be holding a caret name themselves with
    `data-focus`; after a redraw the page looks for the copy that was just made, gives it the focus back
@@ -1104,6 +1373,7 @@ function restoreFocus(at) {
 function render() {
   const focus = keepFocus();
   renderPower();
+  renderSets();
   // One guard over the whole render: a page that has drawn half its facts and stopped is worse than
   // one that says it cannot read the runtime, because half a picture of a serving machine is what an
   // operator trusts and then acts on.
@@ -1132,6 +1402,8 @@ let powerPatch = null, powerGate = {};
    element because the element is thrown away and rebuilt, and an operator who opened a drawer should
    not have it close under their hands because the runtime answered a poll. */
 let powerCustom = false, powerSignature = '';
+let setsBusy = false, setsError = '', setsReply = '', setName = '', setsOmit = {}, setsGate = false,
+    setsSignature = '';
 function schedule(delay) { clearTimeout(timer); timer = setTimeout(tick, delay); }
 try { pending = JSON.parse(sessionStorage.getItem('runtime-switch-request')); } catch (_) { /* may be disabled */ }
 if (pending && typeof pending.request_id !== 'string') pending = null;
@@ -1157,9 +1429,13 @@ function setOperation(next) {
   if (operation && operation.id !== next.id && operation.started_at > next.started_at) return;
   operation = next;
 }
-async function getJSON(path, options = {}) {
+// Twelve seconds is right for a status poll and wrong for a power set: applying one is a read pass and
+// then a container per card, and a five-card machine is comfortably past a minute when a driver is
+// slow. The caller chooses; the deadline only ever stops the *page* waiting, never the write, which the
+// runtime finishes and records whether or not anybody is still listening.
+async function getJSON(path, options = {}, timeoutMs = 12000) {
   const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(), 12000);
+  const deadline = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {...options, cache: 'no-store', signal: controller.signal});
     const data = await response.json();

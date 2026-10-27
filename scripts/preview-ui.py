@@ -261,12 +261,55 @@ def power_preview(controller, system, scene):
         time.gmtime(time.time() - 12)), 'read': card} for uuid, card in driver.cards.items()})
     controller.power.merge({'swept_at': time.strftime('%Y-%m-%dT%H:%M:%S+00:00',
         time.gmtime(time.time() - 12))})
+    if scene == 'sets':
+        sets_preview(controller, driver)
     if scene == 'gate':
         # One engine unwell on a card with a plan: the panel has to refuse, and offer the tick.
         for service in controller.load('active.json')['bundle']['manifest']['services']:
             system.containers[service['container_name']]['State']['Running'] = False
             break
     return driver
+
+
+def sets_preview(controller, driver):
+    """A machine with a history, which is the only way a set can be looked at properly.
+
+    Three sets, each one a year of service in miniature: `quiet-night` still fits and would write
+    everything it names; `last-summer` names a card that left the chassis and says nothing about a card
+    that is in it; `moved-hands` points at a slot whose card is now another model, which is the case a
+    set must refuse rather than guess at. Drawn with the runtime's own `entry_for`, so a row that looks
+    ready here is a row the write will find ready — a hand-written fixture that only *looked* valid is
+    how a preview ends up reviewing a fiction.
+    """
+    power = controller.power
+    registry, plans, readings, cards = power.registry(), power.host_plans(), power.latest(), \
+        power.cards()
+    # Every card the driver can answer for, as the runtime itself would record it. A fixture whose rows
+    # were written by hand is a preview that reviews a fiction: these are the rows a save would write.
+    entries = {}
+    for uuid, name in (cards[:-1] if len(cards) > 1 else cards):
+        made, refusal = power.entry_for(uuid, name, readings.get(uuid), registry, plans)
+        if made:
+            entries[uuid] = made
+    if not entries:
+        return
+    gone = 'GPU-00000000-0000-4000-8000-000000000001'
+    first = cards[0][0]
+    saved = {'quiet-night': {'saved_at': '2026-10-24T02:11:09+00:00', 'cards': dict(entries)}}
+    # The same photograph taken before a card was pulled, and before another was put in: the row has to
+    # say which line is being skipped *and* which card in the chassis it says nothing about.
+    earlier = dict(entries)
+    earlier[gone] = {'kind': 'rung', 'rung': 'assertive', 'plan': 'rtx3080-ti',
+        'name': 'NVIDIA GeForce RTX 3080 Ti', 'witness': {'power': 300, 'offset': 105}}
+    earlier.pop(first, None)
+    saved['last-summer'] = {'saved_at': '2026-08-30T19:42:11+00:00', 'cards': earlier}
+    # A slot that changed hands: the same UUID, another model of card in it, and a rung that belongs to
+    # the board that used to be there. Nothing may be written to it from this set.
+    swapped = dict(entries)
+    swapped[first] = {'kind': 'rung', 'rung': 'sensible', 'plan': 'rtx2080-ti',
+        'name': 'NVIDIA GeForce RTX 2080 Ti', 'witness': {'power': 220, 'offset': 105}}
+    saved['moved-hands'] = {'saved_at': '2026-10-01T08:05:44+00:00', 'cards': swapped}
+    atomic_json(controller.state / 'power' / 'sets.json', {'version': 1, 'sets': saved})
 
 
 def main():
@@ -279,11 +322,13 @@ def main():
     parser.add_argument('--host-json', help='Path to another machine\'s host.json, so the page is '
         'drawn for that machine (its cards, its service IDs, its one configuration) instead of the '
         'four-GPU host this harness otherwise invents.')
-    parser.add_argument('--power', choices=('mixed', 'gate'), default='mixed',
+    parser.add_argument('--power', choices=('mixed', 'gate', 'sets'), default='mixed',
         help='What the cards are doing when the page opens: `mixed` is one card at a rung, one at '
         'stock, one hand-set between rungs, one the driver cannot answer, and (for the first half '
         'minute) one nobody has polled yet; `gate` also stops an engine, so the panel has to refuse '
-        'a write and offer the tick that means "apply anyway".')
+        'a write and offer the tick that means "apply anyway"; `sets` also leaves three power sets '
+        'behind — one that fits, one naming a card that left the chassis, and one pointing at a slot '
+        'whose card is now another model — so every line a set can say is on the screen at once.')
     arguments = parser.parse_args()
 
     temporary = tempfile.TemporaryDirectory()

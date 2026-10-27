@@ -69,6 +69,13 @@
            only ever for that one card. -->
       <section id="power" class="power" aria-live="polite" hidden></section>
 
+      <!-- The whole machine's power state, saved under a name and recalled by it. Under the map with the
+           one-card panel, because a set is a fact about the cards in this chassis: it outlives every
+           configuration switch, it drains nothing when it is applied, and it is not a decision about
+           what to serve. The built-in `stock` row is the way back, and it is here because a machine that
+           has been undervolted has to be able to say how to stop. -->
+      <section id="sets" class="sets" aria-live="polite" hidden></section>
+
       <!-- The progress of a change belongs under the configuration it is changing, not beside the
            choice it has already stopped needing. -->
       <section class="panel" id="operation" aria-labelledby="operation-title" hidden>
