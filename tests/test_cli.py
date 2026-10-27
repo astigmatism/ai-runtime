@@ -74,6 +74,38 @@ class PowerCliTests(unittest.TestCase):
                 asked.append(body)
                 return {'ok': True, 'to': body.get('rung') or body['action']}
 
+            def card(self, wanted):
+                """The runtime's own rule: a full UUID, or enough of a name to be exactly one card."""
+                cards = PowerCliTests.CARDS
+                if wanted and wanted.lower().startswith('gpu-'):
+                    return next((uuid for uuid, _ in cards if uuid.lower() == wanted.lower()), wanted)
+                matches = [(uuid, name) for uuid, name in cards if wanted.lower() in name.lower()]
+                if len(matches) == 1:
+                    return matches[0][0]
+                raise RuntimeError('no card this machine reports is named %r; give a full UUID or '
+                    'enough of a name to be exactly one card' % wanted)
+
+            def write_sets(self, body):
+                asked.append(body)
+                return {'ok': True, 'set': body['name'], 'action': body['action'], 'applied': 3,
+                    'cards': 3, 'skipped': 1, 'left_out': [{'gpu': PowerCliTests.CARDS[2][0],
+                        'name': 'RTX 3080 Ti'}], 'note': None}
+
+            def sets_block(self, registry=None):
+                return {'available': True, 'error': None, 'limit': 24, 'count': 2, 'sets': [
+                    {'name': 'stock', 'builtin': True, 'saved_at': None, 'ready': 3, 'skipped': 0,
+                        'cards': [{'gpu': uuid, 'name': name, 'kind': 'stock', 'rung': None,
+                            'state': 'ready', 'reason': None, 'moved': False}
+                            for uuid, name in PowerCliTests.CARDS], 'left_out': []},
+                    {'name': 'quiet-night', 'builtin': False, 'saved_at': 'yesterday', 'ready': 2,
+                        'skipped': 1, 'cards': [
+                            {'gpu': PowerCliTests.CARDS[0][0], 'name': 'RTX 3090', 'kind': 'rung',
+                                'rung': 'sensible', 'state': 'ready', 'reason': None, 'moved': False},
+                            {'gpu': PowerCliTests.CARDS[2][0], 'name': 'RTX 3080 Ti', 'kind': 'rung',
+                                'rung': 'assertive', 'state': 'absent',
+                                'reason': 'left the machine', 'moved': False}],
+                        'left_out': [{'gpu': PowerCliTests.CARDS[1][0], 'name': 'RTX 4080 SUPER'}]}]}
+
             def status(self):
                 return {'cards': {uuid: {'name': name, 'state': 'stock', 'rungs': []}
                     for uuid, name in PowerCliTests.CARDS}}
@@ -137,6 +169,41 @@ class PowerCliTests(unittest.TestCase):
             with self.subTest(spelling=spelling), self.assertRaises(RuntimeError) as refused:
                 self.run_cli('power', '--gpu', spelling, '--revert')
             self.assertIn('full UUID', str(refused.exception))
+
+    def test_a_power_set_is_saved_used_and_forgotten_from_the_same_words_as_the_page(self):
+        """The three set verbs, arriving as three requests, and a card named the way a person types one.
+
+        `--omit` is the interesting one: it is how an operator saves a machine that has one card sitting
+        on hand-written values, and it is refused on an apply, where leaving a card out would mean the
+        set was not applied.
+        """
+        asked, _ = self.run_cli('power', '--save-set', 'quiet-night')
+        self.assertEqual(asked[0], {'action': 'save', 'name': 'quiet-night', 'omit': [],
+            'override': False})
+        asked, _ = self.run_cli('power', '--save-set', 'quiet-night', '--omit', 'RTX 3080 Ti',
+            '--omit', self.CARDS[0][0])
+        self.assertEqual(asked[0]['omit'], ['RTX 3080 Ti', self.CARDS[0][0]])
+        asked, _ = self.run_cli('power', '--use-set', 'quiet-night', '--override')
+        self.assertEqual((asked[0]['action'], asked[0]['override']), ('apply', True))
+        asked, _ = self.run_cli('power', '--use-set', 'stock')
+        self.assertEqual(asked[0]['name'], 'stock')
+        asked, _ = self.run_cli('power', '--delete-set', 'quiet-night')
+        self.assertEqual(asked[0]['action'], 'delete')
+        _, printed = self.run_cli('power', '--save-set', 'quiet-night')
+        self.assertIn('quiet-night', printed)
+
+    def test_omitting_a_card_is_a_thing_a_save_offers_and_an_apply_does_not(self):
+        for flag in ('--use-set', '--delete-set'):
+            with self.subTest(flag=flag), self.assertRaises(RuntimeError) as refused:
+                self.run_cli('power', flag, 'quiet-night', '--omit', 'RTX 3080 Ti')
+            self.assertIn('save', str(refused.exception))
+
+    def test_listing_the_sets_prints_the_gaps_the_page_prints(self):
+        _, printed = self.run_cli('power', '--sets')
+        self.assertIn('stock', printed)
+        self.assertIn('quiet-night', printed)
+        self.assertIn('absent', printed)
+        self.assertIn('RTX 4080 SUPER', printed, 'a set does not say which cards it leaves alone')
 
     def test_a_set_needs_all_three_numbers_or_it_refuses(self):
         with self.assertRaises(RuntimeError) as refused:

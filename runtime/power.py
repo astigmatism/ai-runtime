@@ -18,16 +18,26 @@ of code:
 Nothing here drains, publishes, or restores: a rung is three driver calls and a read-back. A write is
 refused while a switch, a restoration or a source deployment owns the machine, and the write that
 *did* land is recorded with what the driver said back afterwards.
+
+**A set is the same act over the whole machine.** A plan belongs to a model of card and a rung to one
+card, so neither answers "what were all the cards in this machine doing before I changed them". A
+*power set* is that: the rung every physical card in the machine was sitting at, under a name, plus the
+built-in `stock` that reverts whatever the machine reports right now. Saving is one read pass and a
+JSON file; recalling is one read pass and then one card write per line of the set, under one lock. A
+card the set does not name is not touched, a card the machine no longer has is skipped with a sentence,
+and a slot now holding a different model of card is never handed the rung some other board earned.
 """
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 import threading
 from datetime import datetime, timedelta, timezone
 
-from .config import (power_plan, power_plan_for_name, power_plans, power_request, power_rung,
-    read_power_registry, require)
+from .config import (STOCK_SET, SETS_LIMIT, card_model, power_plan, power_plan_for_name, power_plans,
+    power_request, power_rung, power_set_cards, power_set_request, power_set_entry, read_power_registry,
+    read_power_sets, require)
 from .system import lock, now
 
 # How often the background pass may ask the driver, and how long one container run is allowed to take
@@ -41,6 +51,12 @@ HISTORY_LIMIT = 20
 LATEST = 'power/latest.json'
 HISTORY = 'power/history.json'
 LOCK = 'power.lock'
+# Saved power sets, keyed by the operator's own name for them. Operational state and not source: a set
+# names this machine's physical cards, and an operator chose the name. It lives beside the cache
+# because it survives an update the way the cache does — the state directory is mounted, an image is
+# replaced — and a machine that is rebuilt from source still has the names its operator gave it.
+SETS = 'power/sets.json'
+SETS_VERSION = 1
 
 
 class PowerError(Exception):
@@ -165,6 +181,23 @@ class Power:
         return [(entry['uuid'], entry['name']) for entry in inventory['text']] + (
             [] if not inventory['vision'] else
             [(inventory['vision']['uuid'], inventory['vision']['name'])])
+
+    def card(self, wanted):
+        """One card from a name a person typed: its UUID, or enough of a name to be exactly one card.
+
+        A full UUID is 40 characters and nobody types one from memory, on a terminal or in a list of
+        cards to leave out of a save. What it must never take is an ambiguous name, because the whole
+        point of naming a card here is that it is *that* card and not another of its model.
+        """
+        cards = self.cards()
+        for uuid, name in cards:
+            if uuid.lower() == str(wanted).lower():
+                return uuid
+        matches = [uuid for uuid, name in cards if str(wanted).lower() in uuid.lower()
+            or str(wanted).lower() in (name or '').lower()]
+        require(len(matches) == 1, '%r matches %s; name one card, or give its full UUID' % (wanted,
+            ', '.join(matches) if matches else 'nothing this machine reports'))
+        return matches[0]
 
     # ---------------------------------------------------------------------------- the driver, via docker
     def image(self):
@@ -309,6 +342,9 @@ class Power:
                     'draw_average', 'temperature', 'pstate', 'power_capped_hours', 'name')},
                 'last_write': next((entry for entry in history if entry.get('gpu') == uuid), None),
             }
+        # Every set this machine could put on itself, resolved against the cards it has this minute.
+        # Files only: the poll that draws the page must never be the thing that starts a container.
+        block['sets'] = self.sets_block(registry)
         return block
 
     def refresh_if_due(self, force=False):
@@ -333,24 +369,38 @@ class Power:
         except ValueError:
             return True
 
+    def read_pass(self):
+        """One driver pass over every card this machine declares, straight into the cache.
+
+        Returns `(cards, ok, moment)`, where `cards` is the *cache-shaped* entry for each card —
+        `{'read': …}` or `{'error': …}` — so the caller that just asked the driver and the page that is
+        reading the cache are looking at one shape and cannot disagree about what a card is doing. Two
+        things call this: the cadence thread, and a save. A save that read the cache instead would be a
+        photograph of a moment up to `CADENCE_SECONDS` old filed as a recording of *now*, and the one
+        promise a saved set has to keep is that it is what the cards were doing when you saved.
+        """
+        declared = self.cards()
+        if not declared:
+            return {}, False, now()
+        report = self.invoke(self.command([uuid for uuid, _ in declared], 'read'))
+        cards = report.get('cards') or {}
+        if not cards:
+            # The container itself failed, so no card has a reading: say which cards that leaves
+            # unread rather than letting the page go on showing readings from before the daemon
+            # stopped answering.
+            cards = {uuid: {'error': report.get('error') or 'the pass did not answer'}
+                for uuid, _ in declared}
+        moment = now()
+        merged = {uuid: ({'read_at': moment, 'read': card} if 'error' not in card else
+            {'read_at': moment, 'error': card['error']}) for uuid, card in cards.items()}
+        self.merge(merged)
+        return merged, bool(report.get('ok')), moment
+
     def pass_once(self):
-        """One driver pass over every card this machine declares, into the cache."""
+        """One driver pass into the cache, on the cadence, keeping the stamp the cadence reads."""
         try:
-            uuids = [uuid for uuid, _ in self.cards()]
-            if not uuids:
-                return
-            report = self.invoke(self.command(uuids, 'read'))
-            cards = report.get('cards') or {}
-            if not cards:
-                # The container itself failed, so no card has a reading: say which cards that leaves
-                # unread rather than letting the page go on showing readings from before the daemon
-                # stopped answering.
-                cards = {uuid: {'error': report.get('error') or 'the pass did not answer'}
-                    for uuid, _ in self.cards()}
-            moment = now()
-            self.merge({uuid: ({'read_at': moment, 'read': card} if 'error' not in card else
-                {'read_at': moment, 'error': card['error']}) for uuid, card in cards.items()})
-            if report.get('ok'):
+            cards, ok, moment = self.read_pass()
+            if ok:
                 # `swept_at` is when the whole pass succeeded, and it is what the cadence compares
                 # against; a pass that failed leaves it alone, so the next loop tries again.
                 latest = self.latest()
@@ -509,10 +559,22 @@ class Power:
         allowed, why = self.gate(request['gpu'])
         if not allowed and not request['override']:
             raise PowerError(409, 'engine', why + ' Tick "apply anyway" to write regardless.')
-        name = reading.get('name')
         with lock(c.state / LOCK):
-            report = self.invoke(self.command([request['gpu']], 'apply', wants=wants,
-                expect_names=[name] if name else None))
+            return self.write_card(request['gpu'], wants, plan, reading, gate=why,
+                override=request['override'], rounded=request.get('offset_rounded', False))
+
+    def write_card(self, gpu, wants, plan, reading, gate, override, rounded=False, set_name=None):
+        """Write three numbers to one card, record what the driver said back, refresh the cache.
+
+        **The caller holds** `LOCK`. That is what makes a set possible: one card is one call and a set
+        is the same call N times under the single lock it took, so a machine halfway through being
+        moved to another set has one pair of hands and not two. `gate` is the health sentence the caller
+        already weighed, kept because "what was serving on this card when it was written" is the first
+        thing anybody asks an hour later.
+        """
+        name = reading.get('name')
+        report = self.invoke(self.command([gpu], 'apply', wants=wants,
+            expect_names=[name] if name else None))
         if not report.get('ok') and not report.get('apply'):
             raise PowerError(503, 'driver', report.get('error') or
                 'The one-shot GPU container could not write this card.')
@@ -520,20 +582,405 @@ class Power:
         after = applied['after']
         moment = now()
         before_state, before_rung = classify(reading, plan)
-        self.remember({'at': moment, 'gpu': request['gpu'], 'name': reading.get('name'),
-            'from': before_rung or before_state,
-            'to': wants['label'], 'asked': applied['asked'], 'readback': applied['readback'],
-            'ok': applied['ok'], 'attempts': applied['attempts'], 'gate': why,
-            'override': request['override'], 'actor': 'page'})
+        self.remember({'at': moment, 'gpu': gpu, 'name': name,
+            'from': before_rung or before_state, 'to': wants['label'], 'asked': applied['asked'],
+            'readback': applied['readback'], 'ok': applied['ok'], 'attempts': applied['attempts'],
+            'gate': gate, 'override': override, 'actor': 'page', 'set': set_name})
         latest = self.latest()
-        latest[request['gpu']] = {'read_at': moment, 'read': after}
+        latest[gpu] = {'read_at': moment, 'read': after}
         self.controller.save(LATEST, latest)
         state, rung = classify(after, plan)
-        return {'ok': bool(applied['ok']), 'gpu': request['gpu'], 'to': wants['label'],
+        return {'ok': bool(applied['ok']), 'gpu': gpu, 'to': wants['label'],
             'state': state, 'rung': rung, 'asked': applied['asked'], 'readback': applied['readback'],
             'attempts': applied['attempts'], 'commands': applied['commands'], 'errors': applied['errors'],
-            'read': after, 'gate': why, 'rounded_offset': request.get('offset_rounded', False),
-            'read_at': moment}
+            'read': after, 'gate': gate, 'rounded_offset': rounded, 'set': set_name, 'read_at': moment}
+
+
+    # ------------------------------------------------------------------------------------ power sets
+    # One card is a rung; a *set* is the machine. Everything below is the same three numbers reached a
+    # different way: a save is one read pass and a JSON file, and a recall is one read pass and then one
+    # ordinary card write per line of the set, under the one lock the recall took. Nothing about the
+    # numbers themselves is new, which is the point — a set that wrote its own copy of the wattage would
+    # be applying the ladder as it was remembered instead of the ladder as source says it is.
+    def sets(self):
+        """This machine's saved power sets, `{name: {saved_at, cards}}`, read tolerantly.
+
+        The five-second poll reads this, so a file with something wrong in it is a note on the page and
+        no sets, never an exception in a status poll. `stock` is not in here: it is derived from whatever
+        the machine reports right now, by `stock_set`, so it cannot go stale the way a list of saved
+        UUIDs can.
+        """
+        return read_power_sets(self.controller.state / SETS)[0]
+
+    def sets_note(self):
+        """Why the saved sets are not being used, or None. Same tolerance as `sets()`."""
+        return read_power_sets(self.controller.state / SETS)[1]
+
+    def stored_sets(self):
+        """The saved sets for a *write*, which does not tolerate anything.
+
+        Status tolerates a line it cannot read because the machine is serving either way. A save does
+        not, because a save rewrites the file: silently dropping the line it could not parse and
+        reporting a successful save is how a preference file quietly loses data.
+        """
+        stored, note = read_power_sets(self.controller.state / SETS)
+        require(note is None, 'The saved power sets cannot be rewritten while part of them cannot be '
+            'read: ' + str(note))
+        return stored
+
+    def save_sets(self, stored):
+        self.controller.save(SETS, {'version': SETS_VERSION, 'sets': stored})
+
+    def stock_set(self, cards=None):
+        """The set every machine has: every card it reports, back at the driver's own numbers.
+
+        Derived on every read and never stored, because it is not a memory — it is the answer to "what is
+        in this machine today", and a saved list of UUIDs would be wrong the day a card is added. Its
+        lines carry no card name and no plan either, which is what lets it fit a slot whose card was
+        swapped and a board no ladder has ever measured: reverting needs neither.
+        """
+        cards = self.cards() if cards is None else cards
+        return {'name': STOCK_SET, 'builtin': True, 'saved_at': None,
+            'cards': {uuid: {'kind': 'stock', 'name': '', 'plan': None} for uuid, name in cards}}
+
+    # ---------------------------------------------------------------------- one line of one set, now
+    def resolve_entry(self, gpu, entry, card, declared=None, registry=None, plans=None):
+        """Can this line of this set be put on this card as the machine stands? Why not?
+
+        One resolution, used by the page's preview and by the write itself, so the row an operator read
+        is the row the driver carries out. `card` is the cache-shaped entry — `{'read': …}`, `{'error':
+         …}` or `None` for a card nobody reports — because the caller that asked the driver a second ago
+        and the caller reading the cache must not need two code paths.
+
+        The states are the gaps a machine grows over a year of service, and each has its own next move:
+
+        `absent`       the card left the machine; its line is skipped and the rest are still written
+        `unread`       the driver would not answer, or this card has never been read
+        `card-changed` the slot holds another model of card, so the saved rung is not its rung
+        `plan-off`     this machine's settings offer the card no plan, whatever its model measured
+        `plan-changed` the card resolves to another plan than the one the rung belongs to
+        `rung-gone`    that plan no longer has that rung
+        `ready`        write it, with `want` as the numbers
+        """
+        registry = self.registry() if registry is None else registry
+        plans = self.host_plans() if plans is None else plans
+        label = declared or entry.get('name') or gpu
+        row = {'gpu': gpu, 'name': label, 'kind': entry.get('kind'), 'rung': entry.get('rung'),
+            'plan': entry.get('plan'), 'witness': entry.get('witness') or {}, 'state': None,
+            'reason': None, 'want': None, 'plan_now': None, 'reading': {}, 'card_plan': None,
+            'moved': False}
+        # Two different silences, and the operator's next move differs. What decides between them is
+        # the machine's own inventory and not the cache: a card this machine no longer declares has left
+        # the chassis even while its last reading sits in the cache looking usable, and writing a rung to
+        # it because the file remembered it is exactly the thing a set must not do.
+        if not declared:
+            row.update(state='absent', reason='%s is not in this machine any more. Its line was '
+                'skipped; the cards that are here were written.' % label)
+            return row
+        if card is None:
+            row.update(state='unread', reason='%s is declared by this machine and the driver did not '
+                'answer for it, so nothing was written to it. It may be out of the chassis, or the '
+                'driver may only be refusing: read it again to tell them apart.' % label)
+            return row
+        if card.get('error'):
+            row.update(state='unread', reason='%s could not be read from the driver, so nothing was '
+                'written to it. Read it again and try once more.' % label)
+            return row
+        reading = card.get('read') or {}
+        row['reading'] = reading
+        if not reading:
+            row.update(state='unread', reason='%s has never been read from the driver, so this write '
+                'has nothing to go on.' % label)
+            return row
+        # The card in the slot has to be the card the set was written for. A rung is a measurement of one
+        # model of board, and the only word in the set that says which one is the name the driver gave.
+        saved_as, seen_as = card_model(entry.get('name')), card_model(reading.get('name'))
+        if entry.get('kind') == 'rung' and saved_as and seen_as and saved_as != seen_as:
+            row.update(state='card-changed', reason='This slot holds %s now, and this line was saved '
+                'against %s. A rung is what the ladder measured for one model of card, so nothing was '
+                'written here: re-save the set, or put the card that was measured back.' % (
+                    reading.get('name'), entry.get('name')))
+            return row
+        if entry.get('kind') == 'stock':
+            default = reading.get('power_default')
+            if not default:
+                row.update(state='unread', reason='%s has never reported its stock power limit, so '
+                    'there is nothing to revert it to. Read it again first.' % label)
+                return row
+            row.update(state='ready', want={'power': default, 'clock_max': None, 'offset': 0,
+                'clock_min': None, 'label': STOCK_SET})
+            return row
+        plan_id, plan_source = self.plan_for(gpu, self.names_for(gpu, reading, declared), registry,
+            plans)
+        row['plan_now'] = plan_id
+        if plan_source == 'off':
+            row.update(state='plan-off', reason='this machine\'s settings offer this card no plan, so '
+                'the rung in this line has no numbers to resolve to. The entry for %s in power_plans is '
+                'what says so, and nothing was written here.' % gpu)
+            return row
+        if plan_id != entry.get('plan'):
+            row.update(state='plan-changed', reason='this card resolves to plan %s now and this line '
+                'was saved against %s. `%s` is that plan\'s number, not this card\'s, so nothing was '
+                'written here.' % (plan_id or 'nothing', entry.get('plan'), entry.get('rung')))
+            return row
+        plan = None
+        try:
+            plan = power_plan(registry, plan_id)
+            row['card_plan'] = plan
+            rung = power_rung(plan, entry['rung'])
+        except Exception as error:  # noqa: BLE001 - a rung that left source is a skip, not a crash
+            row.update(state='rung-gone', reason=str(error) + ', so nothing was written to this card. '
+                'Re-save the set once it has a rung worth putting it at.')
+            return row
+        envelope = (registry or {}).get('envelope') or {}
+        row.update(state='ready', want={'power': rung['power'], 'clock_max': rung['clock_max'],
+            'offset': rung['offset'], 'clock_min': envelope.get('clock_min'),
+            'label': entry['rung']})
+        witness = row['witness']
+        row['moved'] = bool(witness.get('power') is not None and (
+            witness.get('power') != rung['power'] or witness.get('offset') != rung['offset']))
+        return row
+
+    # --------------------------------------------------------------------------------- the three acts
+    def write_sets(self, body):
+        """The `/api/gpu-power-sets` half: save a photograph of the machine, put one back, forget one."""
+        require(not self.controller.system.readonly,
+            'State mutation is forbidden in inspection mode')
+        request = power_set_request(body, taken=self.sets())
+        if request['action'] == 'save':
+            return self.save_set(request)
+        if request['action'] == 'delete':
+            return self.delete_set(request)
+        return self.apply_set(request)
+
+    @contextmanager
+    def holding(self):
+        """Hold the card lock across a whole set, or refuse in the words the page already shows.
+
+        A set is one act, so it takes the lock once for all of it: a second pair of hands arriving
+        mid-recall would find three cards moved and two not, which is a state no operator chose.
+        """
+        try:
+            with lock(self.controller.state / LOCK):
+                yield
+        except RuntimeError as error:
+            if 'maintenance lock' not in str(error):
+                raise
+            raise PowerError(409, 'busy', 'Another power write holds the cards.') from None
+
+    def save_set(self, request):
+        """Record what every card in the machine is sitting at right now, under a name.
+
+        A save writes no card: it is a read pass and an atomic file, which is why it is not refused
+        while a switch has the machine. It *is* refused rather than rounded off when a card cannot be
+        recorded faithfully — a card at hand-written values has a clock cap nobody can read back on
+        GeForce, and a set that filed `270 W / +45` for it would be promising a return to a state it
+        never saw. Leaving a card out is an operator's decision, taken by name, not the runtime's.
+        """
+        registry = self.registry()
+        require(registry, 'The rung table could not be read, so nothing can be saved: ' +
+            str(self.registry_error()))
+        stored = self.stored_sets()
+        require(len(stored) < SETS_LIMIT or request['name'] in stored,
+            'this machine already keeps ' + str(SETS_LIMIT) + ' power sets; delete one that has been '
+            'superseded before saving another, because a set nobody can find is not a way back')
+        omitted = {self.card(item) for item in request['omit']}
+        cards = self.cards()
+        with self.holding():
+            readings, ok, moment = self.read_pass()
+        plans = self.host_plans()
+        entries, refused, left_out = {}, [], []
+        for uuid, name in cards:
+            if uuid in omitted:
+                left_out.append({'gpu': uuid, 'name': name})
+                continue
+            entry, refusal = self.entry_for(uuid, name, readings.get(uuid), registry, plans)
+            if refusal:
+                refused.append(refusal)
+            elif entry:
+                entries[uuid] = entry
+        require(not refused, 'Nothing was saved. ' + ' '.join(refused) + ' Move the card to a rung, '
+            'or leave it out of this set on purpose: the page names the card, and from a terminal it is '
+            '`--omit <card>`.')
+        require(entries, 'nothing was left to save: every card this machine reports was left out, and a '
+            'set of nothing is a name with nothing behind it')
+        power_set_cards(entries)  # validate the runtime's own output before it can be read back
+        stored[request['name']] = {'saved_at': moment, 'cards': entries}
+        self.save_sets(stored)
+        return {'ok': True, 'action': 'save', 'set': request['name'], 'saved_at': moment,
+            'cards': len(entries), 'omitted': left_out,
+            'note': None if ok else 'The driver did not answer for every card; this set is what it '
+                'did answer for.'}
+
+    def entry_for(self, gpu, name, card, registry, plans):
+        """One card's line for a save: `(entry, None)` when it can be recorded, `(None, why not)`."""
+        label = name or gpu
+        if card is None:
+            return None, '%s was not read, so there is nothing to record about it.' % label
+        if card.get('error'):
+            return None, ('%s could not be read from the driver.' % label)
+        reading = card.get('read') or {}
+        if not reading:
+            return None, '%s has never been read from the driver.' % label
+        plan_id, _ = self.plan_for(gpu, self.names_for(gpu, reading, name), registry, plans)
+        plan = None
+        try:
+            plan = power_plan(registry, plan_id) if plan_id else None
+        except Exception:  # noqa: BLE001 - an unresolvable plan is "not a rung", and says so below
+            plan = None
+        state, rung = classify(reading, plan)
+        witness = {'power': reading.get('power_limit'), 'offset': reading.get('offset')}
+        if state == 'rung':
+            return {'kind': 'rung', 'rung': rung, 'plan': plan_id,
+                'name': reading.get('name') or '', 'witness': witness}, None
+        if state == 'stock':
+            return {'kind': 'stock', 'name': reading.get('name') or '', 'plan': None,
+                'witness': witness}, None
+        if state == 'custom':
+            return None, ('%s is at %.0f W and %+d MHz, which is none of this card\'s rungs: that is a '
+                'hand-written state, and the clock cap it was given cannot be read back on GeForce, so '
+                'a set saved now would bring the card back somewhere other than where it is.' % (
+                    label, reading.get('power_limit') or 0, reading.get('offset') or 0))
+        return None, ('%s has no readable V/F offset, so whether it is at stock or between rungs is not '
+            'known, and a set does not record guesses.' % label)
+
+    def apply_set(self, request):
+        """Put a saved set — or `stock` — onto every card of this machine it still fits.
+
+        One read pass first, because "is this card still here, and is it still this card" is a question
+        for the driver and not for a file. Then the health gate over the whole set *before* any card is
+        written: half a set applied is a machine in a state nobody ever saved, so an unhealthy engine
+        refuses the act rather than carving a gap into it. Then one ordinary card write per line, under
+        the lock this took, and a card whose driver says no is reported and does not stop its neighbours.
+        """
+        c = self.controller
+        name = request['name']
+        registry = self.registry()
+        require(registry, 'The rung table could not be read, so no set can be applied: ' +
+            str(self.registry_error()))
+        cards = self.cards()
+        if name.lower() == STOCK_SET:
+            definition = self.stock_set(cards)
+        else:
+            stored = self.stored_sets()
+            require(name in stored, 'There is no power set named ' + repr(name) + ' on this machine; it '
+                'has ' + (', '.join(sorted(stored)) if stored else 'no saved sets yet') +
+                ', and `stock` is always available.')
+            definition = {'name': name, 'builtin': False, 'saved_at': None, **stored[name]}
+        blocker = self.blockers()
+        if blocker:
+            raise PowerError(409, 'busy', blocker)
+        with self.holding():
+            readings, ok, moment = self.read_pass()
+            rows = [self.resolve_entry(uuid, entry, readings.get(uuid),
+                    dict(cards).get(uuid), registry) for uuid, entry in
+                self.ordered(definition, cards)]
+            # The gate runs over everything that would be written, before any of it is.
+            gates, unwell = {}, []
+            for row in rows:
+                if row['state'] != 'ready':
+                    continue
+                allowed, why = self.gate(row['gpu'])
+                gates[row['gpu']] = why
+                if not allowed:
+                    unwell.append(why)
+            if unwell and not request['override']:
+                raise PowerError(409, 'engine', ' '.join(unwell) + ' Nothing has been changed and '
+                    'nothing will be: a set is one act over the whole machine, and half a set is a '
+                    'machine in a state nobody saved. Say you know better, or fix the model first.')
+            results, applied, failed = [], 0, 0
+            for row in rows:
+                if row['state'] != 'ready':
+                    results.append({'gpu': row['gpu'], 'name': row['name'], 'state': row['state'],
+                        'reason': row['reason'], 'rung': row['rung'], 'ok': True})
+                    continue
+                try:
+                    wrote = self.write_card(row['gpu'], row['want'], row['card_plan'], row['reading'],
+                        gate=gates[row['gpu']], override=request['override'],
+                        set_name=None if definition['builtin'] else name)
+                except PowerError as error:
+                    # One card's driver is that card's bad day, not the machine's: the rest go ahead and
+                    # this one is said, because a set that stopped at the first no would leave the
+                    # operator guessing which cards moved.
+                    failed += 1
+                    results.append({'gpu': row['gpu'], 'name': row['name'], 'state': 'failed',
+                        'reason': str(error), 'rung': row['rung'], 'ok': False})
+                    continue
+                applied += bool(wrote['ok'])
+                failed += 0 if wrote['ok'] else 1
+                results.append({'gpu': row['gpu'], 'name': row['name'], 'state': 'applied',
+                    'to': wrote['to'], 'state_after': wrote['state'], 'rung': wrote['rung'],
+                    'asked': wrote['asked'], 'readback': wrote['readback'], 'ok': wrote['ok'],
+                    'reason': None if wrote['ok'] else 'The driver took the write and did not read back '
+                        'as asked; Revert to stock is one act and needs no model to be healthy.'})
+        declared = {uuid for uuid, _ in cards}
+        left_out = [{'gpu': uuid, 'name': label} for uuid, label in cards
+            if uuid not in definition['cards']]
+        return {'ok': failed == 0, 'action': 'apply', 'set': name, 'builtin': definition['builtin'],
+            'applied': applied, 'failed': failed, 'skipped': len(rows) - applied - failed,
+            'cards': results, 'left_out': left_out, 'read_at': moment,
+            'note': None if applied else 'Nothing was written: every line of the set was skipped, '
+                'each for the reason it says.'}
+
+    def delete_set(self, request):
+        """Forget a saved set. The cards keep whatever they are sitting at, as always."""
+        stored = self.stored_sets()
+        name = request['name']
+        require(name in stored, 'There is no power set named ' + repr(name) + ' to delete; this machine '
+            'has ' + (', '.join(sorted(stored)) if stored else 'no saved sets yet'))
+        stored.pop(name)
+        self.save_sets(stored)
+        return {'ok': True, 'action': 'delete', 'set': name, 'deleted': True,
+            'note': 'Nothing was written to a card: a set is a memory, and forgetting one leaves the '
+                'machine where it is.'}
+
+    # ---------------------------------------------------------------------------------- sets, for the page
+    def ordered(self, definition, cards):
+        """A set's lines in the order the machine's tiles draw them, with the orphans last.
+
+        A set whose first line is a card that left the machine draws a gap above four good ones, and an
+        operator reading a five-line table should see the four first.
+        """
+        declared = [uuid for uuid, _ in cards]
+        entries = definition['cards']
+        return ([(uuid, entries[uuid]) for uuid in declared if uuid in entries] +
+            [(uuid, entries[uuid]) for uuid in entries if uuid not in declared])
+
+    def set_row(self, definition, cards, readings=None, registry=None, plans=None):
+        """One set as this machine can offer it right now, one line per card, and what it leaves alone."""
+        registry = self.registry() if registry is None else registry
+        plans = self.host_plans() if plans is None else plans
+        readings = self.latest() if readings is None else readings
+        names = dict(cards)
+        rows = [self.resolve_entry(uuid, entry, readings.get(uuid), names.get(uuid), registry, plans)
+            for uuid, entry in self.ordered(definition, cards)]
+        cards_rows = [{'gpu': row['gpu'], 'name': row['name'], 'kind': row['kind'], 'rung': row['rung'],
+            'plan': row['plan'], 'plan_now': row['plan_now'], 'witness': row['witness'],
+            'state': row['state'], 'reason': row['reason'], 'moved': bool(row.get('moved'))}
+            for row in rows]
+        return {'name': definition['name'], 'builtin': bool(definition.get('builtin')),
+            'saved_at': definition.get('saved_at'), 'cards': cards_rows,
+            'ready': sum(1 for row in rows if row['state'] == 'ready'),
+            'skipped': sum(1 for row in rows if row['state'] != 'ready'),
+            'left_out': ([] if definition.get('builtin') else
+                [{'gpu': uuid, 'name': label} for uuid, label in cards if uuid not in
+                    definition['cards']])}
+
+    def sets_block(self, registry=None, error=None):
+        """`status.power.sets`: the built-in set first, then every saved one, against this machine now.
+
+        Reads only files this process already has — the saved sets, the rung table, the card cache —
+        because the five-second poll calls it. `skipped` on a row is not a failure waiting to be fixed:
+        it is a card this set has nothing to say about, or nothing true to say.
+        """
+        cards, plans = self.cards(), self.host_plans()
+        rows = [self.set_row(self.stock_set(cards), cards, None, registry, plans)]
+        saved, note = read_power_sets(self.controller.state / SETS)
+        for name, definition in saved.items():
+            rows.append(self.set_row({'name': name, 'builtin': False, **definition}, cards, None,
+                registry, plans))
+        return {'available': bool(registry), 'error': error or note, 'limit': SETS_LIMIT,
+            'stock': STOCK_SET, 'sets': rows}
 
 
 def public_power(block):
@@ -541,12 +988,20 @@ def public_power(block):
 
     A card error is a Docker complaint or a driver message, and both can carry a path. The page's
     job is to say that the card could not be read and point at diagnostics, which is what this leaves.
+
+    A set's per-card lines are not scrubbed and are not luck: every one of them is a sentence this file
+    wrote — which card left the machine, which slot changed hands — and each is the thing the operator
+    needs to read before applying. The one private sentence is the sets file's own complaint, because
+    that is a filesystem naming itself.
     """
     if not block:
         return block
     block = copy.deepcopy(block)
     if block.get('error'):
         block['error'] = 'The rung table could not be read. View controller diagnostics for details.'
+    if (block.get('sets') or {}).get('error'):
+        block['sets']['error'] = ('The saved power sets could not be read and are not in use. View '
+            'controller diagnostics for details.')
     for card in (block.get('cards') or {}).values():
         if card.get('error'):
             card['error'] = 'This card could not be read. View controller diagnostics for details.'

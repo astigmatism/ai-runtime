@@ -54,31 +54,31 @@ def listed(config_dir, host=None, aliases=None):
 
 
 def power_card(power, wanted):
-    """A card from `--gpu`, which may name it by UUID or by enough of a name to be unambiguous.
+    """A card from `--gpu` or `--omit`, named by UUID or by enough of a name to be one card.
 
     A full UUID is 40 characters and nobody types one from memory on a terminal; the script this
     command replaces took a moniker like `3090`. What it must never take is an ambiguous one, because
-    the whole point of a UUID here is that it is the card and not a card of that model.
+    the whole point of a UUID here is that it is the card and not a card of that model. The rule is the
+    runtime's own, so the page, `--gpu` and `--omit` cannot disagree about which card a word names.
     """
-    cards = power.cards()
-    for uuid, name in cards:
-        if uuid.lower() == wanted.lower():
-            return uuid
-    matches = [uuid for uuid, name in cards if wanted.lower() in uuid.lower()
-        or wanted.lower() in (name or '').lower()]
-    require(len(matches) == 1, 'power --gpu %r matches %s; name one card, or give its full UUID' % (
-        wanted, ', '.join(matches) if matches else 'nothing this machine reports'))
-    return matches[0]
+    try:
+        return power.card(wanted)
+    except Exception as error:
+        require(False, str(error).replace(
+            'name one card, or give its full UUID',
+            'name one card, or give its full UUID for --gpu'))
 
 
 def power_command(controller, args):
-    """The card power state from a terminal: what every card is doing, and one rung written to one.
+    """The card power state from a terminal: what every card is doing, one rung to one, or a set to all.
 
     The same table, the same refusals and the same read-back as the page, because both read
     config/undervolt.json and one cache. `power` with no card reports what the driver last said about
     each card; `--gpu … --read` asks the driver again right now; `--rung`, `--revert` and `--set`
-    write. Nothing here survives a reboot, by design: the reboot is the recovery method, and this
-    command does not arrange one.
+    write. `--save-set NAME` records the whole machine as it stands, `--use-set NAME` puts that back,
+    `--use-set stock` reverts every card it reports, and `--sets` says how each set fits the cards
+    there are now. Nothing here survives a reboot, by design: the reboot is the recovery method, and
+    this command does not arrange one.
     """
     power = controller.power
     if args.plans:
@@ -92,6 +92,21 @@ def power_command(controller, args):
         resolved = power.plans_for_cards()
         return {'envelope': registry['envelope'], 'plans': registry['plans'],
             'this_machine': power.host_plans(), 'for_cards': resolved}
+    if args.sets:
+        # The same block the page draws: `stock` first, then each saved set, every line resolved against
+        # the cards this machine reports right now — which is how a set with a card that left the
+        # machine reads here exactly as it reads there.
+        registry = power.registry()
+        require(registry, 'The rung table could not be read: ' + str(power.registry_error()))
+        return power.sets_block(registry)
+    name = args.save_set or args.use_set or args.delete_set
+    if name:
+        action = ('save' if args.save_set else 'apply' if args.use_set else 'delete')
+        if args.omit:
+            require(action == 'save', '--omit leaves cards out of a *save*. An apply writes the cards '
+                'its set names and skips only cards that are no longer in the machine.')
+        return controller.power.write_sets({'action': action, 'name': name, 'omit': args.omit,
+            'override': bool(args.override)})
     if not args.gpu:
         return power.status()
     body = {'gpu': power_card(power, args.gpu)}
@@ -131,6 +146,18 @@ def main():
     parser.add_argument('--set', default=None, metavar='POWER,CLOCK_MAX,OFFSET')
     parser.add_argument('--revert', action='store_true')
     parser.add_argument('--plans', action='store_true')
+    # Power sets: the whole machine's card states, saved under a name and recalled by it. `--use-set
+    # stock` is the one that always exists — every card this machine reports, back at its own numbers.
+    parser.add_argument('--sets', action='store_true', help='with power: list the power sets and how '
+        'each one fits the cards this machine has now')
+    parser.add_argument('--save-set', default=None, metavar='NAME',
+        help='with power: record what every card is sitting at now, as a set named NAME')
+    parser.add_argument('--use-set', default=None, metavar='NAME',
+        help='with power: put the named set back on the cards it still fits (`stock` reverts them all)')
+    parser.add_argument('--delete-set', default=None, metavar='NAME', help='with power: forget a saved set')
+    parser.add_argument('--omit', action='append', default=[], metavar='CARD',
+        help='with power --save-set: leave this card out of the set, by UUID or by enough of a name '
+            'to be one card')
     parser.add_argument('--override', action='store_true',
         help='with power: write even when the model on that card is not healthy')
     args = parser.parse_args()

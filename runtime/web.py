@@ -119,7 +119,7 @@ def handler(controller, state, operations=None):
         def do_POST(self):
             route = self.path.split('?', 1)[0]
             if route not in ('/api/profile-switch', '/api/restore-last-known-good', '/api/alias',
-                    '/api/gpu-power'):
+                    '/api/gpu-power', '/api/gpu-power-sets'):
                 self.send(405, {'error': 'Method not allowed'})
                 return
             token = self.headers.get('X-Runtime-CSRF', '')
@@ -185,6 +185,28 @@ def handler(controller, state, operations=None):
                     except Exception:
                         self.send(503, {'error': 'The card could not be written. Read it again before '
                             'trying once more, and check controller diagnostics for the detail.'})
+                    else:
+                        self.send(200, reply)
+                return
+            # A power set is the same kind of act with more cards in it: a handful of driver calls and a
+            # read-back each, no drain and nothing to restore. Saving and deleting a set write a small
+            # file and touch no hardware, which is why they are not refused while a switch has the
+            # machine; applying one is refused for exactly the reasons a single card write is.
+            if route == '/api/gpu-power-sets':
+                if not controller:
+                    self.send(503, {'error': 'Runtime configuration is unavailable'})
+                else:
+                    try:
+                        reply = controller.power.write_sets(request)
+                    except PowerError as error:
+                        self.send(error.status, {'error': str(error), 'code': error.code})
+                    except RuntimeError as error:
+                        # The rule the request broke: a name that is already taken, a set this machine
+                        # does not have, a card left out that was never in it.
+                        self.send(400, {'error': str(error)})
+                    except Exception:
+                        self.send(503, {'error': 'The power sets could not be read or written. Check '
+                            'controller diagnostics for the detail before trying again.'})
                     else:
                         self.send(200, reply)
                 return

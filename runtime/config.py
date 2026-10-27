@@ -849,6 +849,174 @@ def power_request(body, envelope, limits=None):
     return request
 
 
+# ----------------------------------------------------------------------------------- machine power sets
+# A *plan* is a measurement of one model of card and a *rung* is one state of it; neither answers the
+# question "what were all the cards in this machine doing before I changed them", which is a question
+# about a whole machine at a moment. A power set is that answer: the rung each physical card was
+# sitting at, under a name an operator chose, so the set of cards goes back with one act.
+#
+# A set is a pointer, never a copy. Each line names a **rung** -- not its watts, not its clock cap --
+# because a rung is a measurement that source owns and can revise, and a set that froze `330 W /
+# 1905 MHz / +75` would keep applying yesterday's ladder after the campaign that measures it again.
+# The numbers a save saw are kept beside the pointer as `witness`, so the page can say "this rung has
+# moved since you saved it" instead of silently moving the card.
+#
+# What cannot be recorded faithfully is not recorded at all: a card at hand-written values has a clock
+# lock nobody can read back on GeForce, so saving it refuses rather than saving a state that would come
+# back different. `stock` is not stored; it is derived from what the machine reports right now, and it
+# is the one set with no rungs in it.
+
+SETS_NAME_MAX = 40
+SETS_LIMIT = 24
+STOCK_SET = 'stock'
+POWER_SET_KINDS = ('rung', 'stock')
+
+
+def power_set_name(name, taken=None, overwrite=False, purpose='save'):
+    """One power set's name, validated, trimmed.
+
+    The name *is* the id: it is what `--use-set` takes and what the page recalls by, so it is one
+    printable line and nothing that would make two sets differ only in casing. `stock` belongs to the
+    built-in and cannot be taken by a saved set, which is why a save refuses it and an apply accepts
+    it. `purpose` says which side of that line this request is on: `save` may not step on `stock` and
+    may not repeat a name without `overwrite`; `delete` may not delete what cannot be re-saved.
+    """
+    require(isinstance(name, str) and name.strip(),
+        'a power set is named — the name is how it is recalled later, from the page or from '
+        '`power --use-set NAME`')
+    trimmed = name.strip()
+    require(trimmed.isprintable() and '\n' not in trimmed and '\t' not in trimmed,
+        'a power set name is one printable line, ' + repr(name))
+    require(len(trimmed) <= SETS_NAME_MAX, 'a power set name is at most ' + str(SETS_NAME_MAX) +
+        ' characters; it is read off a screen next to the cards it moves')
+    require(purpose == 'apply' or trimmed.lower() != STOCK_SET,
+        '`stock` is the set every machine has: every card it reports, back at the driver\'s own '
+        'numbers. A saved set may not take that name, because then `apply stock` would mean two things')
+    require(purpose != 'delete' or trimmed.lower() != STOCK_SET,
+        'stock is not a saved set, so it is not a thing to delete: applying it puts the cards at '
+        'stock, and a reboot does the same on its own')
+    if purpose == 'save':
+        taken = {str(key).strip().lower() for key in (taken or {})}
+        require(overwrite or trimmed.lower() not in taken,
+            'there is already a power set named ' + repr(trimmed) + '; saving again would replace the '
+            'rungs it points at, so say overwrite if that is what you mean')
+    return trimmed
+
+
+def power_set_entry(gpu, entry):
+    """One card's line of a power set: a pointer to a rung, or the word stock.
+
+    Validated on the way in *and* on the way back out: this file is written by the runtime from a
+    driver reading, and read by the runtime to move hardware, and a line that means neither of the two
+    things it may mean must not be allowed to reach a card.
+    """
+    require(re.fullmatch(GPU_UUID, gpu or ''), 'a power set line is keyed by a full GPU UUID, not ' +
+        repr(gpu))
+    require(isinstance(entry, dict), 'the entry for ' + gpu + ' is an object naming what that card '
+        'was sitting at')
+    kind = entry.get('kind')
+    require(kind in POWER_SET_KINDS, 'the entry for ' + gpu + ' is kind ' + repr(kind) +
+        '; a line is `rung`, naming a measured rung of that card\'s plan, or `stock`, naming the '
+        'driver\'s own numbers')
+    saved = {'kind': kind}
+    if kind == 'rung':
+        require(isinstance(entry.get('rung'), str) and entry['rung'] in POWER_RUNGS,
+            'the entry for ' + gpu + ' names rung ' + repr(entry.get('rung')) + '; a rung is one of ' +
+            ', '.join(POWER_RUNGS))
+        require(isinstance(entry.get('plan'), str) and entry['plan'],
+            'the entry for ' + gpu + ' must say which plan its rung belongs to, because `sensible` is '
+            'a number per model of card and a set that forgot which one is a guess')
+        saved['rung'], saved['plan'] = entry['rung'], entry['plan']
+        if entry.get('name'):
+            require(isinstance(entry['name'], str) and entry['name'].isprintable(),
+                'the entry for ' + gpu + ' carries a card name that is not printable text')
+        saved['name'] = str(entry.get('name') or '')
+        witness = entry.get('witness') or {}
+        require(isinstance(witness, dict) and all(witness.get(key) is None or isinstance(witness[key],
+                (int, float)) for key in ('power', 'offset')),
+            'the witness for ' + gpu + ' is what the driver read at save time: watts and offset, or null')
+        saved['witness'] = {key: witness.get(key) for key in ('power', 'offset')}
+    return saved
+
+
+def power_set_cards(cards):
+    """A whole set's lines, validated: {GPU uuid: entry}."""
+    require(isinstance(cards, dict) and cards, 'a power set names at least one card; a set of nothing '
+        'is a name with nothing behind it')
+    return {gpu: power_set_entry(gpu, entry) for gpu, entry in cards.items()}
+
+
+def read_power_sets(path):
+    """This machine's power sets, tolerantly: the page reads them every five seconds.
+
+    The rule is the alias file's. A missing file is the ordinary state and says nothing. A file that
+    cannot be read, or whose lines are not lines, is a one-line note and no sets -- an operator's
+    machine that is serving is not stopped by a preference file with a comma missing, and it is not
+    quietly stopped using it either. A line that is malformed inside an otherwise readable file is
+    dropped and named, because the rest of the sets are still things you can apply.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}, None
+    try:
+        stored = read(path)
+    except Exception as error:
+        return {}, 'Saved power sets could not be read and are not in use: ' + str(error)
+    if not isinstance(stored, dict) or not isinstance(stored.get('sets'), dict):
+        return {}, 'Saved power sets are malformed and are not in use'
+    sets, dropped = {}, []
+    for name, entry in stored['sets'].items():
+        cards = (entry or {}).get('cards') if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name.strip() or not isinstance(cards, dict) or not cards:
+            dropped.append(str(name))
+            continue
+        lines = {}
+        for gpu, line in cards.items():
+            try:
+                lines[gpu] = power_set_entry(gpu, line)
+            except Exception:  # noqa: BLE001 - one bad line is that card's line, not the set's
+                dropped.append(name + ' / ' + str(gpu))
+        if not lines:
+            dropped.append(name)
+            continue
+        sets[name.strip()[:SETS_NAME_MAX]] = {
+            'saved_at': (entry or {}).get('saved_at'), 'cards': lines}
+    note = ('Ignored malformed power set entries: ' + ', '.join(sorted(dropped))) if dropped else None
+    return sets, note
+
+
+def power_set_request(body, taken=None):
+    """Validate a save / apply / delete of a power set.
+
+    `omit` names cards a save should leave out of the photograph, and only a save takes it: an apply
+    that silently skipped a card because of a flag meant for a save would be the loudest kind of
+    surprise. Cards are named here by UUID or by enough of a name to be one card; resolving them to
+    UUIDs is the runtime's job, because only the runtime knows what is in the slots.
+    """
+    require(isinstance(body, dict), 'a JSON object naming the action and the set')
+    allowed = {'action', 'name', 'omit', 'override', 'overwrite'}
+    require(not set(body) - allowed, 'a power set request accepts only ' + ', '.join(sorted(allowed)) +
+        '; this request also carries ' + ', '.join(sorted(set(body) - allowed)))
+    action = body.get('action')
+    require(action in ('save', 'apply', 'delete'),
+        "action is 'save' the cards as they are now under a name, 'apply' a named set to the cards, "
+        "or 'delete' a saved set (`stock` is derived, not saved, and applying it is how you get stock)")
+    require(isinstance(body.get('override', False), bool), 'override is true or false')
+    require(isinstance(body.get('overwrite', False), bool), 'overwrite is true or false')
+    name = power_set_name(body.get('name'), taken=taken, overwrite=bool(body.get('overwrite')),
+        purpose=action)
+    request = {'action': action, 'name': name, 'omit': [], 'override': bool(body.get('override')),
+        'overwrite': bool(body.get('overwrite'))}
+    if 'omit' in body:
+        require(action == 'save', 'only a save leaves cards out; an apply writes the cards the set '
+            'names and skips only cards that are no longer in the machine')
+        omit = body['omit']
+        require(isinstance(omit, list) and all(isinstance(item, str) and item.strip() for item in omit),
+            'omit is a list of cards to leave out of the set, by UUID or by enough of a name to be one card')
+        request['omit'] = [item.strip() for item in omit]
+    return request
+
+
 def service_key(definition):
     """The key this model's Compose service and manifest entry are filed under.
 

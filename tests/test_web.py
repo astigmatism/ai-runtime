@@ -389,6 +389,68 @@ class PowerHttpTests(OperationFixture, unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn('no card with that UUID', reply['error'])
 
+    def test_a_set_applied_from_the_page_answers_with_every_card_it_wrote(self):
+        """The page gets one reply for the whole machine, and the reply says what each card was told.
+
+        A set is the one power act whose result is genuinely plural, so the shape that comes back is
+        the shape the page can put in a sentence: how many moved, how many were skipped and why, and
+        which cards in the chassis it said nothing about.
+        """
+        self.c.power.write_sets({'action': 'save', 'name': 'as-it-stands'})
+        code, reply = self.http('/api/gpu-power-sets', {'action': 'apply', 'name': 'as-it-stands'})
+        self.assertEqual(code, 200)
+        self.assertTrue(reply['ok'])
+        self.assertEqual((reply['set'], reply['applied']), ('as-it-stands', 4))
+        self.assertEqual({card['gpu'] for card in reply['cards'] if card['state'] == 'applied'},
+            {test_power.MEASURED, test_power.OTHER, test_power.UNMEASURED, test_power.TI})
+        listed = self.status()['power']['sets']['sets']
+        self.assertEqual([row['name'] for row in listed], ['stock', 'as-it-stands'])
+
+    def test_the_guard_that_protects_a_card_protects_a_whole_set(self):
+        for headers, expected in [({'Origin': 'http://evil.example'}, 403), ({'X-Runtime-CSRF': ''}, 403),
+                ({'Sec-Fetch-Site': 'cross-site'}, 403), ({'Content-Type': 'text/plain'}, 415)]:
+            with self.subTest(headers=headers):
+                self.assertEqual(self.http('/api/gpu-power-sets',
+                    {'action': 'apply', 'name': 'stock'}, headers)[0], expected)
+        self.assertEqual(self.agent.writes, [], 'a refused request must not reach the driver')
+
+    def test_a_refused_set_arrives_with_the_status_the_page_branches_on(self):
+        self.c.power.write_sets({'action': 'save', 'name': 'as-it-stands'})
+        # A name nobody saved: the browser asked well and the answer names what does exist. 400.
+        code, reply = self.http('/api/gpu-power-sets', {'action': 'apply', 'name': 'last-summer'})
+        self.assertEqual(code, 400)
+        self.assertIn('as-it-stands', reply['error'])
+        # An unhealthy engine is not the browser's mistake: 409, and the page answers with the tick.
+        self.system.containers['qwen38-daytime']['State']['Running'] = False
+        code, reply = self.http('/api/gpu-power-sets', {'action': 'apply', 'name': 'as-it-stands'})
+        self.assertEqual((code, reply['code']), (409, 'engine'))
+        self.assertIn('half a set', reply['error'])
+        self.assertEqual(self.http('/api/gpu-power-sets', {'action': 'apply',
+            'name': 'as-it-stands', 'override': True})[0], 200)
+        self.system.containers['qwen38-daytime']['State']['Running'] = True
+        # A machine mid-switch says so, and a finished switch does not.
+        self.c.save('transaction.json', {'phase': 'draining'})
+        code, reply = self.http('/api/gpu-power-sets', {'action': 'apply', 'name': 'stock'})
+        self.assertEqual((code, reply['code']), (409, 'busy'))
+        self.c.save('transaction.json', {'phase': 'succeeded'})
+        # And a request with nothing sensible in it is the browser's mistake.
+        code, reply = self.http('/api/gpu-power-sets', {'action': 'save'})
+        self.assertEqual(code, 400)
+        self.assertIn('named', reply['error'])
+
+    def test_the_sets_complaint_that_reaches_a_browser_names_no_path(self):
+        from runtime.web import public_status
+        (self.state / 'power' / 'sets.json').parent.mkdir(parents=True, exist_ok=True)
+        (self.state / 'power' / 'sets.json').write_text('{"sets": {')
+        self.status()
+        shown = public_status(self.web_state)['power']['sets']
+        self.assertIn('diagnostics', shown['error'])
+        self.assertNotIn('Expecting', json.dumps(shown))
+        self.assertNotIn(str(self.state), json.dumps(shown))
+        # The controller's own words stay, because a terminal reading the machine directly is the one
+        # place a path is a useful thing to see.
+        self.assertIn('column', self.status()['power']['sets']['error'])
+
     def test_a_drivers_words_stay_off_the_page(self):
         """The card agent's failures name a device, a query field or a socket. The page is a browser
         two networks away, and it gets one sentence and a pointer to diagnostics."""

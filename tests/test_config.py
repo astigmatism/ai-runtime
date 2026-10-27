@@ -15,6 +15,7 @@ from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT, NAME_
     nameable_models, default_name, default_profile, digest, display_name, engine_interface,
     merge_settings, read,
     power_plan, power_plan_for_name, power_plans, power_request, power_rung, read_aliases,
+    power_set_cards, power_set_entry, power_set_name, power_set_request, read_power_sets,
     read_power_registry, render, resolve_profile, service_engine, service_key, text_gpus,
     unknown_profile)
 
@@ -2461,6 +2462,121 @@ def table_with(**changes):
     table.update(changes)
     path.write_text(json.dumps(table))
     return directory
+
+
+class PowerSetFileTests(unittest.TestCase):
+    """The set file's own rules, with no controller and no driver in the room.
+
+    A power set is one line per card saying `this card, this rung`, and every rule here exists because
+    the line ends up moving hardware: the name is how it is asked for again, and the plan beside a rung
+    is the only thing that says *which* card's measurement `sensible` is.
+    """
+    CARD = 'GPU-358353dd-5933-1dc6-ac0d-e1189b063e4c'
+
+    def line(self, **changes):
+        entry = {'kind': 'rung', 'rung': 'sensible', 'plan': 'rtx3090',
+            'name': 'NVIDIA GeForce RTX 3090', 'witness': {'power': 330, 'offset': 75}}
+        entry.update(changes)
+        return entry
+
+    def test_a_name_is_one_printable_line_because_it_is_an_id(self):
+        self.assertEqual(power_set_name('  night-quiet  '), 'night-quiet')
+        self.assertEqual(power_set_name('a' * 40)[:1], 'a')
+        for bad in ('', '   ', None, 7, 'two\nlines', 'a\tb', 'x' * 41, 'tab\u0007bell'):
+            with self.subTest(name=bad), self.assertRaises(RuntimeError):
+                power_set_name(bad)
+
+    def test_stock_is_spelled_the_same_whichever_way_it_is_asked_for(self):
+        self.assertEqual(power_set_name('STOCK', purpose='apply'), 'STOCK')
+        for purpose in ('save', 'delete'):
+            with self.subTest(purpose=purpose), self.assertRaises(RuntimeError) as refused:
+                power_set_name('stock', purpose=purpose)
+            self.assertIn('every machine', str(refused.exception))
+        # A name that differs only in casing is the same name twice, and a save may not do it quietly.
+        self.assertRaises(RuntimeError, power_set_name, 'Night', taken={'night': {}})
+        self.assertEqual(power_set_name('Night', taken={'night': {}}, overwrite=True), 'Night')
+
+    def test_a_line_is_a_rung_pointer_or_the_word_stock(self):
+        entry = power_set_entry(self.CARD, self.line(invented='dropped'))
+        self.assertEqual(entry, {'kind': 'rung', 'rung': 'sensible', 'plan': 'rtx3090',
+            'name': 'NVIDIA GeForce RTX 3090', 'witness': {'power': 330, 'offset': 75}})
+        self.assertNotIn('invented', entry, 'a line keeps keys this release does not know about')
+        self.assertEqual(power_set_entry(self.CARD, {'kind': 'stock'}), {'kind': 'stock'})
+        self.assertNotIn('rung', power_set_entry(self.CARD, {'kind': 'stock', 'rung': 'safe'}),
+            'a stock line carries no rung to be contradicted by')
+
+    def test_a_rung_without_its_plan_is_a_number_looking_for_a_card(self):
+        """`sensible` is 330 W on a GA102 and 255 W on an Ada: the plan is the whole meaning."""
+        for bad in ({'plan': None}, {'plan': ''}, {'rung': 'extreme'}, {'rung': 'SENSIBLE'},
+                {'kind': 'maybe'}, {'kind': None}, self.line(name=7),
+                self.line(witness={'power': 'thirty-three ten'})):
+            entry = self.line()
+            entry.update(bad)
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                power_set_entry(self.CARD, entry)
+        no_rung = {key: value for key, value in self.line().items() if key != 'rung'}
+        with self.assertRaises(RuntimeError):
+            power_set_entry(self.CARD, no_rung)
+        for gpu in ('3090', 'GPU-358353dd', '', None):
+            with self.subTest(gpu=gpu), self.assertRaises(RuntimeError):
+                power_set_entry(gpu, self.line())
+        # A witness of nulls is an unread knob, which is honest; a witness of prose is not.
+        self.assertEqual(power_set_entry(self.CARD, self.line(witness={'power': None}))['witness'],
+            {'power': None, 'offset': None})
+
+    def test_a_set_of_nothing_is_a_name_with_nothing_behind_it(self):
+        self.assertEqual(power_set_cards({self.CARD: self.line()})[self.CARD]['rung'], 'sensible')
+        for cards in ({}, None, [], {self.CARD: None}):
+            with self.subTest(cards=cards), self.assertRaises(RuntimeError):
+                power_set_cards(cards)
+
+    def test_the_set_file_is_read_the_way_the_alias_file_is_read(self):
+        """Tolerant to read: the page shows these names every five seconds and a comma is not a reason
+        to stop drawing the machine. What it says instead is one line naming what it ignored."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sets.json'
+            self.assertEqual(read_power_sets(path), ({}, None))  # Absent is the ordinary state.
+            path.write_text('{not json')
+            sets, note = read_power_sets(path)
+            self.assertEqual(sets, {}); self.assertIn('could not be read', note)
+            path.write_text('{"sets": "not a map"}')
+            sets, note = read_power_sets(path)
+            self.assertEqual(sets, {}); self.assertIn('malformed', note)
+            atomic_json(path, {'version': 1, 'sets': {
+                'quiet-night': {'saved_at': 'today', 'cards': {self.CARD: self.line()}},
+                'also-broken': {'cards': {}},
+                'half-broken': {'cards': {self.CARD: {'kind': 'sideways'}}}}})
+            sets, note = read_power_sets(path)
+            # A line that is not a line is dropped; a set left with no usable line is dropped too, so
+            # nothing an operator could apply is drawn from a part of the file nobody can read.
+            self.assertEqual(sorted(sets), ['quiet-night'])
+            self.assertIn('also-broken', note)
+            self.assertIn('half-broken', note)
+
+    def test_a_request_is_one_of_three_verbs_and_says_which_card_it_leaves_out(self):
+        taken = {'quiet-night': {'cards': {self.CARD: self.line()}}}
+        save = power_set_request({'action': 'save', 'name': ' night-quiet ', 'omit': ['3090']},
+            taken=taken)
+        self.assertEqual((save['action'], save['name'], save['omit']), ('save', 'night-quiet', ['3090']))
+        self.assertFalse(save['overwrite'])
+        self.assertEqual(power_set_request({'action': 'apply', 'name': 'stock'}, taken=taken)['name'],
+            'stock')
+        self.assertEqual(power_set_request({'action': 'apply', 'name': 'quiet-night',
+            'override': True}, taken=taken)['override'], True)
+        self.assertEqual(power_set_request({'action': 'delete', 'name': 'quiet-night'},
+            taken=taken)['action'], 'delete')
+        for body in ({}, {'action': 'sideways', 'name': 'x'}, {'action': 'save'},
+                {'action': 'apply', 'name': 'x', 'gpu': self.CARD},
+                {'action': 'apply', 'name': 'x', 'omit': [self.CARD]},
+                {'action': 'delete', 'name': 'x', 'omit': 'y'},
+                {'action': 'save', 'name': 'x', 'override': 'yes'},
+                {'action': 'save', 'name': 'x', 'overwrite': 1},
+                {'action': 'save', 'name': 'x', 'omit': self.CARD},
+                {'action': 'save', 'name': 'x', 'cards': {self.CARD: self.line()}},
+                {'action': 'save', 'name': 'stock'},
+                {'action': 'delete', 'name': 'quiet-night', 'taken': 'x'}):
+            with self.subTest(body=body), self.assertRaises(RuntimeError):
+                power_set_request(body, taken=taken)
 
 
 class RungTableTests(unittest.TestCase):
