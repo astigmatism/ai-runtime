@@ -7,8 +7,8 @@ import sys
 
 from .controller import Controller
 from .system import System
-from .config import (ALIASES_FILE, CONFIGURATIONS, PROFILE_ALIASES, available_profiles, read,
-    nameable_models, read_aliases, require, resolve_profile, unknown_profile)
+from .config import (ALIASES_FILE, available_profiles, machine_registry, nameable_models, read, read_aliases,
+    require, resolve_profile, unknown_profile)
 
 
 def describe(entry, note=''):
@@ -161,13 +161,22 @@ def main():
     parser.add_argument('--override', action='store_true',
         help='with power: write even when the model on that card is not healthy')
     args = parser.parse_args()
-    if args.profile:
-        require(args.profile in CONFIGURATIONS or args.profile in PROFILE_ALIASES,
-            unknown_profile(args.profile))
-        args.profile = resolve_profile(args.profile)
-    if args.action == 'list':
-        config_dir = os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')
+    config_dir = os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')
+    host = aliases = None
+    if args.profile or args.action == 'list':
+        # A name typed at a keyboard is asked about on the machine that keeps the configurations, not
+        # against this revision's own list: whether a name is one of *this* machine's configurations,
+        # and what one of its own older names resolves to, is in the record it keeps beside their
+        # bodies. With no state directory there is no machine to ask, and the answer is this revision's
+        # list -- which is what a bare source tree, and a deployment that has not moved its
+        # configurations into its own home, has always been given.
         host, aliases = host_settings(config_dir)
+    if args.profile:
+        profile = resolve_profile(args.profile, config_dir, host)
+        require(profile in machine_registry(config_dir, host)['selectable'],
+            unknown_profile(args.profile, config_dir, host))
+        args.profile = profile
+    if args.action == 'list':
         print(listed(config_dir, host, aliases))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')

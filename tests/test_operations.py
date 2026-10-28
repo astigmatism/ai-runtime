@@ -376,7 +376,7 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         model of its own that a configuration has to name to load."""
         import shutil, tempfile
         from pathlib import Path
-        from runtime import config as runtime_config, operations as runtime_operations
+        from runtime import config as runtime_config
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         config = Path(tmp.name) / 'config'; shutil.copytree(controller_fixture.ROOT / 'config', config)
         night = json.loads((config / 'profiles/everyday.json').read_text())
@@ -392,9 +392,13 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         day = json.loads((config / 'profiles/qwen27b-q6k-pair.json').read_text())
         day.update(id='qwen27b-q6k-pair-plain', models=['qwen27b-q6k-pair-plain', 'everyday-plain'])
         (config / 'profiles/qwen27b-q6k-pair-plain.json').write_text(json.dumps(day))
-        profiles = (*runtime_config.CONFIGURATIONS, 'qwen27b-q6k-pair-plain')
-        for target, value in ((runtime_config, profiles), (runtime_operations, profiles)):
-            p = patch.object(target, 'CONFIGURATIONS', value); p.start(); self.addCleanup(p.stop)
+        # The variant is added the way a machine adds one: a body, plus the record that says this
+        # machine offers it. Nothing in the revision is patched -- a configuration is a decision of
+        # this box, and the box says so where it lives.
+        offered = [path.stem for path in sorted((config / 'profiles').glob('*.json'))
+            if json.loads(path.read_text()).get('models')]
+        (config / 'profiles' / runtime_config.REGISTRY_FILE).write_text(json.dumps(
+            {'schema_version': runtime_config.PROFILES_VERSION, 'profiles': offered}))
         self.c.config_dir = config
 
     def test_browser_switch_between_configurations_that_share_a_model_stops_the_one_it_drops(self):

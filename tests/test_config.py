@@ -9,11 +9,11 @@ import unittest
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
 from runtime.system import atomic_json
 from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT, NAME_MAX,
-    DEFAULT_PROFILE, PROFILE_ALIASES, RETIRED_PROFILES,
+    DEFAULT_PROFILE, PROFILE_ALIASES, PROFILES_VERSION, REGISTRY_FILE, RETIRED_PROFILES,
     ALIASES_VERSION, available_profiles, belongs_to_host, card_model, catalog_names, clean_alias,
-    configurations_for, host_display_name, host_name, is_exclusive, model_id, models_of,
-    nameable_models, default_name, default_profile, digest, display_name, engine_interface,
-    merge_settings, read,
+    configurations_for, host_display_name, host_name, is_exclusive, machine_registry, model_id,
+    models_of, nameable_models, default_name, default_profile, digest, display_name, engine_interface,
+    merge_settings, profile_body, profiles_home, read,
     power_plan, power_plan_for_name, power_plans, power_request, power_rung, read_aliases,
     power_set_cards, power_set_entry, power_set_name, power_set_request, read_power_sets,
     read_power_registry, render, resolve_profile, service_engine, service_key, text_gpus,
@@ -2448,7 +2448,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
             second_machine()), (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'))
 
     def test_a_host_whose_registry_is_empty_says_so(self):
-        with self.assertRaisesRegex(RuntimeError, 'No configuration of this revision names this host'):
+        with self.assertRaisesRegex(RuntimeError, 'No configuration of this machine offers this host'):
             default_profile(ROOT / 'config', second_machine(host_id='no-machine-claims-this-one'))
 
     def test_another_machines_configuration_refuses_to_render_and_names_both(self):
@@ -2617,6 +2617,260 @@ class MoreThanOneMachineTests(unittest.TestCase):
                 name + ' is listed with ' + str(len(block) - 1) + ' models and loads '
                 + str(len(NAMED[name])))
         self.assertEqual([block[0].split(':')[0] for block in blocks()], list(CONFIGURATIONS))
+
+
+class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
+    """A machine's record of its own configurations, and what moving them into its home costs.
+
+    `.state/host.json` states `profiles_dir`, and that directory — which rides along with the state
+    directory, is Git-excluded like every other fact about the box, and is mounted at the same path inside
+    the container as outside it — holds the body of every configuration the machine offers, plus
+    `registry.json`: which ones it offers, in the order it offers them, what it renamed, what it retired,
+    and what it starts on when no release has been recorded. `config/profiles` in this checkout is where
+    they live until the machine says otherwise, which is why the move costs nothing: a home that states no
+    record of its own is given precisely the answer it has always been given, and a bundle that does not
+    change is a bundle that spends no drain.
+
+    The refusals here are the design. A record is allowed to be wrong about its own machine, and a wrong
+    record about which configurations exist is not something a runtime can render around.
+    """
+
+    YARN = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
+    YARN_REPLACEMENT = 'flash-next-strata-solo-thinking-recovery-cache'
+    TWO_CARD_SOLO = 'flash-next-strata-two-card-iq3-s'
+
+    @staticmethod
+    def bodies_of(names):
+        """Every body a machine needs beside the configurations it offers: those, and the bodies of the
+        models they name. A configuration is a decision about models, and the models it names are part of
+        the decision, so they live where the decision lives.
+        """
+        kept = set(names)
+        for name in names:
+            kept.update(profile_file(name).get('models') or [])
+        return sorted(kept)
+
+    def home_of(self, names=SELECTABLE, record=True):
+        """The shipped configuration tree with its configurations moved into a machine's own home.
+
+        Byte for byte, because the point of the move is that nothing about a launch changes. The revision's
+        own `config/profiles` is then removed, so a read that slips back to the checkout finds no body and
+        says so.
+        """
+        tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
+        config, home = tmp / 'config', tmp / 'machine' / 'profiles'
+        shutil.copytree(ROOT / 'config', config)
+        home.mkdir(parents=True)
+        for name in self.bodies_of(names):
+            shutil.copyfile(ROOT / 'config/profiles' / (name + '.json'), home / (name + '.json'))
+        if record is not None:
+            stated = {'schema_version': PROFILES_VERSION, 'profiles': list(names)} if record is True else record
+            (home / REGISTRY_FILE).write_text(json.dumps(stated))
+        shutil.rmtree(config / 'profiles')
+        return config, home
+
+    def machine_host(self, profile, home, **changes):
+        """The settings of the machine a configuration was measured on, now naming where it keeps them."""
+        host = dict(host_for(profile), profiles_dir=str(home))
+        host.update(changes)
+        return host
+
+    def test_a_machine_keeping_its_own_configurations_renders_what_it_rendered_before(self):
+        config, home = self.home_of()
+        for name in SELECTABLE:
+            with self.subTest(profile=name):
+                before = render(ROOT / 'config', host_for(name), name)
+                after = render(config, self.machine_host(name, home), name)
+                # The same bundle, byte for byte: the same argv, the same mounts, the same catalog. A
+                # bundle that differs is a bundle that drains the workload reading it, and moving a
+                # configuration to the machine that owns it is not a change to any launch.
+                self.assertEqual(after, before, name + ' renders differently once its machine owns it')
+                self.assertEqual(digest(after), digest(before), name + ' would spend a drain on the move')
+
+    def test_the_order_a_machine_states_is_the_order_it_offers_them_in(self):
+        order = list(reversed(SELECTABLE))
+        self.assertNotEqual(order, sorted(order), 'the record here is deliberately not the order files sort in')
+        config, home = self.home_of(names=order)
+        for machine, profile in ((ROSALINA, 'qwen27b-q8-pair'), (DAISY, DAISY_PROFILE)):
+            with self.subTest(host=machine):
+                host = self.machine_host(profile, home, host_id=machine)
+                self.assertEqual([row['profile'] for row in available_profiles(config, host)['selectable']],
+                    [name for name in order if machine in profile_file(name)['hosts']],
+                    'the picker and the listing read the machine\'s order, not an accident of how '
+                    'files sort')
+        self.assertEqual(default_profile(config, self.machine_host('qwen27b-q8-pair', home, host_id=ROSALINA)),
+            order[0], 'a machine that states no default starts on the first configuration of its own order')
+        # Stating an order is not the same as changing a launch. Every configuration renders the identical
+        # bundle whichever order its machine lists it in, because the sequence a digest reads is the body's
+        # own `models` list and the record sits outside the bundle. A machine may reorder its own picker
+        # without draining anybody's workload.
+        for name in SELECTABLE:
+            with self.subTest(profile=name):
+                self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
+                    digest(render(ROOT / 'config', host_for(name), name)),
+                    name + ': this machine stated its own order, and a launch paid for it')
+
+    def test_a_home_that_states_no_record_of_its_own_gets_the_answer_it_always_had(self):
+        config, home = self.home_of(record=None)
+        host = dict(BASELINE['host'], profiles_dir=str(home))
+        self.assertFalse(machine_registry(config, host)['machine_owned'])
+        self.assertEqual(configurations_for(config, host), CONFIGURATIONS)
+        self.assertEqual(default_profile(config, host), DEFAULT_PROFILE)
+        self.assertEqual(resolve_profile('qwen27b-q8-with-nighttime', config, host),
+            PROFILE_ALIASES['qwen27b-q8-with-nighttime'], 'the renames a revision states are still the '
+            'renames of a machine that has not written down its own')
+        for name in SELECTABLE:
+            with self.subTest(profile=name):
+                self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
+                    digest(render(ROOT / 'config', host_for(name), name)))
+        # Bodies moved and no record is a half-finished move, and it is the half that can fail loudly: a
+        # name the revision offers with no body in the home this machine named refuses, naming the path it
+        # looked at.
+        (home / (DAISY_PROFILE + '.json')).unlink()
+        with self.assertRaisesRegex(RuntimeError, 'no configuration body at ' + str(home / (DAISY_PROFILE + '.json'))):
+            profile_body(config, self.machine_host(DAISY_PROFILE, home), DAISY_PROFILE)
+
+    def test_a_record_that_offers_a_name_with_no_body_beside_it_refuses(self):
+        config, home = self.home_of(record={'schema_version': PROFILES_VERSION,
+            'profiles': [*SELECTABLE, 'a-configuration-nobody-wrote']})
+        with self.assertRaisesRegex(RuntimeError, 'a-configuration-nobody-wrote.*is not there'):
+            configurations_for(config, self.machine_host('qwen27b-q8-pair', home))
+
+    def test_every_way_a_machines_own_record_can_be_wrong_refuses(self):
+        full = {'schema_version': PROFILES_VERSION, 'profiles': list(SELECTABLE)}
+        cases = [
+            ({**full, 'profles': []}, 'nothing this revision understands'),
+            ({**full, 'schema_version': 2}, 'this revision reads version ' + str(PROFILES_VERSION)),
+            ({**full, 'schema_version': None}, 'states schema_version null'),
+            ({**full, 'profiles': []}, 'non-empty list'),
+            ({**full, 'profiles': [SELECTABLE[0], '   ']}, 'non-empty list'),
+            ({**full, 'profiles': [SELECTABLE[0], SELECTABLE[0]]}, 'more than once'),
+            ({**full, 'renamed': {'an-old-name': 'not-a-configuration-here'}}, 'does not offer'),
+            ({**full, 'retired': {'an-old-name': 'not-a-configuration-here'}}, 'does not offer'),
+            ({**full, 'renamed': {SELECTABLE[0]: SELECTABLE[1]}}, 'while also offering it'),
+            ({**full, 'retired': {SELECTABLE[2]: SELECTABLE[3]}}, None),
+            ({**full, 'renamed': {'an-old-name': 5}}, 'mapping from an old configuration id'),
+            ({**full, 'default_profile': 'not-a-configuration-here'}, 'which it does not offer'),
+            ({**full, 'default_profile': '   '}, 'is not a configuration id'),
+        ]
+        for record, phrase in cases:
+            config, home = self.home_of(record=record)
+            with self.subTest(record=record):
+                if phrase is None:
+                    # Both halves of this record are legal on their own: it offers this configuration and
+                    # records it as retired, which is one configuration that is and is not.
+                    with self.assertRaisesRegex(RuntimeError, 'is and is not'):
+                        configurations_for(config, self.machine_host('qwen27b-q8-pair', home))
+                    continue
+                with self.assertRaisesRegex(RuntimeError, phrase):
+                    configurations_for(config, self.machine_host('qwen27b-q8-pair', home))
+
+    def test_a_directory_that_is_not_a_directory_a_machine_can_mount_refuses(self):
+        home = Path(tempfile.mkdtemp())
+        for stated in ('profiles', '../profiles', str(home) + '/../elsewhere', '', 5, ['profiles']):
+            config, moved = self.home_of()
+            with self.subTest(profiles_dir=stated), self.assertRaisesRegex(RuntimeError,
+                    'the absolute directory this machine keeps its configurations in'):
+                profiles_home(config, dict(BASELINE['host'], profiles_dir=stated))
+            self.assertEqual(configurations_for(config, dict(BASELINE['host'])), CONFIGURATIONS,
+                'the refusal is about the directory a machine named, not about the machine losing its '
+                'configurations')
+
+    def test_a_body_that_is_not_its_own_configuration_refuses(self):
+        config, home = self.home_of()
+        body = json.loads((home / (self.YARN_REPLACEMENT + '.json')).read_text())
+        body['id'] = self.YARN
+        (home / (self.YARN_REPLACEMENT + '.json')).write_text(json.dumps(body))
+        host = self.machine_host(self.YARN_REPLACEMENT, home)
+        with self.assertRaisesRegex(RuntimeError, 'profile file id differs from its filename'):
+            profile_body(config, host, self.YARN_REPLACEMENT)
+
+    def test_a_machine_retires_a_configuration_of_its_own_and_costs_nobody_else_a_drain(self):
+        # The worked example: one configuration on this machine, taken out of service where it lives.
+        names = [name for name in SELECTABLE if name != self.YARN]
+        config, home = self.home_of(names=names, record={'schema_version': PROFILES_VERSION,
+            'profiles': names, 'renamed': dict(PROFILE_ALIASES),
+            'retired': {self.YARN: self.YARN_REPLACEMENT}})
+        host = self.machine_host(self.YARN_REPLACEMENT, home)
+        record = machine_registry(config, host)
+        self.assertTrue(record['machine_owned'])
+        self.assertNotIn(self.YARN, record['selectable'])
+        self.assertEqual(record['retired'], {self.YARN: self.YARN_REPLACEMENT})
+        with self.assertRaisesRegex(RuntimeError, self.YARN + ' was retired; select ' + self.YARN_REPLACEMENT):
+            render(config, host, self.YARN)
+        # A retirement is not a rename: the retired id keeps refusing rather than quietly becoming the
+        # configuration that replaced it, which is what keeps a name out of service out of service.
+        self.assertEqual(resolve_profile(self.YARN, config, host), self.YARN)
+        self.assertIn(self.YARN, configurations_for(ROOT / 'config', host_for(self.YARN)))
+        for name in names:
+            with self.subTest(profile=name):
+                self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
+                    digest(render(ROOT / 'config', host_for(name), name)),
+                    name + ' is the same launch it was; a machine retiring its own configuration does not '
+                    'touch another machine\'s or another configuration of its own')
+
+    def test_a_machine_that_has_not_written_down_a_rename_does_not_resolve_it(self):
+        # The record replaces what the revision states rather than adding to it. That is the point of a
+        # record and not a merge: a machine that writes its own answers owns them, and a rename nobody
+        # wrote down is a rename this machine does not have.
+        config, home = self.home_of()
+        host = self.machine_host('qwen27b-q8-pair', home)
+        self.assertEqual(machine_registry(config, host)['renamed'], {})
+        self.assertEqual(resolve_profile('qwen27b-q8-with-nighttime', config, host), 'qwen27b-q8-with-nighttime')
+        with self.assertRaisesRegex(RuntimeError, 'Unknown or retired configuration'):
+            render(config, host, 'qwen27b-q8-with-nighttime')
+        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTABLE),
+            'renamed': dict(PROFILE_ALIASES)})
+        self.assertEqual(render(config, self.machine_host('qwen27b-q8-pair', home), 'qwen27b-q8-with-nighttime'),
+            render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-with-nighttime'),
+            'written down by the machine, the rename is the rename it was')
+
+    def test_a_machine_states_the_configuration_it_starts_on(self):
+        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTABLE),
+            'default_profile': self.TWO_CARD_SOLO})
+        self.assertEqual(default_profile(config, self.machine_host(self.TWO_CARD_SOLO, home)),
+            self.TWO_CARD_SOLO)
+        own = next(name for name in SELECTABLE if DAISY in profile_file(name)['hosts'])
+        self.assertEqual(default_profile(config, self.machine_host(DAISY_PROFILE, home)), own,
+            'a default is only a default where its hardware exists: the machine that does not run it '
+            'starts on the first configuration of its own')
+
+    def test_two_machines_in_one_checkout_keep_their_own_homes_and_their_own_answers(self):
+        def own(machine):
+            return [name for name in SELECTABLE if machine in profile_file(name)['hosts']]
+        rosalina_config, rosalina_home = self.home_of(names=own(ROSALINA))
+        daisy_config, daisy_home = self.home_of(names=own(DAISY))
+        rosalina, daisy = self.machine_host('qwen27b-q8-pair', rosalina_home), self.machine_host(DAISY_PROFILE, daisy_home)
+        self.assertEqual(configurations_for(rosalina_config, rosalina), tuple(own(ROSALINA)))
+        self.assertEqual(configurations_for(daisy_config, daisy), tuple(own(DAISY)))
+        self.assertFalse((rosalina_home / (DAISY_PROFILE + '.json')).exists(),
+            'a machine keeps the bodies of the configurations it offers, and no others')
+        # Nothing in either answer came from the checkout: each tree's `config/profiles` is gone.
+        self.assertFalse((rosalina_config / 'profiles').exists())
+        for name, host, config in ((DAISY_PROFILE, rosalina, rosalina_config), ('qwen27b-q8-pair', daisy, daisy_config)):
+            with self.subTest(profile=name):
+                with self.assertRaisesRegex(RuntimeError, 'Unknown or retired configuration'):
+                    render(config, host, name)
+
+    def test_the_revision_that_ships_no_bodies_at_all_is_the_arrangement_this_describes(self):
+        # A machine that has moved everything reads its own home with nothing left in the checkout to read:
+        # the revision ships the rules and the vocabulary, and the bodies live where the machine lives.
+        tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
+        config, home = tmp / 'config', tmp / 'machine' / 'profiles'
+        config.mkdir(parents=True)
+        for source in (ROOT / 'config').iterdir():
+            if source.is_file():
+                shutil.copyfile(source, config / source.name)
+        home.mkdir(parents=True)
+        for name in self.bodies_of(SELECTABLE):
+            shutil.copyfile(ROOT / 'config/profiles' / (name + '.json'), home / (name + '.json'))
+        (home / REGISTRY_FILE).write_text(json.dumps({'schema_version': PROFILES_VERSION,
+            'profiles': list(SELECTABLE)}))
+        for name in SELECTABLE:
+            with self.subTest(profile=name):
+                host = dict(host_for(name), profiles_dir=str(home))
+                self.assertEqual(digest(render(config, host, name)),
+                    digest(render(ROOT / 'config', host_for(name), name)))
 
 
 def table_with(**changes):

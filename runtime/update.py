@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tarfile
 
-from .config import read, require
+from .config import PROFILES_VERSION, configurations_for, machine_registry, read, require
 from .controller import PENDING_PHASES
 from .system import atomic_json, lock, now
 
@@ -88,12 +88,25 @@ class Updater:
     PROFILE_CONSTANTS = ('CONFIGURATIONS', 'DAYTIME_PROFILES')
 
     def target_profiles(self, target):
-        """Configurations the target revision offers, read from its published source.
+        """What the target revision offers as selectable, what the active release may be recorded as,
+        and where the answer came from.
 
-        Returns what is selectable there and what the active release may be recorded as. Those differ
-        by PROFILE_ALIASES, and the difference is the whole point: a configuration that was *renamed*
-        is still the configuration running, so a release that renames one must not refuse itself,
-        while a configuration that was *retired* has no backends left to launch and still refuses.
+        Those first two differ by the renames, and the difference is the whole point: a configuration
+        that was *renamed* is still the configuration running, so a release that renames one must not
+        refuse itself, while a configuration that was *retired* has no backends left to launch and still
+        refuses.
+
+        The third answer is new because there are now two ways a revision says what is selectable. A
+        revision that keeps its configurations in `runtime/config.py` is read with a parser that has no
+        host to ask, which is what it always was. A revision that keeps them on its machines states
+        `PROFILES_VERSION` instead, and the only machine in reach of this one is this one: the answer
+        comes from the record this machine keeps beside the bodies of its own configurations. That is
+        what lets a configuration be taken out of service on one box without a source change refusing a
+        release -- the check is the same check, asked of the machine that owns the answer.
+
+        The version is compared rather than trusted, because the revision doing the checking is the one
+        already deployed: a target that speaks a newer registry vocabulary has to wait for an updater
+        that understands it, and a blind `literal_eval` would happily read a constant it cannot interpret.
         """
         code = self.git('show', target + ':runtime/config.py', check=False)
         require(code, 'Cannot read runtime/config.py from the target revision')
@@ -120,15 +133,31 @@ class Updater:
                 return named(bound[key], (*seen, key))
             return None
 
+        def aliases_of(aliases):
+            require(aliases is None or (isinstance(aliases, dict) and all(isinstance(k, str) and isinstance(v, str)
+                for k, v in aliases.items())), 'Target revision defines PROFILE_ALIASES as something '
+                'other than a mapping of retired id to current id')
+            return aliases or {}
+
         selected = next((named(key) for key in self.PROFILE_CONSTANTS
             if isinstance(named(key), tuple) and named(key) and all(isinstance(x, str) for x in named(key))), None)
-        require(selected is not None, 'Target revision defines no selectable configurations as '
-            + ' or '.join(self.PROFILE_CONSTANTS) + ' (a non-empty tuple of ids)')
-        aliases = named('PROFILE_ALIASES') or {}
-        require(isinstance(aliases, dict) and all(isinstance(k, str) and isinstance(v, str)
-            for k, v in aliases.items()), 'Target revision defines PROFILE_ALIASES as something '
-            'other than a mapping of retired id to current id')
-        return tuple(selected), tuple(selected) + tuple(old for old, new in aliases.items() if new in selected)
+        if selected is not None:
+            aliases = aliases_of(named('PROFILE_ALIASES'))
+            return tuple(selected), tuple(selected) + tuple(old for old, new in aliases.items()
+                if new in selected), False
+        version = named('PROFILES_VERSION')
+        require(version is not None, 'Target revision defines no selectable configurations as '
+            + ' or '.join(self.PROFILE_CONSTANTS) + ' (a non-empty tuple of ids), and states no '
+            'PROFILES_VERSION for a revision that keeps them on its machines')
+        require(type(version) is int and version == PROFILES_VERSION,
+            'Target revision keeps its configurations on its machines at registry version '
+            + str(version) + '; this deployed updater reads version ' + str(PROFILES_VERSION)
+            + ' of that vocabulary, so deploy a revision that both sides understand')
+        host = read(self.state / 'host.json')
+        selectable = configurations_for(self.root / 'config', host)
+        record = machine_registry(self.root / 'config', host)
+        aliases = {**aliases_of(named('PROFILE_ALIASES')), **record['renamed']}
+        return selectable, selectable + tuple(old for old, new in aliases.items() if new in selectable), True
 
     def candidate(self, image, action, full_hash=False, capture=False):
         host = read(self.state / 'host.json')
@@ -199,9 +228,14 @@ class Updater:
                 return
             active_profile = previous.get('bundle', {}).get('profile')
             if active_profile:
-                selectable, accepted = self.target_profiles(target)
+                selectable, accepted, asked_the_machine = self.target_profiles(target)
+                if asked_the_machine:
+                    reason = ('is not among the configurations this machine offers in its own registry, '
+                              'which is what target revision ' + target + ' reads')
+                else:
+                    reason = 'is retired in target revision ' + target
                 require(active_profile in accepted,
-                    f"Active configuration '{active_profile}' is retired in target revision {target}; on the "
+                    f"Active configuration '{active_profile}' {reason}; on the "
                     f"deployed revision, switch to a configuration selectable there ({', '.join(selectable)}) "
                     f'before re-running the update')
             source = self.export(target)

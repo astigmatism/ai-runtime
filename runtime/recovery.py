@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import tarfile
 
-from .config import read, require, service_engine
+from .config import REGISTRY_FILE, profiles_home, read, require, service_engine
 from .migration import WRAPPERS, shell_wrapper
 from .system import atomic_json, lock, now
 from .update import Updater
@@ -39,10 +39,20 @@ def stable_state(state):
             'A restoration is bringing the service back; wait for it to finish before exporting')
 
 
-def model_inventory(root):
+def model_inventory(root, host=None):
+    """Every artifact the definitions this machine keeps declare.
+
+    They are read from the directory the machine's own settings name, because they are its definitions:
+    a machine that keeps the bodies of the configurations it offers in its own home has no copy of them in
+    the checkout to inventory, and an export that read the checkout would then be a receipt naming no
+    model at all. The record beside the bodies is skipped: it lists which configurations exist, and a list
+    mounts nothing.
+    """
     artifacts = {}
-    for profile in sorted((root / 'config/profiles').glob('*.json')):
-        for item in read(profile)['artifacts']:
+    for definition in sorted(profiles_home(Path(root) / 'config', host).glob('*.json')):
+        if definition.name == REGISTRY_FILE:
+            continue
+        for item in read(definition)['artifacts']:
             entry = {k: item[k] for k in ('path', 'bytes', 'sha256')}
             require(item['path'] not in artifacts or artifacts[item['path']] == entry,
                     'Conflicting artifact definitions')
@@ -96,10 +106,11 @@ def export(root, destination, include_images=True):
         updater.git('bundle', 'create', str(destination / 'runtime.git.bundle'), '--all')
         if include_images:
             updater.run('docker', 'image', 'save', '-o', str(destination / 'images.tar'), *sorted(tags), timeout=3600)
+        host = read(state / 'host.json')
         inventory = {'created_at': now(), 'root': str(root), 'revision': active['revision'],
-                     'profile': active['bundle']['profile'], 'host': read(state / 'host.json'),
+                     'profile': active['bundle']['profile'], 'host': host,
                      'images_included': include_images, 'images': images,
-                     'models_included': False, 'models': model_inventory(root),
+                     'models_included': False, 'models': model_inventory(root, host),
                      'scope': 'Runtime only. Restore router, its credential/catalog path, drivers, network and model files separately.'}
         atomic_json(destination / 'inventory.json', inventory)
         for name in ['model-downloads.json', 'rebuild.md']:

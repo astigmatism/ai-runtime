@@ -57,7 +57,7 @@ New router admissions pause during maintenance. Existing active, queued, and dir
 
 After publication, the new controller is recreated with a 150-second health bound. The updater records image/commit/configuration identity and advances the checkout by fast-forward. No command performs Compose `down`, Git reset/stash, global pruning, or volume removal. A controller-only release retains the existing inference containers.
 
-If a new revision retires the configuration currently active on a host, the updater refuses before building the candidate and names the retired configuration and the configurations selectable in that revision. Switch the active configuration to one of them on the deployed revision (runtime page validated transition), then re-run the update. The deployed runtime keeps serving meanwhile; no manual state editing is required. A rename is not a retirement: `PROFILE_ALIASES` maps a renamed id to its new one, so a release whose only crime is renaming the configuration that happens to be running is accepted, while `RETIRED_PROFILES` maps a retired id to its replacement and refuses.
+If a new revision retires the configuration currently active on a host, the updater refuses before building the candidate and names the retired configuration and the configurations selectable in that revision. Switch the active configuration to one of them on the deployed revision (runtime page validated transition), then re-run the update. The deployed runtime keeps serving meanwhile; no manual state editing is required. A rename is not a retirement: `PROFILE_ALIASES` maps a renamed id to its new one, so a release whose only crime is renaming the configuration that happens to be running is accepted, while `RETIRED_PROFILES` maps a retired id to its replacement and refuses. A revision that keeps its configurations on the machines that run them states no list at all, and the same check is then asked of the machine: `host.json` names the directory it keeps its bodies in, and a release whose active configuration that machine has taken out of service refuses before the build, naming what the machine offers instead. [A machine's own configurations](#a-machines-own-configurations) is that arrangement, and the release order it imposes.
 
 ## Browser configuration changes
 
@@ -133,7 +133,67 @@ The service IDs are a fleet decision and not a per-machine one: two machines who
 
 With `.state/host.json` naming the machine (`host_id`, `gpu_architectures`, the one `gpu_ids` group, `model_root`, `router_target`, and `backend_address` if a router elsewhere has to reach the backends), the first configuration is loaded by `docker exec local-ai-runtime python3 -m runtime install --profile <name>`. It is the ordinary switch — drain, workspace, load, verify, publish, and the receipt read back — with one difference and one refusal. The difference is that there is no release behind it: `previous.json` stays empty, and the page says so plainly by offering no restoration, because a machine that has never served has nothing to go back to. The refusal is that `install` only installs: healthy backends with no active release is a migrated host, and a migrated host is `adopt`ed through the reviewed procedure rather than installed over. Before it, the only way onto a second machine was to start its backend container by hand and then adopt what was running — manufacturing the receipt this runtime exists to earn, and earning nothing, because the container that was hand-started is exactly the thing a switch is supposed to verify into existence.
 
-## Exclusive solo configurations
+## A machine's own configurations
+
+A configuration is a measured launch, and a measurement belongs to the machine that took it. Which
+configurations exist on a machine is therefore a fact about that machine, in the same category as its card
+UUIDs, its model root, its router address, and an operator's names for its models: it lives in the
+Git-excluded deployment state, it is not reviewable from this repository, and a change to it is not a
+release. What this repository keeps is the vocabulary for writing one down and the rules that make a record
+of it mean something — the validators, the retirement *rules*, the digest, the artifact content addresses,
+the engine definitions, the service-identity contract — and not the answer.
+
+`.state/host.json` states `profiles_dir`, and that directory is where a machine keeps the bodies of the
+configurations it offers. The requirement is only that it be an absolute path with no `..` in it, because
+the same path has to be visible inside the container as outside it: the state directory is bind-mounted at
+its own path when the updater or an action runs against a candidate image, exactly the way `model_root`
+is, and a home that resolves to somewhere else inside the container is a machine whose configurations
+disappear at the moment they are needed. Beside the bodies sits `registry.json`:
+
+- `schema_version` — `1`, matched against `PROFILES_VERSION` in the revision doing the reading. A record
+  from a future vocabulary is refused rather than half-understood.
+- `profiles` — the configuration ids this machine offers, **in the order it offers them**. That order is what
+  the page and `runtime list` present in, and the order a listing of this machine's models walks its
+  configurations in; the order its files happen to sort in is an accident of naming and is not allowed to
+  decide either. It is not the order that costs a drain: a rendered bundle describes the one configuration it
+  was asked to render, and the sequence its digest sees is that body's own `models` list. A name listed with
+  no `<profiles_dir>/<name>.json` beside it refuses: a configuration is a body, and a name with nothing behind
+  it is a decision nothing can launch.
+- `renamed` — this machine's map of an old id to the id it resolves to, and `retired` — its map of an id
+  taken out of service to what replaced it. Both point at configurations this machine offers, and a name
+  cannot be both offered and retired.
+- `default_profile` — what this machine starts on when no release has been recorded. Only a default where
+  its hardware exists: a machine that does not offer it starts on the first configuration of its own order.
+
+The record **replaces** what a revision states instead of adding to it. That is the point of a record: a
+machine that writes down its own renames owns them, and a rename nobody wrote down is a rename that machine
+does not have. Migration therefore copies a machine's own alias and retirement rows into its record byte for
+byte, rather than inheriting them.
+
+Nothing about the arrangement changes a launch, and the tests hold that line. Every configuration this house
+runs renders byte-identically before and after its bodies move into their machine's home, so its
+`config_sha256` is unchanged and no workload is drained by a change that only moved who answers the
+question of which configurations exist. `profiles_dir` is deliberately outside the bundle the digest covers,
+which is why adding it to a `host.json` is a drain-free edit. A home that states no `registry.json` is given
+precisely the answer it has always been given — the revision's own `CONFIGURATIONS`, `PROFILE_ALIASES`,
+`RETIRED_PROFILES` and `DEFAULT_PROFILE` — so the move can be done one machine at a time, in either order,
+with the source list still standing behind it.
+
+The ordering that follows from that is a release-order constraint, and it is the reason this revision exists.
+A revision that *deletes* the source list can only be deployed onto a machine whose updater already accepts
+the machine-owned spelling of the gate, because the gate runs before the merge and against the deployed
+revision's code: the deployed updater must be able to read a target that states `PROFILES_VERSION` instead of
+`CONFIGURATIONS`, and it must ask this machine which configurations it offers. This revision is that revision.
+A box therefore moves in two steps — first its bodies and its record, verified against unchanged digests, then
+the release that stops shipping bodies at all — and a machine that has done neither is still deployable.
+
+Retiring a configuration is then an act on the machine that has it: its id comes out of `profiles`, a row goes
+into `retired` naming what replaced it, and its body is removed. The other configurations of that machine, and
+every configuration of every other machine, render the same as before. What a machine may not do is retire what
+it is serving, and what the updater may not do is pretend the question is about a list in a source tree: a
+release whose active configuration this machine has taken out of service refuses before anything is built, and
+names the configurations this machine offers.
+
 
 `daytime-flash-solo` is `daytime-flash-next` (the same weights, projector, ggml-org Q4_0 MTP head, 128K context, q8_0 K/V, lazy n-gram table, and engine `qwen38-dual-836d571`) moved onto all four text GPUs with automatic fitting. `daytime-flash-solo-tuned-mtp3` is the recommended solo configuration of its generation: the measured tuning winners on engine `qwen38-dual-43fe9c6` with a three-token draft. `daytime-flash-solo-tuned` is the same with a two-token draft. All three set `"exclusive": true` and `"gpu_group": "all"`, so nothing runs beside them while one is selected — a configuration may not name a second model next to one that owns every text GPU of its host — and each keeps its own alias (`qwen3.8-flash-next-ad4.27-solo`, `-solo-tuned`, `-solo-tuned-mtp3`) for benchmark history. The three were retired on 2026-10-15, with the engine they were tuned on; `flash-next-strata-solo` is the solo configuration that replaces them, and the placement and transition rules below are the rules a solo configuration follows.
 
@@ -281,7 +341,7 @@ server will answer to (see `tests/test_config.py`).
 - **Cards.** `GPUS=0,1,2,3` and `LAYER_SPLIT=auto`: the four LLM cards, placed by Strata by free VRAM, and unchanged since the first boot. `CUDA_VISIBLE_DEVICES` is `0,1,2,3` on a host with no shared vision GPU and `0,1,2,3,4` on one that has one — the renderer appends the fifth card, and `VISION=yes` with `VISION_DEVICE=4` starts the encoder there. The container numbers the cards it was given in the host's bus order, so index 4 is the RTX 3080 and the encoder's own child process is started with `CUDA_DEVICE_ORDER=PCI_BUS_ID`; that is why the renderer appends the shared card last and derives the encoder's index from the number of text cards the configuration reserves, rather than reading `vision_cuda_device` from the host: the host states the solo number for a reader, and one host integer cannot name both the four-card layout and the two-card layout this host can now serve. With the encoder the catalog publishes `input_modalities: ["text", "image"]` and `capability_profile.vision: true`; without a vision GPU on the host it publishes text, which is what the backend serves. `memlock` is unlimited and the stop grace period is 180 s. It never co-resides with a llama.cpp backend: selecting it stops every model of this host its configuration does not name — on Rosalina, the abliterated Q6_K model of the pairs — and starts its own model in their place.
 - **Not enabled in the configuration:** `--calibrate` and any auto-tuning, and a second slot. `VISION` is stated `no` by the profile and turned on by the renderer on a host that names a vision GPU. The strict-determinism measurements (single-thread, cache-off) belong to the benchmark harness, not to the served configuration.
 - **What `output_policy: unrestricted` means here.** The house contract requires it, and it is true in the sense it is used: the deployment sets no server-side output ceiling. It is **not** a claim that this quant produces unrestricted content: `UD-IQ4_XS` is Unsloth's dynamic quant of the official Qwen release, not an uncensored variant, so `nsfw` stays `false` and a warning to that effect ships with the catalog entry. It has not been attested on the trial quant.
-- **Retention, bounded when it was created** (the rule is repeated in the configuration's `retention` block, and since 2026-10-18 it is stated once, on `flash-next-strata-solo-thinking-recovery`, for both configurations of this engine): the image — keep exactly the registered tag for as long as any configuration of this engine is registered, superseded tags removed reference-aware and never by a blanket prune (the 0.1.44.1 evaluation is the one exception, and a dated one: two Strata tags are registered from 2026-10-15 until the candidate is decided, when the losing entry and its tag go, reference-aware); the model revision — retained only while a configuration that mounts it is registered, then it is an ordinary library revision under the normal pass; the workspace `ai/strata-trial/data` — bounded by the engine and removed when the last configuration that mounts it goes; retiring a variant releases nothing it shares, which is what made it safe to retire three of the five Strata names on 2026-10-18 while a sibling went on mounting the same 94 GB of shards; reports — `ops/reports/<date>-strata-trial`, following the existing reports aging. Root filesystem headroom is checked before and after the download (the 85% warning line in the house maintenance pass); at staging it was 434 GB free of 938 GB.
+- **Retention, bounded when it was created** (the rule is repeated in the configuration's `retention` block, and since 2026-10-18 it is stated once, on `flash-next-strata-solo-thinking-recovery`, for every configuration that shares this engine): the image — keep exactly the registered tag for as long as any configuration of this engine is registered, superseded tags removed reference-aware and never by a blanket prune (the 0.1.44.1 evaluation is the one exception, and a dated one: two Strata tags are registered from 2026-10-15 until the candidate is decided, when the losing entry and its tag go, reference-aware); the model revision — retained only while a configuration that mounts it is registered, then it is an ordinary library revision under the normal pass; the workspace `ai/strata-trial/data` — bounded by the engine and removed when the last configuration that mounts it goes; retiring a variant releases nothing it shares, which is what made it safe to retire three of the five Strata names on 2026-10-18 while a sibling went on mounting the same 94 GB of shards; reports — `ops/reports/<date>-strata-trial`, following the existing reports aging. Root filesystem headroom is checked before and after the download (the 85% warning line in the house maintenance pass); at staging it was 434 GB free of 938 GB.
 - **Before selecting it:** see [the switch preparing the trial](#the-switch-prepares-the-trial-itself-and-what-the-measurements-still-do) — the switch builds the workspace itself, beside the serving model, before it drains, and waits for the engine's actual answer; the page shows on the configuration what the selection will do, and a refusal, if there is one, comes with the evidence it rests on. The circuit breaker for the trial, agreed with the owner: any sustained state under 8 GiB MemAvailable or under 150 MiB free on any of the four cards is expected behaviour for a 94 GB model on 123 GB of RAM and is the signal to switch back, not an incident to debug. Switching back **is** the rollback; teardown is removing the configuration and then the image reference-aware.
 - **Baseline measured on 2026-10-11 from the running `flash-next-solo-160k`** (same probe, prompt set and method the trial will be measured with; three distinct prompts per length, greedy, 256 new tokens, direct to `127.0.0.1:18080`; `ops/reports/20261011-strata-trial/baseline.jsonl`):
 

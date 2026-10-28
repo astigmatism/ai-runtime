@@ -1,12 +1,13 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import tarfile
 import unittest
 from unittest.mock import patch
 
-from runtime.config import read
+from runtime.config import PROFILES_VERSION, REGISTRY_FILE, read
 from runtime.migration import WRAPPERS
 from runtime.recovery import export, install_wrappers, model_inventory, stable_state
 from runtime.system import atomic_json, lock
@@ -156,6 +157,31 @@ class RecoveryTests(unittest.TestCase):
             # because an artifact with no public source cannot be re-fetched by the box that lost it.
             self.assertEqual([path for path, entry in downloads.items() if 'derivation' in entry],
                 ['llm/host-provided/refusal-direction-r.gguf'])
+
+    def test_the_inventory_reads_the_definitions_the_machine_keeps(self):
+        # A recovery receipt says which models this machine carries, so it reads the definitions this
+        # machine keeps. A checkout that ships a copy of them is a copy of some other machine's answer,
+        # and a machine that keeps its own bodies in the directory its settings name has nothing to read
+        # in the checkout at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, home = Path(tmp) / 'runtime', Path(tmp) / 'machine-profiles'
+            (root / 'config/profiles').mkdir(parents=True); home.mkdir()
+            atomic_json(root / 'config/profiles' / 'a-configuration-of-another-machine.json',
+                {'id': 'a-configuration-of-another-machine',
+                    'artifacts': [{'path': 'llm/somewhere-else.gguf', 'bytes': 7, 'sha256': 'a' * 64}]})
+            for body in sorted((ROOT / 'config/profiles').glob('*.json')):
+                shutil.copyfile(body, home / body.name)
+            atomic_json(home / REGISTRY_FILE, {'schema_version': PROFILES_VERSION, 'profiles': ['qwen27b-q8-pair']})
+            self.assertEqual(model_inventory(root, {'profiles_dir': str(home)}), model_inventory(ROOT),
+                'the same artifacts, read from the machine instead of from the checkout')
+            self.assertEqual(model_inventory(root), [{'path': 'llm/somewhere-else.gguf', 'bytes': 7,
+                'sha256': 'a' * 64}], 'with no home named, this is still the checkout')
+            # The record beside the bodies says which configurations exist; it declares no launch and
+            # mounts nothing, so it is not a definition an inventory can be built from. A record that
+            # looked like one is skipped rather than adding an artifact nothing can run.
+            atomic_json(home / REGISTRY_FILE, {'schema_version': PROFILES_VERSION, 'profiles': ['qwen27b-q8-pair'],
+                'artifacts': [{'path': 'llm/a-record-mounts-nothing.gguf', 'bytes': 1, 'sha256': 'b' * 64}]})
+            self.assertEqual(model_inventory(root, {'profiles_dir': str(home)}), model_inventory(ROOT))
 
 
 if __name__ == '__main__':

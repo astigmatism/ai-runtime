@@ -20,10 +20,10 @@ import urllib.parse
 import uuid
 
 from . import provision as provision_tool
-from .config import (ALIASES_FILE, ALIASES_VERSION, CONFIGURATIONS, PAIR_GROUPS,
+from .config import (ALIASES_FILE, ALIASES_VERSION, PAIR_GROUPS,
     available_profiles, catalog_names, clean_alias, configurations_for, default_profile, digest,
-    gpu_architectures, host_display_name, host_id, model_id, models_of, nameable_models, read,
-    read_aliases, render, require, resolve_profile, router_target, service_engine)
+    gpu_architectures, host_display_name, host_id, model_id, models_of, nameable_models, profile_body,
+    read, read_aliases, render, require, resolve_profile, router_target, service_engine)
 from .power import Power
 from .system import System, atomic_json, future, lock, now
 
@@ -386,7 +386,7 @@ class Controller:
 
     def desired(self, profile=None):
         current = self.load('active.json', {})
-        initial = resolve_profile(self.host.get('initial_profile'))
+        initial = resolve_profile(self.host.get('initial_profile'), self.config_dir, self.host)
         selectable = configurations_for(self.config_dir, self.host)
         # A host's initial_profile may name a configuration later retired, or one that belongs to
         # another machine; start this host's own default instead. A renamed one still resolves, so a
@@ -495,7 +495,7 @@ class Controller:
         """
         models = {}
         for name in configurations_for(self.config_dir, self.host):
-            for model in models_of(self.config_dir, read(self.config_dir / 'profiles' / (name + '.json'))):
+            for model in models_of(self.config_dir, profile_body(self.config_dir, self.host, name), self.host):
                 models[model_id(model)] = model['container_name']
         return models
 

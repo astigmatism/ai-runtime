@@ -4,7 +4,7 @@ import re
 import threading
 import uuid
 
-from .config import (CONFIGURATIONS, configurations_for, model_id, models_of, read,
+from .config import (configurations_for, machine_registry, model_id, models_of, profile_body,
     resolve_profile)
 from .controller import PENDING_PHASES
 from .system import lock, now
@@ -120,11 +120,13 @@ class Operations:
         # gates it, while `expected_profile` is a report of what is already running -- refusing it
         # for belonging to another machine would strand a host that was given the wrong host_id with
         # no way to switch itself back.
-        selectable = configurations_for(self.controller.config_dir, self.controller.host)
+        config_dir, host = self.controller.config_dir, self.controller.host
+        selectable = configurations_for(config_dir, host)
         if (not isinstance(request, dict) or set(request) != fields
                 or any(not isinstance(request[k], str) for k in fields)
-                or resolve_profile(request['profile']) not in selectable
-                or resolve_profile(request['expected_profile']) not in CONFIGURATIONS
+                or resolve_profile(request['profile'], config_dir, host) not in selectable
+                or resolve_profile(request['expected_profile'], config_dir, host)
+                not in machine_registry(config_dir, host)['selectable']
                 or not OPERATION_ID.fullmatch(request['request_id'])
                 or not re.fullmatch(r'[0-9a-f]{40}', request['expected_revision'])):
             raise OperationError(400, 'invalid-request',
@@ -133,7 +135,8 @@ class Operations:
         # A renamed configuration is still the configuration the page showed a moment ago, so the old
         # id resolves rather than refusing. The request is stored as sent, which is what makes
         # replaying it by request id the same request.
-        profile, expected = resolve_profile(request['profile']), resolve_profile(request['expected_profile'])
+        profile, expected = resolve_profile(request['profile'], config_dir, host), resolve_profile(
+            request['expected_profile'], config_dir, host)
         with self.mutex:
             existing = self.read(request['request_id'])
             if existing:
@@ -159,8 +162,8 @@ class Operations:
                 # that the target does not name. A switch runs the models its configuration names and
                 # nothing else, so this list is the whole cost of the switch, and it is worth saying
                 # by model because "some of what is loaded goes away" is not an estimate.
-                named = {model_id(model) for model in models_of(self.controller.config_dir,
-                    read(self.controller.config_dir / 'profiles' / (profile + '.json')))}
+                named = {model_id(model) for model in models_of(config_dir,
+                    profile_body(config_dir, host, profile), host)}
                 operation = {'id': request['request_id'], 'request': dict(request),
                     'stops_models': [model for model in
                         (active.get('bundle', {}).get('compose', {}).get('services') or {})

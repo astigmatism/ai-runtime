@@ -7,11 +7,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from runtime.config import read
+from runtime.config import PROFILES_VERSION, read
 from runtime.system import atomic_json
 from runtime.update import REMOTE, Updater
 
 A, B = 'a' * 40, 'b' * 40
+HOST_MACHINE = 'test-machine'
 
 
 class Harness:
@@ -147,6 +148,93 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(any(x[:2] == ('docker', 'build') for x in self.h.calls))
         self.assertFalse(any(x[0] == 'candidate' for x in self.h.calls))
         self.assertEqual(read(self.state / 'active.json'), self.active)
+        self.assertEqual(self.h.head, A)
+
+    def machine_keeps_its_own(self, profiles=('daytime',), renamed=None):
+        """A deployment that owns its configurations: `.state/host.json` naming a home of its own, a body
+        for each configuration it offers, and `registry.json` saying which ones it offers.
+
+        The body says only what `target_profiles()` reads out of it — which machine it was built for —
+        because the gate asks which configurations this machine offers and whether each has a body beside
+        it. Rendering one is the candidate's job, in the container that has the real launch to check.
+        """
+        home = self.root / 'machine-profiles'; home.mkdir()
+        for name in profiles:
+            atomic_json(home / (name + '.json'), {'id': name, 'hosts': [HOST_MACHINE]})
+        record = {'schema_version': PROFILES_VERSION, 'profiles': list(profiles)}
+        if renamed:
+            record['renamed'] = dict(renamed)
+        atomic_json(home / 'registry.json', record)
+        atomic_json(self.state / 'host.json', {'host_id': HOST_MACHINE, 'profiles_dir': str(home)})
+        return home
+
+    def test_a_target_that_asks_its_machines_is_gated_by_this_machines_own_record(self):
+        # The retired-active refusal above is the same check asked of a revision's own list. A revision
+        # that keeps its configurations on its machines states no list at all, and the machine is the one
+        # that knows: the gate reads this box, which is what makes taking a configuration out of service
+        # on one box a fact about that box rather than a change to this repository.
+        self.machine_keeps_its_own(profiles=('daytime', 'daytime-27b'))
+        self.h.target_config = 'PROFILES_VERSION = 1\n'
+        self.assertEqual(self.u.target_profiles(B), (('daytime', 'daytime-27b'), ('daytime', 'daytime-27b'), True))
+        self.u.update()
+        self.assertTrue(any(x[:2] == ('docker', 'build') for x in self.h.calls))
+        self.assertEqual(self.h.head, B)
+
+    def test_a_target_that_asks_its_machines_accepts_a_rename_this_machine_wrote_down(self):
+        # The other half of `accepted`, and the reason the two sets are not one set: the release is still
+        # running `daytime`, this machine renamed it, and a revision that asks its machines must not
+        # refuse its own rename.
+        self.machine_keeps_its_own(profiles=('daytime-27b',), renamed={'daytime': 'daytime-27b'})
+        self.h.target_config = 'PROFILES_VERSION = 1\n'
+        selectable, accepted, asked = self.u.target_profiles(B)
+        self.assertEqual((selectable, asked), (('daytime-27b',), True))
+        self.assertIn('daytime', accepted)
+        self.u.update()
+        self.assertEqual(self.h.head, B)
+
+    def test_a_machine_that_retired_its_active_configuration_refuses_before_build(self):
+        self.machine_keeps_its_own(profiles=('daytime-27b',))
+        self.h.target_config = 'PROFILES_VERSION = 1\n'
+        with self.assertRaises(RuntimeError) as raised:
+            self.u.update()
+        message = str(raised.exception)
+        self.assertIn("Active configuration 'daytime' is not among the configurations this machine offers "
+            'in its own registry', message)
+        self.assertIn('daytime-27b', message, 'the refusal still names what this machine offers')
+        self.assertFalse(any(x[:2] == ('docker', 'build') for x in self.h.calls))
+        self.assertFalse(any(x[0] == 'candidate' for x in self.h.calls))
+        self.assertEqual(read(self.state / 'active.json'), self.active)
+        self.assertEqual(self.h.head, A)
+
+    def test_a_target_that_states_both_spellings_is_still_read_from_its_source(self):
+        # A revision mid-move states both, and the source answer wins: until a revision stops stating a
+        # list, the deployed updater reads the list, so the release that makes the move is itself
+        # deployable by a box that has not moved anything yet.
+        self.machine_keeps_its_own(profiles=('a-name-only-this-machine-has',))
+        self.h.target_config = 'PROFILES_VERSION = 1\nCONFIGURATIONS = ("daytime", "daytime-27b")\n'
+        self.assertEqual(self.u.target_profiles(B), (('daytime', 'daytime-27b'), ('daytime', 'daytime-27b'), False))
+
+    def test_a_registry_version_this_deployed_updater_cannot_read_refuses_before_build(self):
+        self.machine_keeps_its_own()
+        self.h.target_config = 'PROFILES_VERSION = 2\n'
+        with self.assertRaisesRegex(RuntimeError, 'registry version 2'):
+            self.u.update()
+        self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
+        self.assertEqual(self.h.head, A)
+
+    def test_a_target_that_states_neither_a_list_nor_a_registry_version_refuses(self):
+        self.h.target_config = 'DEFAULT_PROFILE = "daytime"\n'
+        with self.assertRaisesRegex(RuntimeError, 'states no PROFILES_VERSION'):
+            self.u.update()
+        self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
+
+    def test_a_broken_record_of_its_own_refuses_the_update_before_anything_is_built(self):
+        home = self.machine_keeps_its_own(profiles=('daytime', 'a-name-with-no-body-here'))
+        (home / 'a-name-with-no-body-here.json').unlink()
+        self.h.target_config = 'PROFILES_VERSION = 1\n'
+        with self.assertRaisesRegex(RuntimeError, 'a-name-with-no-body-here.*is not there'):
+            self.u.update()
+        self.assertFalse(any(x[0] == 'docker' for x in self.h.calls))
         self.assertEqual(self.h.head, A)
 
     def test_build_failure_leaves_deployed_runtime_and_source_unchanged(self):
