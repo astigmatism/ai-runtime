@@ -2644,7 +2644,9 @@ class RungTableTests(unittest.TestCase):
         # its own measurement, not an Ampere or Ada number translated.
         self.assertEqual(plans['rtx2080-ti']['default'], 'sensible')
         self.assertEqual(plans['rtx2080-ti']['rungs']['sensible'],
-            {'power': 220, 'clock_max': None, 'offset': 105})
+            {'power': 220, 'clock_max': None, 'offset': 60})
+        self.assertEqual(plans['rtx2080-ti']['rungs']['safe'], {'power': 260, 'clock_max': None, 'offset': 45})
+        self.assertEqual(plans['rtx2080-ti']['rungs']['assertive'], {'power': 220, 'clock_max': None, 'offset': 75})
         self.assertIn('stopped', plans['rtx4080-super']['note'])
         self.assertEqual(self.envelope['offset_step'], 15)
         self.assertEqual(self.envelope['offset_max'], 150)

@@ -373,7 +373,8 @@ class SetTests(unittest.TestCase):
     def test_a_rung_that_left_source_skips_its_card_with_the_rungs_that_are_left(self):
         """A set outlives the ladder it was saved against, and the card must not be talked into a rung.
 
-        This is what a revision that retires `assertive` does to a set: the plan still resolves, the
+        This is what a revision that retires the rung a set was saved against does to it: the plan still
+        resolves, the
         name still matches, and only the rung is gone. The refusal lists the rungs that are still there,
         which is the sentence that tells the operator what to re-save the set against.
         """
@@ -389,6 +390,10 @@ class SetTests(unittest.TestCase):
         sets = self.stored()
         sets['quiet-night']['cards'][MEASURED]['rung'] = 'assertive'
         self.write_sets_file(sets)
+        # A revision retires the rung: the plan resolves, the name resolves, the rung is gone.
+        retired = copy.deepcopy(self.power.registry())
+        del retired['plans']['rtx2080-ti']['rungs']['assertive']
+        self.power.registry = lambda: retired
         self.at_stock()
         reply = self.apply()
         self.assertNotIn(MEASURED, self.asked(None))
