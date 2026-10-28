@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
-from runtime.config import CONFIGURATIONS, digest, read, render, service_engine
+from runtime.config import CONFIGURATIONS, digest, model_id, read, render, service_engine
 from runtime.controller import Controller
 from runtime.system import atomic_json, lock, System
 
@@ -32,6 +32,12 @@ VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 # wanted, and two of them live in the same place.
 DAY = 'qwen38-daytime'
 NIGHT = 'qwen38-nighttime'
+
+
+
+def profile_file(name):
+    """What one profile file of this revision says, since the page is a rendering of those files."""
+    return read(ROOT / 'config/profiles' / (name + '.json'))
 
 
 def vision_host():
@@ -570,81 +576,83 @@ class ControllerTests(unittest.TestCase):
 
     def test_status_lists_every_configuration_and_marks_the_live_one(self):
         configs = self.c.status()['configurations']
+        rows = configs['selectable']
         self.assertEqual(configs['active'], 'qwen27b-q8-pair')
-        self.assertEqual([x['profile'] for x in configs['selectable']], list(CONFIGURATIONS))
-        self.assertEqual([x['profile'] for x in configs['selectable'] if x['exclusive']],
-            ['flash-next-strata-solo-thinking-recovery',
-             'flash-next-strata-solo-thinking-recovery-cache',
-             'flash-next-strata-solo-thinking-recovery-cache-yarn',
-             # The second machine's configuration is listed on a host that does not name itself, which
-             # is what an unscoped host means: the whole registry, with a reason on the rows it cannot
-             # run. It is a configuration, not a candidate, and the page says which one it is.
-             'flash-next-strata-iq3-xxs-daisy',
-             # The three trial configurations of that machine hold every card for the same reason: each
-             # fills both of them with cached experts.
-             'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
-             'flash-next-strata-iq3-s-daisy'])
-        # Each name says which pack it is, so the two 256K rows that differ only by whether
-        # conversations are parked are the pair the page still separates with its variant label, and the
-        # rows that differ by cards say so where a person reads.
-        self.assertEqual([x['display_name'] for x in configs['selectable']], ['Qwen3.8 27B Q8 (160K)',
-            'Qwen3.8 27B Q6_K (160K)', 'Qwen3.8 Flash-Next UD-IQ4 (256K)',
-            'Qwen3.8 Flash-Next UD-IQ4 (256K)', 'Qwen3.8 Flash-Next UD-IQ4 (512K)',
-            'Qwen3.8 Flash-Next UD-IQ4, two cards (256K)',
-            'Qwen3.8 Flash-Next IQ3_S, two cards (256K)', 'Qwen3.8 Flash-Next IQ3_XXS (64K)',
-            'Qwen3.8 Flash-Next IQ3_XXS, faster prompts (64K)',
-            'Qwen3.8 Flash-Next IQ3_XXS, long context (128K)',
-            'Qwen3.8 Flash-Next IQ3_S, higher quality (64K)'])
-        # Since 2026-10-18 the label is computed from context_tokens, so a rung of the session-size
-        # ladder edited in the profile shows up on the page rather than only in the engine that boots
-        # on it -- and the two 256K configurations move together on every rung: the run config is one
-        # file per workspace, and two configurations of one model that disagreed about the window would
-        # make a switch between them a resize. The 512K configuration states that resize as a
-        # fact of its own -- window and ring are its one variable from its sibling -- so the label
-        # says 512K. The pair keeps 160K, which is why all five numbers are named.
-        #
-        # The sixth row is where that naming earns its keep: the two-card probe is a 256K configuration
-        # too, and it is the only one of the three whose cards are the reason to select it, so it is
-        # the first configuration whose display name says something about the hardware. Two rows both
-        # reading "Flash-Next (256K)" would be a page where the operator's choice is a coin flip.
-        self.assertEqual([x['context_tokens'] for x in configs['selectable']],
-            [163840, 163840, 262144, 262144, 524288, 262144, 262144, 65536, 65536, 131072, 65536])
-        # The Flash-Next configurations, named by prefix rather than by a trailing slice: what tells an
-        # operator which of them is which is the variant label, and it also says what each one turns
-        # on, because that is the only choice left to make here.
-        strata = [x for x in configs['selectable'] if x['profile'].startswith('flash-next')]
-        self.assertEqual([x.get('variant_label') for x in strata],
-            ['card sampling + call recovery',
-             'card sampling + call recovery + parked conversations',
-             'card sampling + call recovery + parked conversations + YaRN 2.0 window',
-             'two cards, nothing else changed',
-             'two cards, the 3.5-bit pack',
-             'two Turing cards, the 64K window',
-              'two Turing cards, the 64K window, the tensor-core prompt path: +11 % prompt processing, 10 % less time to the first token of a 58k prompt, decode unchanged',
-              'two Turing cards, the 128K window, the tensor-core prompt path: measured serving a 118,514-token prompt on these cards, for 483 expert-cache slots and 1.8-2.6 % of short-prompt decode',
-              'two Turing cards, the 64K window, the IQ3_S tier: 87.69 % top-1 against 84.46 % on the IQ3_XXS tier, for 6.6 % of decode'])
-        self.assertEqual({x['parallel_slots'] for x in configs['selectable']}, {1})
-        self.assertEqual(configs['selectable'][2]['gpu_names'], [*HOST['gpu_names']['daytime'], *HOST['gpu_names']['nighttime']])
-        self.assertEqual(configs['selectable'][1]['context_tokens'], 163840)
-        self.assertEqual(configs['selectable'][2]['engine'], 'strata-vision-296b59d2f73c')
-        # What a client can ask each configuration for. The solo one answers all three IDs from the one
-        # model it loads; a paired one answers `nighttime` through the second model it names, so its
-        # list is the two models together and `model_service_ids` is only its own half.
-        self.assertEqual(configs['selectable'][2]['service_ids'], ['daytime', 'local-active', 'nighttime'])
-        self.assertEqual(configs['selectable'][0]['service_ids'], ['daytime', 'local-active', 'nighttime'])
-        self.assertEqual(configs['selectable'][0]['model_service_ids'], ['daytime', 'local-active'])
-        # How many models a configuration loads is a fact about its file, and this is the one place the
-        # page says it: one across the machine, two with the cards divided, and the same second model
-        # named by three of these eleven files rather than carried by all eleven. Nothing is always
-        # included, and a row that stops naming a model is a row that stops loading it.
-        self.assertEqual([[m['model'] for m in x['models']] for x in configs['selectable']],
-            [[CODING, EVERYDAY], [CODING_Q6K, EVERYDAY], [STRATA_SOLO], [STRATA_SOLO], [STRATA_SOLO],
-                [STRATA_SOLO, EVERYDAY], [STRATA_PAIR, EVERYDAY], [STRATA_DAISY], [STRATA_DAISY],
-                [STRATA_DAISY], ['qwen3.8-flash-next-iq3_s']])
-        everyday = configs['selectable'][0]['models'][1]
-        self.assertEqual((everyday['display_name'], everyday['service_ids'], everyday['gpu_names']),
-            ('Qwen3.8 27B Abliterated Q6_K (96K)', ['nighttime'], HOST['gpu_names']['nighttime']))
-        self.assertEqual(configs['selectable'][0]['gpu_names'], HOST['gpu_names']['daytime'])
+        # The page lists every configuration of this revision in the registry's own order, not a sort the
+        # page invents, and it lists them whether or not anything is live yet.
+        self.assertEqual([x['profile'] for x in rows], list(CONFIGURATIONS))
+        # Which rows own every card is each profile file's own statement about how it boots, and the page
+        # marks them the way the files say. The second machine's configurations appear here because this
+        # fixture's host names no machine of its own, which is what an unscoped host means: the whole
+        # registry, with a reason on the rows it cannot run. They are configurations, not candidates, and
+        # the page says which one it is.
+        self.assertEqual([x['profile'] for x in rows if x['exclusive']],
+            [name for name in CONFIGURATIONS if profile_file(name).get('exclusive')])
+        # Every row is its file's facts, published: the window the launch runs with, the engine it boots
+        # on, which of the host's cards it takes, and which models it loads. Nothing is always included,
+        # and a row that stops naming a model is a row that stops loading it.
+        for row in rows:
+            definition = profile_file(row['profile'])
+            with self.subTest(profile=row['profile']):
+                self.assertEqual(row['context_tokens'], definition['context_tokens'])
+                self.assertEqual(row['engine'], definition['engine'])
+                self.assertEqual(row['parallel_slots'], definition.get('parallel_slots', 1))
+                self.assertEqual([x['model'] for x in row['models']],
+                    [model_id(profile_file(name)) for name in definition['models']])
+                cards = ['daytime', 'nighttime'] if row['gpu_group'] == 'all' else [row['gpu_group']]
+                self.assertEqual(row['gpu_names'],
+                    [name for group in cards for name in HOST['gpu_names'][group]],
+                    row['profile'] + ' states its cards as ' + row['gpu_group'] + ' and the page draws '
+                    'them as something else')
+                # What a client can ask this configuration for is what every model it loads answers, and
+                # separately what the configuration itself is named for: `service_ids` is the whole
+                # switch, `model_service_ids` the one model the switch takes its name from.
+                self.assertEqual(row['service_ids'],
+                    sorted({sid for model in row['models'] for sid in model['service_ids']}))
+                self.assertTrue(row['service_ids'], row['profile'] + ' is a configuration that publishes '
+                    'no service a client could ask for, which is a switch that leaves the router holding '
+                    'a row and nothing addressable')
+                self.assertEqual(row['model_service_ids'], sorted(definition['catalog'].get('aliases', [])))
+                # A row's name says which window the launch runs with, because that is one of the decisions
+                # being made on the page. The number is the row's own and the words are computed from it,
+                # so a rung of the session-size ladder edited in the profile shows up here rather than
+                # only in the engine that boots on it.
+                self.assertIn('%dK' % (row['context_tokens'] // 1024), row['display_name'], row['profile']
+                    + ' is listed as ' + row['display_name'] + ', which does not say it runs with ' +
+                    str(row['context_tokens']) + ' tokens')
+                # The model a row is named for runs on the cards the row says it owns, and a configuration
+                # that divides its cards puts the rest of them on the model it loads beside it -- two
+                # models on one card is a switch that refuses its own selection.
+                primary = row['models'][0]
+                self.assertEqual(primary['gpu_names'], row['gpu_names'])
+                self.assertEqual(primary['model'], row['model'])
+                for model in row['models'][1:]:
+                    self.assertFalse(set(primary['gpu_names']) & set(model['gpu_names']), row['profile'] +
+                        ' loads ' + primary['model'] + ' and ' + model['model'] + ' on cards they share')
+                    self.assertTrue(set(model['service_ids']) - set(row['model_service_ids']), model['model']
+                        + ' is loaded by ' + row['profile'] + ' on cards of its own and answers no service '
+                        'ID the configuration it is loaded by is not named for')
+        # Two rows reading the same name are a page where the operator's choice is a coin flip, so the
+        # name is only half of what a row publishes: the variant label is the other half, and it is the
+        # file's own words. What those words have to measure is held to the pack and the machine they were
+        # taken on, in test_config; here the page is held to saying them, and to saying something.
+        named = {}
+        for row in rows:
+            named.setdefault(row['display_name'], []).append(row)
+        for name, same in sorted(named.items()):
+            if len(same) < 2:
+                continue
+            with self.subTest(display_name=name):
+                labels = [row.get('variant_label') for row in same]
+                self.assertNotIn(None, labels, name + ' is the name of ' +
+                    ', '.join([row['profile'] for row in same]) + ', and one of them states nothing '
+                    'that separates it from the others')
+                self.assertEqual(len(set(labels)), len(labels), ' '.join([name] + labels) +
+                    ': ' + str(len(labels)) + ' configurations publish this name and say the same thing '
+                    'beside it, which is one row on the page where there are ' + str(len(labels)))
+        # This fixture states no vision card, and a host with none publishes none however a profile feels
+        # about what it takes in.
+        self.assertEqual([x['profile'] for x in rows if x['vision_gpu']], [])
         self.assertNotIn('synthetic-token', json.dumps(configs))
         self.assertNotIn(HOST['model_root'], json.dumps(configs))
         self.c.transition('qwen27b-q6k-pair')

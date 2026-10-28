@@ -106,6 +106,54 @@ ROSALINA = 'rosalina'
 # The second machine, now that it has a configuration of its own: its id is the one its private
 # settings state and the one its definitions name.
 DAISY = 'daisy'
+def a_rope_ring(config):
+    """A configuration written into a copied config tree that asks for a stretched position ring.
+
+    The rope rules are rules about an image's entry point and about the router's context ceiling, and
+    both of those live in source. Whether a machine keeps a stretched rung beside its resident -- and
+    what it calls it -- is that machine's business, so these tests write the arguments they need onto
+    the machine's own cache rung instead of borrowing them from a name they assume is shipped. Returns
+    the name, the definition as written, and the file it was written to.
+    """
+    from runtime.config import ROUTER_CONTEXT_LIMIT
+    for name in sorted(name for name in selectable_at(config) if interface_of(name) == 'environment'):
+        definition = read(config / 'profiles' / (name + '.json'))
+        arguments = definition.get('arguments', {})
+        refinements = ('--conversation-cache-slots', '--conversation-cache-min-tokens')
+        if not is_exclusive(definition) or arguments.get('--conversation-cache-mib') == 'off':
+            continue
+        if not all(flag in arguments for flag in refinements):
+            continue
+        arguments.update({'--rope-scaling': 'yarn', '--rope-scale': '2.0',
+            '--yarn-orig-ctx': str(ROUTER_CONTEXT_LIMIT // 2)})
+        for flag in ('--rope-scaling', '--rope-scale', '--yarn-orig-ctx'):
+            if flag not in definition['argument_order']:
+                definition['argument_order'].append(flag)
+        definition['context_tokens'] = ROUTER_CONTEXT_LIMIT
+        path = config / 'profiles' / (name + '.json')
+        path.write_text(json.dumps(definition))
+        return name, definition, path
+    raise AssertionError('no configuration of an environment-configured engine in this tree owns every '
+        'card and states a conversation cache, which is the rung a rope is written onto')
+
+
+# The configurations this tree ships, read off the files: a profile file is selectable when it names
+# the models it loads, and that is the whole of what makes one. `CONFIGURATIONS` is what
+# runtime/config.py claims about the same tree, and RegistryTests is the one place in these tests
+# where a list of configuration names is spelled out -- spelled out in order to be compared with the
+# tree, and not copied out to be compared with itself. Everything else asks what the tree ships, so
+# that a configuration can be retired on the machine that keeps it without a test here noticing.
+def selectable_at(config_dir=ROOT / 'config'):
+    """Every configuration in a config tree, in the order its profile files sort."""
+    names = tuple(sorted(path.stem for path in (config_dir / 'profiles').glob('*.json')))
+    return tuple(name for name in names if read(config_dir / 'profiles' / (name + '.json')).get('models'))
+
+
+SELECTABLE = selectable_at()
+# What the cards of each machine in this house are, as a fixture. An engine states the SASS its image
+# carries, and that promise only means something against a machine that has cards; a definition naming
+# a machine this table does not know fails the check instead of being skipped by it.
+CARDS = {ROSALINA: ['86', '89'], DAISY: ['75']}
 
 
 def interface_of(profile):
@@ -215,8 +263,17 @@ class ConfigurationTests(unittest.TestCase):
         # says a launch did not move, and it survives the day a service is filed under a different name:
         # what is digested is the container, not the key it sits under.
         recorded = read(ROOT / 'tests/fixtures/renamed-profiles.json')
-        self.assertEqual(set(recorded), set(CONFIGURATIONS))
-        for name, expected in recorded.items():
+        # The pins follow the configurations and not the other way round. Every configuration this
+        # revision offers has a pin, and a pin whose configuration this revision no longer offers
+        # describes a launch there is nothing left to render against -- its backends are described
+        # nowhere -- so retiring a configuration takes its pins in the same action that takes the
+        # configuration out of service, and takes nothing here.
+        self.assertFalse(set(CONFIGURATIONS) - set(recorded), 'These configurations are offered with no pin, '
+            'which is a launch nobody is checking: ' + ', '.join(sorted(set(CONFIGURATIONS) - set(recorded))))
+        self.assertFalse(set(recorded) - set(CONFIGURATIONS), 'These pins name a configuration this revision '
+            'does not offer: ' + ', '.join(sorted(set(recorded) - set(CONFIGURATIONS))))
+        for name in sorted(CONFIGURATIONS):
+            expected = recorded[name]
             with self.subTest(profile=name, previous=expected['previous_id']):
                 bundle = render(ROOT / 'config', fixture_host(name), name)
                 self.assertEqual(digest(stamped(OWN[name], bundle['compose']['services'][OWN[name]])),
@@ -233,11 +290,18 @@ class ConfigurationTests(unittest.TestCase):
         # assigned, which is exactly the thing a change to the vision placement moves without any new
         # profile mentioning it.
         pinned = read(ROOT / 'tests/fixtures/active-bundles.json')
-        self.assertEqual(set(pinned['bundles']), set(CONFIGURATIONS))
-        for name, expected in sorted(pinned['bundles'].items()):
+        # Same direction as the pins above: a whole-bundle digest is recorded for every configuration
+        # this revision offers, and a configuration it no longer offers has no bundle to record.
+        self.assertFalse(set(CONFIGURATIONS) - set(pinned['bundles']), 'These configurations have no '
+            'whole-bundle digest, which is the cheapest thing that notices a launch moved with an edit: ' +
+            ', '.join(sorted(set(CONFIGURATIONS) - set(pinned['bundles']))))
+        self.assertFalse(set(pinned['bundles']) - set(CONFIGURATIONS), 'A bundle is pinned for ' +
+            ', '.join(sorted(set(pinned['bundles']) - set(CONFIGURATIONS))) + ', which this revision offers '
+            'to nobody')
+        for name in sorted(CONFIGURATIONS):
             with self.subTest(profile=name):
                 self.assertEqual(digest(filed_by_role(
-                    render(ROOT / 'config', fixture_host(name), name))), expected)
+                    render(ROOT / 'config', fixture_host(name), name))), pinned['bundles'][name])
 
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -503,23 +567,34 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
         self.assertEqual(engine['image_id'], 'sha256:9f7179f568e4aa1004c8af9b613b65417e6f0e451f8cfbc774d6b0d0f50a0ecd')
-        expected = {'qwen27b-q8-pair': 'qwen38-dual-836d571', 'qwen27b-q6k-pair': 'qwen38-dual-836d571',
-            'flash-next-strata-solo-thinking-recovery': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-solo-thinking-recovery-cache': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-solo-thinking-recovery-cache-yarn': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-two-card-iq4-xs': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-two-card-iq3-s': 'strata-vision-296b59d2f73c',
-            'flash-next-strata-iq3-xxs-daisy': 'strata-sm75-296b59d2f73c',
-            'flash-next-strata-iq3-xxs-daisy-tc': 'strata-sm75-296b59d2f73c',
-            'flash-next-strata-iq3-xxs-daisy-128k': 'strata-sm75-296b59d2f73c',
-            'flash-next-strata-iq3-s-daisy': 'strata-sm75-296b59d2f73c',
-            EVERYDAY_FILE: 'qwen38-dual-836d571'}
+
         # Every profile file in the tree is accounted for: a configuration, or a model one names. A
         # file that is neither is a launch no configuration renders and no test renders either.
-        self.assertEqual(set(expected), {path.stem for path in (ROOT / 'config/profiles').glob('*.json')})
-        for name, engine_name in expected.items():
+        shipped = selectable_at()
+        named = {model for name in shipped for model in profile_file(name)['models']}
+        self.assertEqual(set(DEFINITIONS), set(shipped) | named,
+            'a profile file that is neither selectable nor named as a model by a selectable '
+            'configuration is a launch no configuration renders')
+        # The engine a profile pins is held to the cards of the machine its own definition names, and
+        # not to a table of which engine pins which name: an engine states the SASS its image carries,
+        # a machine states the cards it has, and a definition states which machine it was written for.
+        # Those three statements are the whole rule, which is why it says nothing about how many
+        # configurations a machine keeps or what they are called.
+        self.assertEqual(set(CARDS), {machine for name in DEFINITIONS for machine in profile_file(name)['hosts']},
+            'the tree names a machine these tests have no cards for, or states cards for a machine no '
+            'definition is written for')
+        for name in DEFINITIONS:
+            definition = profile_file(name)
             with self.subTest(profile=name):
-                self.assertEqual(profile_file(name)['engine'], engine_name)
+                engine = engines[definition['engine']]
+                architectures = engine['cuda_architectures']
+                self.assertTrue(architectures, name + ' pins ' + definition['engine'] +
+                    ', which states no SASS its image runs on')
+                for machine in definition['hosts']:
+                    self.assertTrue(set(architectures) & set(CARDS[machine]),
+                        name + ' pins ' + engine['tag'] + ', whose SASS is built for ' +
+                        ', '.join(architectures) + ', on ' + machine + ', which has ' +
+                        ', '.join(CARDS[machine]))
         for name in CONFIGURATIONS:
             bundle = render(ROOT / 'config', host_for(name), name)
             for model in models_of(ROOT / 'config', profile_file(name)):
@@ -665,18 +740,19 @@ class AConfigurationNamesItsModels(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
         registry = available_profiles(ROOT / 'config', BASELINE['host'])
-        self.assertEqual(CONFIGURATIONS, ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-            'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
-            'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-            'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy',
-            'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
-            'flash-next-strata-iq3-s-daisy'))
+
+        # The only list of configuration names spelled out in these tests, and it is spelled out to be
+        # checked: CONFIGURATIONS is the revision's claim about which profile files are selectable, and
+        # the tree is what it is a claim about. The day the registry moves to the machine that carries
+        # it, this guard is the test that says so, and it goes with the constant.
+        self.assertEqual(set(CONFIGURATIONS), set(selectable_at()),
+            'runtime/config.py and config/profiles/ disagree about which profile files of this '
+            'revision are selectable')
         # Loading more than one model is a statement about cards -- one model on one text pair and
         # another on the other -- and not about which engine the first of them runs, which is why a
         # Strata configuration joined this set on 2026-10-20 without either 27B pair changing.
-        self.assertEqual(tuple(n for n in CONFIGURATIONS if len(NAMED[n]) > 1),
-            ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-             'flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'))
+        multi = [name for name in CONFIGURATIONS if len(NAMED[name]) > 1]
+        self.assertEqual([x['profile'] for x in registry['selectable'] if len(x['models']) > 1], multi)
         self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
         # The models a configuration loads are listed with it, in the order it names them. A model an
         # operator cannot see they are about to load is a model they did not choose.
@@ -1113,15 +1189,17 @@ class EnvironmentEngineTests(unittest.TestCase):
             self.assertEqual(bundle['catalog']['models'][0]['input_modalities'], ['text'])
 
     def test_the_rope_statements_refuse_on_the_image_without_the_entry_point(self):
+
         # The rollback story for the ring is the story for every entry-point fact: the text-only tag
         # runs upstream's entry point, there is nothing in that image to write a rope into the run
         # config, and the refusal names what a profile can do instead (drop the line, which rolls a
-        # 512K promise back to a trained-window one -- and the ceiling refuses the window by itself).
+        # stretched-window promise back to a trained-window one -- and the ceiling refuses the window by
+        # itself). The rung this is built on is written into a copied tree: which rung a machine keeps
+        # beside its resident is that machine's business, and what is under test here is what an image
+        # can read and what the contract permits.
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            name = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
-            path = config / ('profiles/' + name + '.json')
-            definition = read(path)
+            name, definition, path = a_rope_ring(config)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
             for flag in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
@@ -1135,7 +1213,7 @@ class EnvironmentEngineTests(unittest.TestCase):
                     definition['argument_order'].remove(flag)
                     path.write_text(json.dumps(definition))
             # With every entry-point statement gone the image renders -- the window is what is left
-            # of the 512K claim, and it is the contract that answers: 262,144 or nothing.
+            # of the stretched-window claim, and it is the contract that answers: 262,144 or nothing.
             bundle = render(config, vision_host(), name)
             environment = bundle['compose']['services'][STRATA_SOLO]['environment']
             for variable in ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'SAMPLING'):
@@ -1356,12 +1434,17 @@ class EnvironmentEngineTests(unittest.TestCase):
         A profile whose names were carried by its workspace instead of by source is held to the same
         equality; that deviation was closed on 2026-10-17, and the check is what keeps it closed.
         """
-        environment = sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment')
-        self.assertEqual(len(environment), 9, 'the environment-interface configurations are the '
-            'call-recovery, conversation-cache and rope-rung ones, the two two-card arms, and the four '
-            'of the second machine, three of them added there on 2026-10-25; the greedy preset and the '
-            'route-tail skip left with their configurations on 2026-10-18, and their measurements are '
-            'in docs/deployment.md')
+
+        # Which configurations those are is a fact about the machine's own registry, and no longer a
+        # number to keep in step with it: the environment-interface configurations are whatever this
+        # tree's configurations run on an engine that takes its settings from the environment, which is
+        # how the call-recovery, conversation-cache and rope rungs, the two-card arms, and the
+        # configurations of the second machine all came to be in it. The greedy preset and the
+        # route-tail skip left with their configurations on 2026-10-18, and their measurements are in
+        # docs/deployment.md.
+        environment = [name for name in SELECTABLE if interface_of(name) == 'environment']
+        self.assertTrue(environment, 'no configuration in this tree runs on an engine configured by '
+            'the environment, which is what this test is about')
         for name in environment:
             definition = read(ROOT / 'config/profiles' / (name + '.json'))
             container = definition['container']
@@ -1389,44 +1472,45 @@ class ProvisioningWorkspaceTests(unittest.TestCase):
     touching what is serving, which is the one thing a trial may not do.
     """
 
-    # One workspace may be shared by a declared variant pair. The invariant is about a pack: two
-    # profiles whose packs differ must not watch the same directory, because whichever finishes first
-    # declares the other's half-built workspace ready. The two Strata configurations (shared since
-    # 2026-10-17) mount the same shards on the same engine and differ only in cache variables, so
-    # they build the same pack -- and giving the variant its own directory would buy a second copy of a
-    # tens-of-gigabytes pack, and an hour of nothing serving on the first switch, for a workspace that
-    # comes out identical. The sharing is not taken on trust: the test below refuses the chain the
-    # moment two neighbouring configurations differ in anything but the one variable between them --
-    # the sampling preset, then the recovery switch -- and a different quant or window
-    # in either one fails that check and restores this invariant by hand.
-    SHARED_WORKSPACES = {'strata-trial/data': ('flash-next-strata-solo-thinking-recovery',
-        'flash-next-strata-solo-thinking-recovery-cache',
-        'flash-next-strata-solo-thinking-recovery-cache-yarn')}
 
     def test_every_provisioning_profile_has_a_workspace_of_its_own(self):
+        """One workspace may be watched by more than one profile, and only while they are provisioning
+        the same pack.
+
+        The invariant is about a pack: whichever of two profiles watching one directory finishes first
+        writes the ready marker the other reads as its own. The two Strata configurations have shared a
+        workspace since 2026-10-17 because they mount the same shards on the same engine and differ only
+        in cache variables, so they build the same pack -- and giving the variant its own directory
+        would buy a second copy of a tens-of-gigabytes pack, and an hour of nothing serving on the
+        first switch, for a workspace that comes out identical. Sharing is therefore not a favour
+        granted to names in a list: it is allowed exactly where the packs are the same, and every pair
+        it produces is held to the one-variable rule in AVariantIsOneLineApartFromItsOriginal, which is
+        what refuses the chain the moment two neighbours differ in anything but the variable between
+        them -- a different quant or window in either one fails that check. A variant that stops
+        sharing, because its pack moved or because it stopped existing, needs a directory of its own,
+        and this check is what says so when it fails.
+        """
         engines = read(ROOT / 'config/shared.json')['engines']
         seen = {}
         for name in DEFINITIONS:
-            profile = read(ROOT / 'config/profiles' / (name + '.json'))
-            if not engines[profile['engine']].get('provisioning'):
+            definition = profile_file(name)
+            if not engines[definition['engine']].get('provisioning'):
                 continue
-            workspace = profile['workspace']['path']
             # The message is built with the same default as the check: a workspace of its own is the
             # normal case, and a guard that raises KeyError on it instead of passing would have hidden
             # this class of failure until the first profile that owned a directory (2026-10-20).
-            self.assertIn(name, self.SHARED_WORKSPACES.get(workspace, (name,)),
-                '%s provisions into %s, which is only ever shared by %s: a ready marker read off the '
-                'engine would let either one answer for the other'
-                % (name, workspace, ', '.join(self.SHARED_WORKSPACES.get(workspace, (name,)))))
-            seen.setdefault(workspace, []).append(name)
-        for workspace, names in seen.items():
-            declared = self.SHARED_WORKSPACES.get(workspace, (names[0],))
-            self.assertEqual(sorted(names), sorted(declared),
-                '%s is provisioned by %s and declared for %s; a variant that leaves stops sharing and '
-                'needs a workspace of its own' % (workspace, sorted(names), sorted(declared)))
-        self.assertEqual(sorted(seen), ['strata-daisy-iq3s/data', 'strata-daisy-iq3xxs-128k/data',
-            'strata-daisy-iq3xxs-tc/data', 'strata-daisy-iq3xxs/data', 'strata-pair-iq3s/data',
-            'strata-pair-iq4xs/data', 'strata-trial/data'])
+            seen.setdefault(definition['workspace']['path'], []).append(name)
+        self.assertTrue(seen, 'no configuration in this tree provisions into a workspace')
+        def pack(definition):
+            return (definition['engine'], definition['workspace']['target'],
+                [(artifact['path'], artifact['sha256']) for artifact in definition['artifacts']])
+        for workspace, names in sorted(seen.items()):
+            for name in names[1:]:
+                with self.subTest(profile=name, workspace=workspace):
+                    self.assertEqual(pack(profile_file(name)), pack(profile_file(names[0])),
+                        '%s provisions into %s, which %s is provisioning a different pack in: a ready '
+                        'marker read off the engine would let either one answer for the other'
+                        % (name, workspace, names[0]))
 
 
 class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
@@ -1448,18 +1532,33 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
     prose that is *supposed* to differ: what each configuration warns about is exactly the difference.
     """
 
-    # Each step names the configuration it is one variable from, and the variable that may differ. An
-    # operator moving along the chain changes one thing at a time, and every step is checked against
-    # the configuration before it rather than against the first one -- so the day a lever is measured
-    # and earns its own configuration, it is checked against what is in service and not against a
-    # description of it. A step may be carried by more than one variable where one of them is
-    # meaningless without another -- a parked conversation's slot count and minimum size say nothing
-    # about a cache that is off -- and then all of them come out together, because the question is
-    # unchanged: does anything else move?
-    STEPS = (('flash-next-strata-solo-thinking-recovery-cache', 'flash-next-strata-solo-thinking-recovery',
-        ('CONVERSATION_CACHE_MIB', 'CONVERSATION_CACHE_SLOTS', 'CONVERSATION_CACHE_MIN_TOKENS')),
-        ('flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-solo-thinking-recovery-cache',
-        ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'CONTEXT')))
+    @classmethod
+    def steps(cls):
+        """Each configuration paired with the one its id extends, among those sharing its workspace.
+
+        Two configurations provisioning into one directory are loading the pack that directory holds,
+        so the only honest reason for both to exist is that they ask that pack to do something
+        different -- which makes the pair a fact about a machine's own profiles and not a list in a
+        test file. An operator moving along a chain changes one thing at a time, so every configuration
+        is paired with the one whose id is its longest strict prefix and checked against it, rather
+        than against the first one: the day a lever is measured and earns its own configuration, it is
+        compared with what sits next to it and not with a description of it. A step may be carried by
+        more than one variable where one of them is meaningless without another -- a parked
+        conversation's slot count and minimum size say nothing about a cache that is off -- and then all
+        of them come out together, because the question is unchanged: does anything else move? A rung
+        that retires takes its pair with it and leaves nothing in this file pointing at its name.
+        """
+        engines = read(ROOT / 'config/shared.json')['engines']
+        workspaces = {}
+        for name in DEFINITIONS:
+            definition = profile_file(name)
+            workspace = definition.get('workspace')
+            if not workspace or not engines[definition['engine']].get('provisioning'):
+                continue
+            workspaces.setdefault(workspace['path'], []).append(name)
+        return sorted((name, max(other for other in names if name.startswith(other + '-')))
+            for names in workspaces.values() for name in names
+            if any(name.startswith(other + '-') for other in names))
 
     def rendered(self, name, variables):
         # host_for, not the baseline host: a configuration of the second machine cannot be rendered on
@@ -1491,45 +1590,67 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             model.pop('deployment_warnings')
         return bundle
 
+    @staticmethod
+    def launch(bundle, name):
+        """The variables of the one service a rendered bundle starts."""
+        return bundle['compose']['services'][service_key(profile_file(name))]['environment']
+
     def test_each_step_differs_in_one_variable_and_nowhere_else(self):
-        for name, previous, variable in self.STEPS:
+        engines = read(ROOT / 'config/shared.json')['engines']
+        for name, previous in self.steps():
             with self.subTest(step=name):
-                self.assertEqual(self.rendered(name, variable), self.rendered(previous, variable),
-                    name + ' must render identically to ' + previous + ' once ' +
-                    ', '.join(variable) + ' are taken back out; only those variables, the profile id '
-                    'and the warning that names the difference may differ')
+                # The variables a rung is allowed to move are the levers the engine it boots has a flag
+                # for, plus CONTEXT, which is how the window the launch runs with reaches that engine.
+                # That is what "one variable" means when nobody writes the list down.
+                engine = engines[profile_file(name)['engine']]
+                levers = set(engine['environment'].values()) | {engine['context_environment']}
+                own, before = self.rendered(name, ()), self.rendered(previous, ())
+                variables, neighbour = self.launch(own, name), self.launch(before, previous)
+                moved = sorted(key for key in set(variables) | set(neighbour)
+                    if variables.get(key) != neighbour.get(key))
+                self.assertTrue(moved, name + ' renders exactly the launch ' + previous + ' renders: two '
+                    'configurations that load the same pack and say the same things about it are one '
+                    'configuration written twice')
+                self.assertFalse(set(moved) - levers, name + ' differs from ' + previous + ' in ' +
+                    ', '.join(sorted(set(moved) - levers)) + ', which is nothing the engine it boots '
+                    'offers a flag for')
+                self.assertEqual(self.rendered(name, moved), self.rendered(previous, moved),
+                    name + ' must render identically to ' + previous + ' once ' + ', '.join(moved) +
+                    ' are taken back out; only those variables, the profile id and the warning that '
+                    'names the difference may differ')
 
     def test_every_configuration_states_both_switches_rather_than_leaving_one_out(self):
         """`off` and not an omitted line: the workspace outlives the profile, and switching back has
         to take out of the run config a block another configuration wrote. Every configuration of
         this engine therefore states both switches, whichever way it wants them."""
-        stated = {'flash-next-strata-solo-thinking-recovery': ('thinking', 'on'),
-            'flash-next-strata-solo-thinking-recovery-cache': ('thinking', 'on'),
-            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('thinking', 'on'),
-            'flash-next-strata-two-card-iq4-xs': ('thinking', 'on'),
-            'flash-next-strata-two-card-iq3-s': ('thinking', 'on'),
-            'flash-next-strata-iq3-xxs-daisy': ('thinking', 'on'),
-            'flash-next-strata-iq3-xxs-daisy-tc': ('thinking', 'on'),
-            'flash-next-strata-iq3-xxs-daisy-128k': ('thinking', 'on'),
-            'flash-next-strata-iq3-s-daisy': ('thinking', 'on')}
-        # Every configuration this engine serves, derived rather than remembered: the two-card probe is
-        # a different topology, and a topology is not an exemption from stating a switch the run config
+
+        # Held to the shape of the question instead of to a row per name: every configuration of an
+        # environment-configured engine states both switches, whichever way it wants them, and which
+        # configurations those are is a fact about the machine's own registry. The two-card probe is a
+        # different topology, and a topology is not an exemption from stating a switch the run config
         # will otherwise inherit from whoever booted into this workspace last -- nor is being a
         # different machine, whose workspace is a different disk.
-        self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
-        for name, expectations in stated.items():
+        environment = [name for name in SELECTABLE if interface_of(name) == 'environment']
+        self.assertTrue(environment, 'no configuration in this tree runs on an engine configured by '
+            'the environment, which is what this test is about')
+        for name in environment:
             with self.subTest(profile=name):
-                environment = self.rendered(name, '-')\
-                    ['compose']['services'][service_key(profile_file(name))]['environment']
-                self.assertEqual((environment['SAMPLING'], environment['TOOL_CALL_RECOVERY']),
-                    expectations)
+                arguments = profile_file(name)['arguments']
+                rendered = self.launch(self.rendered(name, '-'), name)
+                for flag, variable in (('--sampling', 'SAMPLING'),
+                        ('--tool-call-recovery', 'TOOL_CALL_RECOVERY')):
+                    self.assertIn(flag, arguments, name + ' leaves ' + flag + ' unsaid, which is leaving '
+                        'the answer to whatever the last configuration to boot into this workspace wrote '
+                        'into its run config')
+                    self.assertNotIn(rendered.get(variable), (None, ''),
+                        name + ' states ' + flag + ' and the launch it renders does not carry it')
 
     def test_every_configuration_states_the_cache_and_the_table_it_wants(self):
         """The same rule one switch on: a parked conversation and a PLE table are written into the run
         config the engine reads from its own workspace, so a configuration that leaves them unsaid
-        inherits whatever the last one that started left behind. The budget and the table are stated
-        by every configuration of this engine, and the two refinements appear only where a budget
-        makes them mean something.
+        inherits whatever the last one that started left behind. The budget and the table are stated by
+        every configuration of an engine that reads them from its run config, and the two refinements
+        appear only where a budget makes them mean something.
 
         `off` means different things at three shards and at two, and this row is where that is held
         apart. At three shards (this machine's UD-IQ4_XS pack) upstream's setup names no table and
@@ -1539,23 +1660,41 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         it takes out a table every boot of that machine has run with. The second machine therefore names
         its shard, and has since 2026-10-27, which is the day its tag was found to be running upstream's
         entry point and nothing this file stated about a table had ever been read."""
-        ple = lambda tier: '/weights/Qwen3.8-Flash-Next-GSQ-RCO-%s-00002-of-00002.gguf' % tier
-        stated = {'flash-next-strata-solo-thinking-recovery': ('off', 'off'),
-            'flash-next-strata-solo-thinking-recovery-cache': ('16384', 'off'),
-            'flash-next-strata-solo-thinking-recovery-cache-yarn': ('16384', 'off'),
-            'flash-next-strata-two-card-iq4-xs': ('16384', 'off'),
-            'flash-next-strata-two-card-iq3-s': ('16384', 'off'),
-            'flash-next-strata-iq3-xxs-daisy': ('off', ple('IQ3_XXS')),
-            'flash-next-strata-iq3-xxs-daisy-tc': ('off', ple('IQ3_XXS')),
-            'flash-next-strata-iq3-xxs-daisy-128k': ('off', ple('IQ3_XXS')),
-            'flash-next-strata-iq3-s-daisy': ('off', ple('IQ3_S'))}
-        self.assertEqual(set(stated), {n for n in CONFIGURATIONS if interface_of(n) == 'environment'})
-        for name, (budget, table) in stated.items():
+        def pack_table(model):
+            """The expert table a pack carries: its own last shard, named out of its own --model line."""
+            stem, shards = re.match(r'^(.*)-\d{5}-of-(\d{5})\.gguf$', model).groups()
+            return stem + '-' + shards + '-of-' + shards + '.gguf'
+
+        # Which table a configuration names is not a row kept per name. A pack states its own expert
+        # table by its last shard, so a profile's `--ple-gguf` line is either `off` or that file, and a
+        # table taken from another quant is a mistake read off the file rather than one compared with a
+        # table of names. What the choice may not do is vary between configurations that boot on one
+        # engine: the entry point writes one run config per workspace, and `off` beside a pack of two
+        # shards is not a no-op there -- setup.py's own `len(shards) <= 2` branch names the table for
+        # that pack, so a configuration stating `off` takes out a table the other boots of that engine
+        # run with.
+        environment = [name for name in SELECTABLE if interface_of(name) == 'environment']
+        self.assertTrue(environment, 'no configuration in this tree runs on an engine configured by '
+            'the environment, which is what this test is about')
+        for name in environment:
             with self.subTest(profile=name):
-                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                definition = profile_file(name)
                 arguments = definition['arguments']
-                self.assertEqual((arguments['--conversation-cache-mib'], arguments['--ple-gguf']),
-                    (budget, table))
+                model, table = arguments['--model'], arguments['--ple-gguf']
+                budget = arguments['--conversation-cache-mib']
+                self.assertTrue(budget == 'off' or (budget.isdigit() and int(budget) > 0),
+                    name + ' states a conversation cache that is neither off nor a number of MiB')
+                self.assertTrue(table == 'off' or table == pack_table(model), name + ' names ' + table +
+                    ' as its expert table, which is neither off nor the last shard of the pack its own '
+                    '--model line mounts')
+        for engine in sorted({profile_file(name)['engine'] for name in environment}):
+            same = sorted(name for name in environment if profile_file(name)['engine'] == engine)
+            named = sorted(name for name in same if profile_file(name)['arguments']['--ple-gguf'] != 'off')
+            with self.subTest(engine=engine):
+                self.assertTrue(len(named) in (0, len(same)), ', '.join(sorted(set(same) - set(named))) +
+                    ' of the configurations that boot on ' + engine + ' states no expert table while ' +
+                    ', '.join(named) + ' names one: one engine writes one run config per workspace, and '
+                    'switching a table off takes it out of the boots its siblings run with')
                 # A floor is not optional next to a budget: it is the ceiling that stops a park
                 # displacing the page-locked expert complement this box measures at 32.93 GiB. Beside
                 # `off` it is nothing to bound, and it is still stated: what the entry point writes
@@ -1792,11 +1931,10 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         positive number; yarn with no trained window named; a yarn window that does not exceed the
         trained one it stretches (the engine refuses the pair); and numbers stated beside `off`,
         where every rope line is being taken back out."""
+
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            name = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
-            path = config / ('profiles/' + name + '.json')
-            original = read(path)
+            name, original, path = a_rope_ring(config)
             for argument, stated, refuses in (
                     ('--rope-scaling', 'ntk', 'rope-scaling states ntk'),
                     ('--rope-scaling', '2.0', 'rope-scaling states 2.0'),
@@ -2086,39 +2224,61 @@ class ConfigurationNamingTests(unittest.TestCase):
         self.assertIsNone(host_name({}))
 
     def test_a_model_of_several_launches_is_published_the_name_of_the_launch_running(self):
-        # One model id, several launches: the IQ4 pack runs at 256K, at 512K through a YaRN ring, and on
-        # two cards instead of four, and each of those launches says in its own name what it does
-        # differently. What a switch publishes is the launch it brought up, so the name it stamps is the
-        # one that launch gives it -- and a name taken from whichever registry row mentioned the id
-        # first would publish a 512K model as a 256K one and lose the words that separate the arms.
+        # One model id, several launches: the same pack runs at the trained window, at a wider one
+        # through a rope ring, and on two cards instead of four, and each of those launches says in its
+        # own name what it does differently. What a switch publishes is the launch it brought up, so the
+        # name it stamps is the one that launch gives it -- and a name taken from whichever registry row
+        # mentioned the id first would publish a wide model as a narrow one and lose the words that
+        # separate the arms.
         host = deployed(vision_host(), ROSALINA)
-        for profile, name in (('flash-next-strata-solo-thinking-recovery',
-                'rosalina: Qwen3.8 Flash-Next UD-IQ4 (256K)'),
-                ('flash-next-strata-solo-thinking-recovery-cache',
-                 'rosalina: Qwen3.8 Flash-Next UD-IQ4 (256K)'),
-                ('flash-next-strata-solo-thinking-recovery-cache-yarn',
-                 'rosalina: Qwen3.8 Flash-Next UD-IQ4 (512K)'),
-                ('flash-next-strata-two-card-iq4-xs',
-                 'rosalina: Qwen3.8 Flash-Next UD-IQ4, two cards (256K)')):
+        for profile in SELECTABLE:
+            machine = host_for(profile)
             with self.subTest(profile=profile):
-                published = catalog_names(ROOT / 'config', host, {}, profile)
-                rendered = render(ROOT / 'config', host, profile)['catalog']
+                published = catalog_names(ROOT / 'config', machine, {}, profile)
+                rendered = render(ROOT / 'config', machine, profile)['catalog']
                 self.assertEqual(published, {model['model']: model['display_name']
                     for model in rendered['models']})
-                self.assertEqual(published['qwen3.8-flash-next-ud-iq4_xs'], name)
-        # The narrower launch is the one a registry row would have answered with, and it is not the one
-        # published: two of these four names belong to a model of a different size, and one of them to a
-        # machine with two cards in it.
-        self.assertNotEqual(catalog_names(ROOT / 'config', host, {},
-            'flash-next-strata-solo-thinking-recovery')['qwen3.8-flash-next-ud-iq4_xs'],
-            catalog_names(ROOT / 'config', host, {},
-                'flash-next-strata-solo-thinking-recovery-cache-yarn')['qwen3.8-flash-next-ud-iq4_xs'])
+        # The arms are what this names, and not the names. Two configurations of one model id are the
+        # case a registry list read in order gets wrong, and what makes them two arms is published about
+        # the launch itself: the pack it mounts, the window it runs with, the cards it runs on, and what
+        # it takes in. Where those agree the two rows are one launch and one name is right; where they
+        # differ, a shared name is a page showing two rows that read the same and answer differently --
+        # a coin flip handed to the operator. Configurations of different machines are held to their own
+        # launches, the name of the machine being on every row either way.
+        launch_of = ('model_path', 'quantization', 'context_length', 'total_context_length', 'gpu_names',
+            'backend_kind', 'input_modalities')
+        arms = {}
+        for profile in SELECTABLE:
+            for model in render(ROOT / 'config', host_for(profile), profile)['catalog']['models']:
+                arms.setdefault(model['model'], []).append(
+                    (profile, {key: model[key] for key in launch_of}, model['display_name']))
+        for model, launches in sorted(arms.items()):
+            for position, (first, own, own_name) in enumerate(launches):
+                for second, neighbour, neighbour_name in launches[position + 1:]:
+                    if own == neighbour:
+                        continue
+                    with self.subTest(model=model, profiles=(first, second)):
+                        self.assertNotEqual(own_name, neighbour_name, first + ' and ' + second +
+                            ' load ' + model + ' on a different pack, window, set of cards or modality '
+                            'and publish the same name for it: the words that separate the arms are the '
+                            'reason to select one configuration over the other')
         # An operator alias still outranks the launch, because a retired name must not come back with a
         # restoration of a bundle rendered before it was retired.
-        self.assertEqual(catalog_names(ROOT / 'config', host,
-            {'qwen3.8-flash-next-ud-iq4_xs': 'Workhorse'},
-            'flash-next-strata-solo-thinking-recovery-cache-yarn')['qwen3.8-flash-next-ud-iq4_xs'],
-            'Workhorse')
+        for profile in SELECTABLE:
+            model = NAMED[profile][0]
+            with self.subTest(profile=profile):
+                self.assertEqual(catalog_names(ROOT / 'config', host_for(profile),
+                    {model: 'Workhorse'}, profile)[model], 'Workhorse')
+        # A bundle whose configuration has since left the registry is published with the registry's
+        # answer rather than a refusal: coming back is not the moment to argue about a name.
+        self.assertIn('qwen3.8-flash-next-ud-iq4_xs', catalog_names(ROOT / 'config', host, {}, 'retired-yesterday'))
+        # An operator alias still outranks the launch, because a retired name must not come back with a
+        # restoration of a bundle rendered before it was retired.
+        for profile in SELECTABLE:
+            model = NAMED[profile][0]
+            with self.subTest(profile=profile):
+                self.assertEqual(catalog_names(ROOT / 'config', host_for(profile),
+                    {model: 'Workhorse'}, profile)[model], 'Workhorse')
         # A bundle whose configuration has since left the registry is published with the registry's
         # answer rather than a refusal: coming back is not the moment to argue about a name.
         self.assertIn('qwen3.8-flash-next-ud-iq4_xs', catalog_names(ROOT / 'config', host, {}, 'retired-yesterday'))
