@@ -6,13 +6,17 @@ import tempfile
 import unittest
 
 from models import CODING, EVERYDAY
-from runtime.config import CONFIGURATIONS, engine_interface, read, render
+from runtime.config import engine_interface, read, render
+from tests import machine
 from runtime.controller import Controller
 from runtime.system import atomic_json
 from tests.test_controller import FakeSystem
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
+# The machine these renderings are measured on, stated as a deployed host states itself -- including
+# the directory it keeps its own configurations in.
+BASE = machine.HOST
+SELECTED = tuple(machine.record()['selectable'])
 VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 ENGINES = read(ROOT / 'config/shared.json')['engines']
 
@@ -22,7 +26,7 @@ def argv_engine(profile):
     notation below describes. An environment-interface backend is addressed by index instead, so the
     CUDA_VISIBLE_DEVICES this test compares is a UUID list only for the former -- and since 2026-10-20
     a configuration is not the same thing as an argument-vector one; its models are."""
-    return engine_interface(ENGINES[read(ROOT / 'config/profiles' / (profile + '.json'))['engine']]) == 'argv'
+    return engine_interface(ENGINES[read(machine.HOME / (profile + '.json'))['engine']]) == 'argv'
 
 
 def vision_host():
@@ -38,7 +42,7 @@ class VisionTests(unittest.TestCase):
         gpu_night = render(ROOT / 'config', host, 'qwen27b-q8-pair')['compose']['services'][EVERYDAY]
         # Exclusive profiles do not share the encoder GPU; they are covered by the solo tests. Nighttime's MTP
         # draft also lives on the vision GPU, so on a CPU-vision host it runs without the draft.
-        for profile in (p for p in CONFIGURATIONS if not read(ROOT / 'config/profiles' / (p + '.json')).get('exclusive')):
+        for profile in (p for p in SELECTED if not read(machine.HOME / (p + '.json')).get('exclusive')):
             cpu = render(ROOT / 'config', BASE, profile)
             gpu = render(ROOT / 'config', host, profile)
             # The everyday model is the same launch whichever configuration loads it, and that is
@@ -87,12 +91,14 @@ class VisionTests(unittest.TestCase):
     def test_text_draft_and_tensor_placement_cannot_use_vision_gpu(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            p = config / 'profiles/qwen27b-q8-pair.json'; original = read(p)
+            home = Path(tmp) / 'profiles'; shutil.copytree(machine.HOME, home)
+            p = home / 'qwen27b-q8-pair.json'; original = read(p)
+            asked = machine.stating(vision_host(), home)
             for key, value in [('--device', 'CUDA0,CUDA1,CUDA2'), ('--spec-draft-device', 'CUDA2'),
                     ('--tensor-split', '60,40,0'), ('--override-tensor', ['blk.*=CUDA2'])]:
                 definition = copy.deepcopy(original); definition['arguments'][key] = value
                 p.write_text(json.dumps(definition))
-                with self.subTest(key=key), self.assertRaises(RuntimeError):render(config, vision_host(), 'qwen27b-q8-pair')
+                with self.subTest(key=key), self.assertRaises(RuntimeError):render(config, asked, 'qwen27b-q8-pair')
 
     def test_live_gpu_order_reservations_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:

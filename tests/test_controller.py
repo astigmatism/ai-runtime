@@ -8,12 +8,18 @@ import unittest
 from unittest.mock import patch
 
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
-from runtime.config import CONFIGURATIONS, digest, model_id, read, render, service_engine
+from runtime.config import digest, model_id, read, render, service_engine
+import machine
 from runtime.controller import Controller
 from runtime.system import atomic_json, lock, System
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')['host']
+# The machine these tests put a controller on: the fixture host of this house, stated the way a deployed
+# `.state/host.json` states itself, which includes the directory it keeps its own configurations in. The
+# configurations themselves are its files, not this revision's, so the list the page publishes is read off
+# the record it wrote beside them.
+HOST = machine.HOST
+SELECTED = tuple(machine.record()['selectable'])
 # A name no configuration of this revision is built for: a host that states it is healthy and offered
 # nothing, which is a state an operator has to be able to see on the page and then go and fix.
 UNCLAIMED = 'no-machine-claims-this-one'
@@ -36,8 +42,8 @@ NIGHT = 'qwen38-nighttime'
 
 
 def profile_file(name):
-    """What one profile file of this revision says, since the page is a rendering of those files."""
-    return read(ROOT / 'config/profiles' / (name + '.json'))
+    """What one configuration of this machine says, since the page is a rendering of those files."""
+    return read(machine.HOME / (name + '.json'))
 
 
 def vision_host():
@@ -580,14 +586,14 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(configs['active'], 'qwen27b-q8-pair')
         # The page lists every configuration of this revision in the registry's own order, not a sort the
         # page invents, and it lists them whether or not anything is live yet.
-        self.assertEqual([x['profile'] for x in rows], list(CONFIGURATIONS))
+        self.assertEqual([x['profile'] for x in rows], list(SELECTED))
         # Which rows own every card is each profile file's own statement about how it boots, and the page
         # marks them the way the files say. The second machine's configurations appear here because this
         # fixture's host names no machine of its own, which is what an unscoped host means: the whole
         # registry, with a reason on the rows it cannot run. They are configurations, not candidates, and
         # the page says which one it is.
         self.assertEqual([x['profile'] for x in rows if x['exclusive']],
-            [name for name in CONFIGURATIONS if profile_file(name).get('exclusive')])
+            [name for name in SELECTED if profile_file(name).get('exclusive')])
         # Every row is its file's facts, published: the window the launch runs with, the engine it boots
         # on, which of the host's cards it takes, and which models it loads. Nothing is always included,
         # and a row that stops naming a model is a row that stops loading it.
@@ -661,7 +667,7 @@ class ControllerTests(unittest.TestCase):
         pre_migration = self.c.status()
         self.assertFalse(pre_migration['ready'])
         self.assertEqual(pre_migration['configurations']['active'], 'qwen27b-q8-pair')
-        self.assertEqual(len(pre_migration['configurations']['selectable']), len(CONFIGURATIONS))
+        self.assertEqual(len(pre_migration['configurations']['selectable']), len(SELECTED))
 
     def test_the_page_says_which_machine_is_answering(self):
         # A GPU rail that counts the cards it was written against describes a machine that is not
@@ -718,9 +724,11 @@ class ControllerTests(unittest.TestCase):
         # The same controller on a host that names itself: the registry it publishes is the share of
         # it that was built for this machine, which is the whole separation, seen from the surface.
         config = self.state / 'config'
+        home = self.state / 'profiles'  # The home this machine will state, and where its bodies live.
         shutil.copytree(ROOT / 'config', config)
+        shutil.copytree(machine.HOME, home)
         for name in ('flash-next-strata-two-card-iq4-xs', 'flash-next-strata-two-card-iq3-s'):
-            path = config / 'profiles' / (name + '.json')  # Scoped to this machine as well as Rosalina's.
+            path = home / (name + '.json')  # Scoped to this machine as well as Rosalina's.
             definition = read(path)
             # A model that owns every text GPU this two-card machine declares leaves no card for a second
             # one, so scoping these files to `daisy` also means they stop naming the model they used to
@@ -728,7 +736,7 @@ class ControllerTests(unittest.TestCase):
             # that are already spoken for.
             definition.update(hosts=['rosalina', 'daisy'], exclusive=True, gpu_group='all', models=[name])
             path.write_text(json.dumps(definition))
-        host = copy.deepcopy(HOST); host['host_id'] = 'daisy'
+        host = copy.deepcopy(HOST); host['host_id'] = 'daisy'; host['profiles_dir'] = str(home)
         host['gpu_ids'] = {'daytime': HOST['gpu_ids']['daytime'][:2]}
         host['gpu_names'] = {'daytime': HOST['gpu_names']['daytime'][:2]}
         host.pop('cuda_order', None); host.pop('vision_gpu_id', None)
@@ -997,8 +1005,13 @@ class ExclusiveProfileTests(unittest.TestCase):
         # No configuration runs two slots now; the capability is exercised on a copy of the configuration.
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         config = Path(tmp.name) / 'config'; shutil.copytree(ROOT / 'config', config)
-        path = config / ('profiles/' + self.SOLO + '.json'); definition = read(path)
+        home = self.state / 'slots-profiles'; shutil.copytree(machine.HOME, home)
+        path = home / (self.SOLO + '.json'); definition = read(path)
         definition['parallel_slots'] = 2; path.write_text(json.dumps(definition))
+        # The copy is only a copy if the machine is told where it lives: a controller reads the home its
+        # own host settings state, and that is the only home it can read.
+        self.c.host = {**self.c.host, 'profiles_dir': str(home)}
+        atomic_json(self.state / 'host.json', self.c.host)
         self.c.config_dir = config
         self.c.transition(self.SOLO)
         self.assertTrue(self.c.status()['ready'])

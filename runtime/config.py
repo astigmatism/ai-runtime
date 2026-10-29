@@ -21,7 +21,7 @@ A second machine is a setting, not a fork. `.state/host.json` names it (`host_id
 cards can execute (`gpu_architectures`); every profile states which hosts it was built for (`hosts`),
 and a configuration of another machine is refused rather than offered. What the house calls a
 configuration is therefore only half the story of what runs: the other half is which machine is
-asking, which is why `configurations_for()` -- and never `CONFIGURATIONS` -- is what anything that
+asking, which is why `configurations_for()` -- and never a list this file keeps -- is what anything that
 offers a choice reads. See docs/deployment.md, "More than one machine".
 
 A configuration is a decision one machine makes about its own cards, so a machine keeps it. Each host
@@ -41,96 +41,50 @@ import os
 import re
 from pathlib import Path
 
-# Selectable configurations. Each one names the models it loads in its own `models` list: a
-# configuration with two entries runs two models on two GPU pairs, one with `exclusive: true` holds
-# every text GPU and loads nothing beside it. Display names come from each profile file.
+# There is no list of configurations here, and there is no table of renames and retirements. Which
+# configurations exist was always a fact about the machines that keep them -- each one is a measurement
+# of one box's cards, memory and patience -- and a repository that holds the list is a repository an
+# operator has to ask before taking one out of service. A machine states its own answer in
+# `registry.json` beside the bodies: which it offers, in the order it offers them, what it renamed, what
+# it retired and what replaced it, and what it starts on when nothing is recorded. `machine_registry()`
+# reads that record and refuses rather than falling back on an opinion written in this file, and
+# `configurations_for(host)` is the only thing anything that offers a choice consults.
 #
-# This is the whole registry of the revision, which is not the same thing as what any one machine can
-# select: read configurations_for(host) for that, and read this only when the question is "does this
-# revision know this id at all" (a retired name, an alias, the updater reading a target revision). It is
-# also the answer a machine gets when its own home states no record of its own yet -- the fallback that
-# keeps a deployment that has not moved its configurations into `profiles_dir` rendering exactly what it
-# rendered before. A machine that has moved them is asked, and this file is not.
-# Every one of these publishes a service alias a contract client can address: a client that only ever
+# What stays here is what no one machine owns: the vocabulary at the top of this file, the schema a body
+# has to satisfy, the validators that refuse a body that breaks one of them, the engines a body may
+# boot, the contract a launch publishes, and the rules a rename and a retirement follow. The history
+# those tables used to carry -- which levers were measured and retired on which box, and what a retired
+# name was replaced by -- is on the machine that made those measurements, in its own record, and in
+# docs/deployment.md beside the numbers it was measured with. The bodies this suite exercises the
+# vocabulary against are fixtures now: `tests/fixtures/profiles`, the bodies of the house's two machines
+# as they are kept on those boxes, with a record beside them.
+#
+# Every configuration publishes a service alias a contract client can address: a client that only ever
 # sends `daytime` -- which is what LLM Router's CLIENT_CONTRACT.md tells it to do -- always has something
 # to send on the machine it is aimed at. Publishing no service alias at all is not an option: that is a
 # catalog a contract client cannot address, which is the same hole as nothing serving. Which alias a
 # machine publishes is its own fact -- Rosalina's configurations answer `daytime`, Daisy's answer
-# `daisy` -- and ServiceIdentityTests asserts for every configuration that it publishes at least one.
-CONFIGURATIONS = ('qwen27b-q8-pair', 'qwen27b-q6k-pair',
-    'flash-next-strata-solo-thinking-recovery', 'flash-next-strata-solo-thinking-recovery-cache',
-    'flash-next-strata-solo-thinking-recovery-cache-yarn', 'flash-next-strata-two-card-iq4-xs',
-    'flash-next-strata-two-card-iq3-s', 'flash-next-strata-iq3-xxs-daisy',
-    # The three trial configurations measured on daisy on 2026-10-25 (~/reports/20261025-free-levers):
-    # the tensor-core prompt path, that path widened to the 128K window, and the IQ3_S tier. Each is
-    # held to the same service-identity contract as the rest of the list, and each says on its own
-    # host line which machine may select it.
-    'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k',
-    'flash-next-strata-iq3-s-daisy')
-# The last entry is the first configuration of a second machine, and it is in this list rather than
-# in a list of its own because the updater reads this list out of a *target* revision that has no
-# host to ask. What separates it is its own "hosts" line: a machine that does not name itself is
-# still shown the whole registry, and a machine that does is shown only its share. See
-# docs/deployment.md, "More than one machine".
-# Reduced from five Strata configurations to two on 2026-10-18, after both new levers had been
-# measured on this box: the greedy step and the card-sampling step are settled policy rather than a
-# live question, and the route-tail skip came back a wash on the only axis this machine can read.
-# A variant is not free -- each one is a rendered launch, a chain step this suite refuses to let
-# drift, and a row an operator reads as a decision to make -- so a lever nobody is testing is
-# documentation, and documentation lives in docs/deployment.md with its numbers.
-#
-# Transitional spelling of the name above, for one release: a literal tuple rather than a binding,
-# because the updater running on an already-deployed revision parses the *target* revision's source
-# for it with ast.literal_eval. It went the way its own comment promised once a revision reading
-# CONFIGURATIONS was deployed (179fce5, 2026-10-17), and target_profiles() takes CONFIGURATIONS
-# directly, adding the aliases itself -- so a rename no longer needs scaffolding repeated by hand.
-# A revision that keeps its configurations on its machines states PROFILES_VERSION instead, and the
-# updater asks this machine; what is left here for that case is the answer a home with no record of its
-# own gets, which is a machine that has not moved them yet.
-# Started when no release has been recorded yet (a new or rebuilt host without an initial_profile).
-DEFAULT_PROFILE = 'qwen27b-q8-pair'
-# Configurations that used to be selectable, and what replaced them. A retired name is never
-# selectable and never silently resolves -- it refuses and says what to use instead -- because its
-# backends are described nowhere any more and launching one from memory is the drift this house
-# refuses. A *renamed* one does resolve, for the opposite reason: the same backends are still there.
-RETIRED_PROFILES = {
-    'flash-next-solo-128k': 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-solo-160k': 'flash-next-strata-solo-thinking-recovery',
-    # Retired 2026-10-18, the day their levers were measured. The sampling step and the route step
-    # are the two named here that were ever selectable; what replaces each is the configuration that
-    # no longer carries the switch, which is the only answer a refusal can usefully give.
-    # Its own earlier name, which resolved as a rename while the configuration it named existed.
-    'flash-next-strata-160k': 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-strata-solo': 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-strata-solo-thinking': 'flash-next-strata-solo-thinking-recovery',
-    'flash-next-strata-solo-thinking-recovery-full-route': 'flash-next-strata-solo-thinking-recovery',
-}
-# Renamed configurations: old id -> new id. Resolved by render() before a file is read, accepted by
-# update.target_profiles() so a rename cannot refuse its own release, and honoured by the home
-# wrappers and the status page. Because Compose services are keyed by the model id, and the canonical
-# model id is the model alias, a rename launches byte-identical backends; tests/fixtures/renamed-profiles.json
-# is what proves it, and it is the reason a rename is a naming change and not a redeploy.
-PROFILE_ALIASES = {
-    'qwen27b-q8-with-nighttime': 'qwen27b-q8-pair',
-    'qwen27b-q6k-with-nighttime': 'qwen27b-q6k-pair',
-}
+# `daisy` -- and ServiceIdentityTests asserts it for every configuration every record offers.
 # Machine-owned configurations (2026-10-28). A configuration is a decision one machine makes about its
 # own cards, its own memory and its own measurements, so a configuration lives where it is kept:
 # `profiles_dir` in `.state/host.json` names the directory this machine keeps its configuration bodies
 # in, and `<profiles_dir>/registry.json` is that machine's answer to "which configurations does this
 # machine offer" -- their order, what it renamed, what it retired, and what it starts on when nothing is
-# recorded. Taking one out of service is then an act on that machine: take the body out of its own
-# directory and the name out of its own record, with nothing in this repository to ask. What stays here
-# is what is not machine-specific: the schema a body must satisfy, the validators that refuse a bad one,
-# the engines a body may boot, the service-identity contract a launch publishes, and the rules a rename
-# and a retirement follow.
+# recorded. Taking one out of service is then an act on that machine, and `runtime retire-profile` is the
+# lever that performs it: the body goes out of the machine's own directory and the name out of its own
+# record, with nothing in this repository to ask. `runtime registry` reads the record back and says what
+# the machine is offering, what it has taken out, and what it keeps beside it. What stays here is what is
+# not machine-specific: the schema a body must satisfy, the validators that refuse a bad one, the engines
+# a body may boot, the service-identity contract a launch publishes, and the rules a retirement follows.
 #
 # `PROFILES_VERSION` is the version of that vocabulary, and `runtime/update.py` reads it out of a target
-# revision's source for the same reason it read CONFIGURATIONS: the revision doing the checking is the
-# one already deployed, and it has to know whether the revision it is being asked about keeps its
+# revision's source for the same reason it once read CONFIGURATIONS: the revision doing the checking is
+# the one already deployed, and it has to know whether the revision it is being asked about keeps its
 # configurations on the machine or in this file. A target that states it is answered from this machine's
-# own record; a target that does not is answered from the constants above, which is what a revision that
-# has not moved them yet still is.
+# own record; a target that states CONFIGURATIONS instead is an older revision, and is answered from its
+# source. The name is kept for exactly that reason: the updaters sitting on both boxes right now look for
+# `PROFILES_VERSION`, so the revision that deletes the last of this file's own lists has to keep saying
+# it under this spelling or it cannot be deployed by them.
 PROFILES_VERSION = 1
 REGISTRY_FILE = 'registry.json'
 # The fields a machine's own record may state, so a registry that names a field this revision does not
@@ -169,10 +123,12 @@ def profiles_home(config_dir, host=None):
     and which Git never sees. That is the whole point of moving a configuration here -- it becomes a fact
     about the box that runs it, alongside every other fact about the box that runs it.
 
-    A host that states nothing gets this revision's `config/profiles`, which is what a deployment that
-    has not moved its configurations yet has always had. The default is the transition and not the
-    arrangement: a machine that means its own home says so, and a machine that has said so cannot be
-    handed another revision's opinion about what it offers.
+    A host that states nothing looks in `config/profiles` beside its config directory, which is where a
+    body has always been found if nothing else was said. That is a poor place for a machine to keep a
+    decision -- it sits inside the checkout Git updates, and a fresh clone would arrive with none -- so the
+    documented arrangement is `profiles_dir` in `.state/host.json`, beside the release receipts and the
+    card identities, where a configuration is a fact about the box that runs it. Wherever the home is, the
+    record beside the bodies is what says which configurations this machine offers.
     """
     value = (host or {}).get('profiles_dir')
     if value is None:
@@ -199,15 +155,17 @@ def machine_registry(config_dir, host=None):
     is that body's own `models` list. Two machines offering the same configurations in different orders are
     the same two machines offering them.
 
-    A home with no record is a home that has not moved its configurations yet, and it gets this
-    revision's constants: the same answer it has always been given, which is why moving them costs no
-    re-render and no drain.
+    A home with no record is a machine that has not said what it offers, and it refuses. There is nothing
+    here for it to fall back on, and there was never a list here that was this revision's to hold.
     """
     home = profiles_home(config_dir, host)
     record = home / REGISTRY_FILE
     if not record.is_file():
-        return {'machine_owned': False, 'selectable': tuple(CONFIGURATIONS), 'renamed': dict(PROFILE_ALIASES),
-            'retired': dict(RETIRED_PROFILES), 'default': DEFAULT_PROFILE}
+        require(False, REGISTRY_FILE + ' is not there at ' + str(home) + ', and this revision keeps no list '
+            'of configurations for a machine to fall back on. Which configurations exist is a fact about '
+            'the machine that keeps them: state profiles_dir in .state/host.json as the directory this '
+            'machine keeps its configuration bodies in, and write ' + REGISTRY_FILE + ' beside them saying '
+            'which ones it offers')
     stated = read(record)
     unknown = sorted(set(stated) - set(REGISTRY_FIELDS))
     require(not unknown, REGISTRY_FILE + ' states ' + ', '.join(unknown) + ', which is nothing this '
@@ -222,17 +180,37 @@ def machine_registry(config_dir, host=None):
     duplicates = sorted({name for name in names if names.count(name) > 1})
     require(not duplicates, REGISTRY_FILE + ' offers ' + ', '.join(duplicates) + ' more than once')
     selectable = tuple(names)
+    offered = set(selectable)
     missing = sorted(name for name in selectable if not (home / (name + '.json')).is_file())
     require(not missing, 'This machine offers ' + ', '.join(missing) + ', and ' +
         ', '.join(str(home / (name + '.json')) for name in missing) + ' is not there. A configuration is a '
         'body this machine keeps in its own directory; a name in a record with no body beside it is a '
         'decision nothing can launch')
+    bodies = {}
+    for name in selectable:
+        try:
+            bodies[name] = read(home / (name + '.json'))
+        except json.JSONDecodeError as error:
+            require(False, str(home / (name + '.json')) + ': ' + REGISTRY_FILE + ' offers ' + name +
+                ', and the body beside it is not JSON this revision can read: ' + error.msg)
+    # What else the directory holds. A body a machine keeps is either a configuration its record offers
+    # or a model one of those configurations loads; anything else is a leftover, and a leftover in the
+    # directory a machine reads its decisions out of is a definition that looks selectable to the next
+    # person who reads it and is not. That is the failure the record exists to prevent, so it is checked
+    # here, where the record is read, and not only when somebody remembers to ask.
+    loads = {model for body in bodies.values() for model in (body.get('models') or [])
+        if isinstance(model, str)}
+    stray = sorted(path.stem for path in home.glob('*.json') if path.name != REGISTRY_FILE
+        and path.stem not in offered and path.stem not in loads)
+    require(not stray, 'This machine keeps ' + ', '.join(str(home / (stem + '.json')) for stem in stray) +
+        ' in its own directory, and nothing there says what it is for: ' + REGISTRY_FILE + ' does not offer '
+        + ', '.join(stray) + ', and no configuration it offers loads ' + ', '.join(stray) + '. A body a '
+        'machine keeps is either a configuration it offers or a model one of them loads')
     renamed, retired = dict(stated.get('renamed') or {}), dict(stated.get('retired') or {})
     for field, rows in (('renamed', renamed), ('retired', retired)):
         require(all(isinstance(old, str) and isinstance(new, str) and old.strip() and new.strip()
             for old, new in rows.items()), REGISTRY_FILE + ' must state ' + field + ' as a mapping from an '
             'old configuration id to the id it resolves to')
-    offered = set(selectable)
     unoffered = sorted(new for new in (*renamed.values(), *retired.values()) if new not in offered)
     require(not unoffered, REGISTRY_FILE + ' resolves a name to ' + ', '.join(unoffered) + ', which this '
         'machine does not offer: a rename or a retirement has to point at a configuration that is actually '
@@ -246,7 +224,7 @@ def machine_registry(config_dir, host=None):
             'configuration id')
         require(default in offered, REGISTRY_FILE + ' starts this machine on ' + default + ', which it does '
             'not offer')
-    return {'machine_owned': True, 'selectable': selectable, 'renamed': renamed, 'retired': retired,
+    return {'selectable': selectable, 'renamed': renamed, 'retired': retired,
         'default': default}
 
 
@@ -489,8 +467,8 @@ def default_profile(config_dir, host=None):
     A machine states its own `default_profile` in its own record, and it is only a default where its
     hardware exists: on a host that does not run the paired 27B, the first configuration of its own order
     is the default, so a host is never started on a configuration that would refuse its selection. A
-    machine that has not stated one gets this revision's `DEFAULT_PROFILE`, which is the answer a host
-    that has not moved its configurations yet has always been given.
+    machine that states no default starts on the first configuration of its own order, which is one reason
+    the order in the record is a decision and not a layout.
     """
     selectable = configurations_for(config_dir, host)
     require(selectable, 'No configuration of this machine offers this host. ' + ', '.join(
@@ -509,19 +487,23 @@ def resolve_profile(profile, config_dir=None, host=None):
     which says what to select.
 
     The renames are the machine's: pass the config directory and the host settings to read the record
-    this machine keeps, which is what a machine-side rename of a machine-side configuration needs.
-    Without them this is the revision's own `PROFILE_ALIASES`, which is what a revision that has not
-    moved its renames onto its machines still uses.
+    this machine keeps, which is what a machine-side rename of a machine-side configuration needs. With no
+    config directory there is no machine to ask, and a name is only what it says it is: this revision keeps
+    no renames of its own to resolve one with.
     """
-    aliases = PROFILE_ALIASES if config_dir is None else machine_registry(config_dir, host)['renamed']
+    aliases = machine_registry(config_dir, host)['renamed'] if config_dir is not None else {}
     return aliases.get(profile, profile)
 
 
 def unknown_profile(profile, config_dir=None, host=None):
     """The refusal for a name this machine does not run, naming what it does."""
-    registry = machine_registry(config_dir, host) if config_dir is not None else {
-        'selectable': tuple(CONFIGURATIONS), 'retired': dict(RETIRED_PROFILES)}
-    offered = configurations_for(config_dir, host) if config_dir is not None else tuple(CONFIGURATIONS)
+    if config_dir is None:
+        # Nothing is being asked. A configuration id is known to the machine that keeps it, and there is
+        # no list in this revision for a name to be looked up in.
+        return 'Unknown configuration ' + repr(profile) + '; no machine is being asked, and this revision ' \
+            'keeps no configurations of its own for a name to be found among'
+    registry = machine_registry(config_dir, host)
+    offered = configurations_for(config_dir, host)
     message = 'Unknown or retired configuration ' + repr(profile) + '; current configurations: ' \
         + ', '.join(offered or registry['selectable'])
     replacement = registry['retired'].get(profile)
@@ -1476,6 +1458,18 @@ def engine_rope_scaling(name, engine, options, context_tokens):
             'anywhere: the engine refuses a YaRN window that does not exceed the trained one it scales')
 
 
+def engine_of(shared, name, definition):
+    """The engine a body names, refused when this machine's shared.json does not define it.
+
+    A configuration body is a file a machine wrote, and its engine is a name into the definitions the
+    source ships. A body naming an engine the machine has never had is a mistake in the machine's own
+    file, so every surface that reads one says which body and which name. A KeyError out of a renderer
+    is what a hand-edited file gets otherwise, and it names neither.
+    """
+    require(definition['engine'] in shared['engines'], name + ': unknown engine ' + str(definition['engine']))
+    return shared['engines'][definition['engine']]
+
+
 def engine_interface(engine):
     """How a backend takes its configuration: the llama.cpp argument vector, or a declared
 
@@ -1708,8 +1702,7 @@ def profile_summary(config_dir, name, shared, host=None, aliases=None):
     """
     definition = profile_body(config_dir, host, name)
     require(definition.get('id') == name, name + ': profile file id differs from its filename')
-    require(definition['engine'] in shared['engines'], name + ': unknown engine ' + str(definition['engine']))
-    engine = shared['engines'][definition['engine']]
+    engine = engine_of(shared, name, definition)
     tokens = definition['context_tokens']
     require_router_context(tokens)
     # The shared llama.cpp vocabulary says nothing about an engine that configures itself from the
@@ -1805,7 +1798,7 @@ def model_summary(config_dir, definition, shared, host=None, aliases=None):
     model a configuration is named after and any other it loads beside it -- which is the whole point:
     a machine that serves two models shows two of these, and neither of them is a footnote.
     """
-    engine = shared['engines'][definition['engine']]
+    engine = engine_of(shared, definition['id'], definition)
     options = {**shared['arguments'], **definition['arguments']} if engine_interface(engine) == 'argv' \
         else dict(definition['arguments'])
     return {'model': model_id(definition), 'display_name': display_name(definition, aliases, host),
@@ -1908,7 +1901,7 @@ def render(config_dir, host, profile, aliases=None):
     for definition in loaded:
         name = definition['id']
         service = service_key(definition)
-        engine = shared['engines'][definition['engine']]
+        engine = engine_of(shared, name, definition)
         require_engine_architecture(name, host, engine)
         ctx = definition['context_tokens']
         require_router_context(ctx)

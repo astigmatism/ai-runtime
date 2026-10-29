@@ -5,6 +5,7 @@
     "75"
   ],
   "model_root": "/home/operator/ai/models/llm",
+  "profiles_dir": "/home/operator/deployments/ai-runtime/.state/profiles",
   "router_target": {
     "url": "http://192.168.1.23:11435",
     "token_env": "CATALOG_PUSH_TOKEN",

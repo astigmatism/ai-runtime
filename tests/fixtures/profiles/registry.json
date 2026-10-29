@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    "qwen27b-q8-pair",
+    "qwen27b-q6k-pair",
+    "flash-next-strata-solo-thinking-recovery",
+    "flash-next-strata-solo-thinking-recovery-cache",
+    "flash-next-strata-solo-thinking-recovery-cache-yarn",
+    "flash-next-strata-two-card-iq4-xs",
+    "flash-next-strata-two-card-iq3-s",
+    "flash-next-strata-iq3-xxs-daisy",
+    "flash-next-strata-iq3-xxs-daisy-tc",
+    "flash-next-strata-iq3-xxs-daisy-128k",
+    "flash-next-strata-iq3-s-daisy"
+  ],
+  "renamed": {
+    "qwen27b-q8-with-nighttime": "qwen27b-q8-pair",
+    "qwen27b-q6k-with-nighttime": "qwen27b-q6k-pair"
+  },
+  "retired": {
+    "flash-next-solo-128k": "flash-next-strata-solo-thinking-recovery",
+    "flash-next-solo-160k": "flash-next-strata-solo-thinking-recovery",
+    "flash-next-strata-160k": "flash-next-strata-solo-thinking-recovery",
+    "flash-next-strata-solo": "flash-next-strata-solo-thinking-recovery",
+    "flash-next-strata-solo-thinking": "flash-next-strata-solo-thinking-recovery",
+    "flash-next-strata-solo-thinking-recovery-full-route": "flash-next-strata-solo-thinking-recovery"
+  }
+}

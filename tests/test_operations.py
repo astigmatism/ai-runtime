@@ -6,14 +6,16 @@ import uuid
 from unittest.mock import patch
 
 try:
+    import machine
     import test_controller as controller_fixture
 except ModuleNotFoundError:
     # Run as `python3 -m unittest tests.test_operations` from the repository root, the fixtures are
     # reached through the package instead of the tests directory, which is not on the import path.
+    from tests import machine
     from tests import test_controller as controller_fixture
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_SOLO
 from runtime.operations import Operations, OperationError, public_operation
-from runtime.system import lock, now
+from runtime.system import atomic_json, lock, now
 
 DAY, NIGHT = 'qwen38-daytime', 'qwen38-nighttime'
 
@@ -379,7 +381,10 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         from runtime import config as runtime_config
         tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
         config = Path(tmp.name) / 'config'; shutil.copytree(controller_fixture.ROOT / 'config', config)
-        night = json.loads((config / 'profiles/everyday.json').read_text())
+        # The variant lives in a home of its own, because that is where a machine keeps the bodies it
+        # offers; the copy of the checkout beside it holds the engines and the rules, and no body.
+        home = self.state / 'variant-profiles'; shutil.copytree(machine.HOME, home)
+        night = json.loads((home / 'everyday.json').read_text())
         night.update(id='everyday-plain', display_name='Qwen3.8 27B Abliterated Q6_K, no draft',
             variant_label='no draft', context_tokens=131072)
         night.pop('draft_on_vision_gpu')
@@ -388,17 +393,21 @@ class ExclusiveOperationTests(OperationFixture, unittest.TestCase):
         night['arguments']['--alias'] += '-plain'
         night['artifacts'] = [a for a in night['artifacts'] if a['target'] != '/weights/mtp.gguf']
         night['catalog']['mtp'] = {'enabled': False}
-        (config / 'profiles/everyday-plain.json').write_text(json.dumps(night))
-        day = json.loads((config / 'profiles/qwen27b-q6k-pair.json').read_text())
+        (home / 'everyday-plain.json').write_text(json.dumps(night))
+        day = json.loads((home / 'qwen27b-q6k-pair.json').read_text())
         day.update(id='qwen27b-q6k-pair-plain', models=['qwen27b-q6k-pair-plain', 'everyday-plain'])
-        (config / 'profiles/qwen27b-q6k-pair-plain.json').write_text(json.dumps(day))
+        (home / 'qwen27b-q6k-pair-plain.json').write_text(json.dumps(day))
         # The variant is added the way a machine adds one: a body, plus the record that says this
         # machine offers it. Nothing in the revision is patched -- a configuration is a decision of
         # this box, and the box says so where it lives.
-        offered = [path.stem for path in sorted((config / 'profiles').glob('*.json'))
-            if json.loads(path.read_text()).get('models')]
-        (config / 'profiles' / runtime_config.REGISTRY_FILE).write_text(json.dumps(
-            {'schema_version': runtime_config.PROFILES_VERSION, 'profiles': offered}))
+        offered = [path.stem for path in sorted(home.glob('*.json'))
+            if path.name != runtime_config.REGISTRY_FILE and json.loads(path.read_text()).get('models')]
+        atomic_json(home / runtime_config.REGISTRY_FILE,
+            {'schema_version': runtime_config.PROFILES_VERSION, 'profiles': offered})
+        # And it says where that home is, in the settings the controller reads it out of. A body copied
+        # into a directory the machine has not named is a body nothing can find.
+        self.c.host = {**self.c.host, 'profiles_dir': str(home)}
+        atomic_json(self.state / 'host.json', self.c.host)
         self.c.config_dir = config
 
     def test_browser_switch_between_configurations_that_share_a_model_stops_the_one_it_drops(self):

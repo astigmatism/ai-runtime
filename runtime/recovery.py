@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import tarfile
 
-from .config import REGISTRY_FILE, profiles_home, read, require, service_engine
+from .config import REGISTRY_FILE, machine_registry, profiles_home, read, require, service_engine
 from .migration import WRAPPERS, shell_wrapper
 from .system import atomic_json, lock, now
 from .update import Updater
@@ -21,14 +21,21 @@ def checksum(path):
     return digest.hexdigest()
 
 
-def stable_state(state):
+def stable_state(state, act='exporting'):
+    """Nothing is mid-flight, so this machine can be asked to change.
+
+    `act` names what is about to happen, because the refusal has to say what is being held off. A
+    transaction in flight makes an export an unreliable receipt, and it makes editing the record every
+    selection path reads from the same kind of mistake: doing both at once is how a machine ends up
+    restoring a launch nobody asked for out of a record that has already changed under it.
+    """
     for name, key, allowed in [
         ('transaction.json', 'phase', {'succeeded', 'recovered'}),
         ('update-job.json', 'phase', {'succeeded', 'recovered', 'failed'}),
     ]:
         path = state / name
         require(not path.exists() or read(path).get(key) in allowed,
-                'Finish or recover maintenance before exporting: ' + name)
+                'Finish or recover maintenance before ' + act + ': ' + name)
     reservation = state / 'router-maintenance.json'
     require(not reservation.exists() or not read(reservation).get('reserved'),
             'Router maintenance is reserved')
@@ -36,7 +43,7 @@ def stable_state(state):
     # receipt would show a machine that is not answering anyone, and the retry is mid-flight.
     restoration = state / 'restoration.json'
     require(not restoration.exists() or read(restoration).get('finished_at'),
-            'A restoration is bringing the service back; wait for it to finish before exporting')
+            'A restoration is bringing the service back; wait for it to finish before ' + act)
 
 
 def model_inventory(root, host=None):
@@ -46,10 +53,15 @@ def model_inventory(root, host=None):
     a machine that keeps the bodies of the configurations it offers in its own home has no copy of them in
     the checkout to inventory, and an export that read the checkout would then be a receipt naming no
     model at all. The record beside the bodies is skipped: it lists which configurations exist, and a list
-    mounts nothing.
+    mounts nothing. It is still read first, because a receipt of what a machine carries is a claim about a
+    machine that has said what it offers: with no record there, there is no fact of what these files are
+    for, and an inventory that named nothing would be filed as a success.
     """
     artifacts = {}
-    for definition in sorted(profiles_home(Path(root) / 'config', host).glob('*.json')):
+    config_dir = Path(root) / 'config'
+    home = profiles_home(config_dir, host)
+    machine_registry(config_dir, host)
+    for definition in sorted(home.glob('*.json')):
         if definition.name == REGISTRY_FILE:
             continue
         for item in read(definition)['artifacts']:
