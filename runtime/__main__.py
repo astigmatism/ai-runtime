@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import sys
 
+from . import profiles
 from .controller import Controller
 from .system import System
 from .config import (ALIASES_FILE, available_profiles, machine_registry, nameable_models, read, read_aliases,
@@ -19,12 +20,14 @@ def host_settings(config_dir):
     """This machine's settings and its operator names, for the surfaces that show only this machine's
     share of the registry.
 
-    `list` is also run against a bare source tree, where there is no host to ask, and then it lists
-    every configuration the revision has, each by its default name. With a state directory it must
-    read: a deployment whose host.json is missing or unreadable gets that said out loud rather than a
-    listing of another machine's configurations, which is what a silent fallback would hand back.
-    Names travel with the host because the listing and the page must never disagree about what a
-    model is called, which is the same fact stated in two places that people trust.
+    `list` is also run against a bare source tree, where there is no host to ask and so no directory of
+    bodies to ask them of. It then refuses: this revision keeps no list of configurations for a checkout
+    to fall back on, because a configuration is a measurement of one machine and a checkout is not a
+    machine. With a state directory it must read: a deployment whose host.json is missing or unreadable
+    gets that said out loud rather than a listing of another machine's configurations, which is what a
+    silent fallback would hand back. Names travel with the host because the listing and the page must
+    never disagree about what a model is called, which is the same fact stated in two places that people
+    trust.
     """
     state = os.environ.get('RUNTIME_STATE_DIR')
     if not state:
@@ -131,7 +134,7 @@ def main():
     parser.add_argument('action', choices=['inspect', 'render', 'validate', 'status', 'apply',
         'deploy', 'adopt', 'install', 'recover', 'restore', 'rollback-release', 'publish', 'retire',
         'serve', 'power',
-        'list', 'check', 'provision', 'gate',
+        'list', 'registry', 'retire-profile', 'check', 'provision', 'gate',
         'router-maintenance-begin', 'router-maintenance-end'])
     # Not `choices`: argparse prints "invalid choice" and exits 2, which tells an operator that a
     # name they typed for three years is simply wrong. resolve_profile says what it means -- a
@@ -139,6 +142,11 @@ def main():
     parser.add_argument('--profile')
     parser.add_argument('--phase', choices=['provision', 'warm'], default='provision')
     parser.add_argument('--full-hash', action='store_true')
+    # `registry` and `retire-profile` are the two actions a machine takes over its own configurations:
+    # the first reads the record it keeps beside their bodies, the second takes one out of service there.
+    # `retire` is a different thing entirely -- it tells the routers this machine serves nothing.
+    parser.add_argument('--replacement', help='with retire-profile: the configuration its name resolves '
+        'to from now on, which has to be one this machine offers')
     # Only `power` reads these. A card is named by UUID or by enough of its name to be one card;
     # `--plans` prints the rung table without touching a driver.
     parser.add_argument('--gpu')
@@ -163,14 +171,21 @@ def main():
     args = parser.parse_args()
     config_dir = os.environ.get('RUNTIME_CONFIG_DIR', '/app/config')
     host = aliases = None
-    if args.profile or args.action == 'list':
+    if args.profile or args.action in ('list', 'registry', 'retire-profile'):
         # A name typed at a keyboard is asked about on the machine that keeps the configurations, not
         # against this revision's own list: whether a name is one of *this* machine's configurations,
         # and what one of its own older names resolves to, is in the record it keeps beside their
-        # bodies. With no state directory there is no machine to ask, and the answer is this revision's
-        # list -- which is what a bare source tree, and a deployment that has not moved its
-        # configurations into its own home, has always been given.
+        # bodies. This revision keeps no list of configurations of its own, so a bare source tree is
+        # asked a question it has no way to answer, and says so instead of handing back a list written
+        # from another machine's measurements.
         host, aliases = host_settings(config_dir)
+    if args.action in ('registry', 'retire-profile'):
+        # Asked before the names are resolved, so the refusal says which machine is missing instead of
+        # reporting where a checkout would have looked for a record. Both of these actions write or read
+        # the directory a machine states, so a machine has to be named for either of them to mean anything.
+        require(host is not None, 'registry and retire-profile are acts on the machine that keeps its '
+            'configurations, and no machine is being asked here: there is no .state directory, so nothing '
+            'says which machine this is or where it keeps the bodies it offers')
     if args.profile:
         profile = resolve_profile(args.profile, config_dir, host)
         require(profile in machine_registry(config_dir, host)['selectable'],
@@ -178,6 +193,21 @@ def main():
         args.profile = profile
     if args.action == 'list':
         print(listed(config_dir, host, aliases))
+        return
+    if args.action in ('registry', 'retire-profile'):
+        # Refused above if no machine was named. Neither action asks a backend or a container to do
+        # anything: which configurations this machine offers, and whether one of them has been taken out of
+        # service, lives in the machine's own directory. No controller, no Docker, nothing drained.
+        state = Path(os.environ['RUNTIME_STATE_DIR'])
+        if args.action == 'registry':
+            result = profiles.audit(config_dir, host, state)
+        else:
+            require(args.profile and args.replacement, 'retire-profile names the configuration it takes out '
+                'of service with --profile, and the one that replaces it with --replacement. A retirement '
+                'leaves behind a refusal that has to point somewhere a client can still go')
+            result = profiles.retire(config_dir, state, host, args.profile,
+                resolve_profile(args.replacement, config_dir, host))
+        print(json.dumps(result, indent=2))
         return
     readonly = args.action in ('inspect', 'render', 'validate', 'status', 'check', 'gate')
     controller = Controller(system=System(readonly=readonly))

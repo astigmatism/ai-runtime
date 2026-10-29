@@ -11,11 +11,19 @@ name it does not route again.
 
 import contextlib
 import io
+import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import machine
 from runtime import __main__ as cli
+from runtime.config import read
+from runtime.system import atomic_json
 
 
 class DispatchTests(unittest.TestCase):
@@ -209,3 +217,105 @@ class PowerCliTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as refused:
             self.run_cli('power', '--gpu', self.CARDS[0][0], '--set', '300,1800')
         self.assertIn('POWER,CLOCK_MAX,OFFSET', str(refused.exception))
+
+
+class MachineConfigurationActionsTests(unittest.TestCase):
+    """`registry` and `retire-profile`: the two actions answered out of the machine's own directory.
+
+    These are the actions the dispatch table can get wrong in the expensive direction. An action that
+    falls through to the controller asks a backend what a record says, and a `retire-profile` that reached
+    a transition would drain a serving workload to take a definition out of a directory -- the one thing a
+    retirement exists to not do. So the controller and the system here are not fakes that answer, they are
+    fakes that object the moment they are built, and the cases that pass are the ones that never built one.
+    The deployment is written to a temporary directory for the same reason the retirements themselves are
+    tested there: the answer these actions give is a file.
+    """
+    YARN = 'flash-next-strata-solo-thinking-recovery-cache-yarn'
+    YARN_REPLACEMENT = 'flash-next-strata-solo-thinking-recovery-cache'
+    RENAMED = 'qwen27b-q6k-with-nighttime'
+    RENAMED_ONTO = 'qwen27b-q6k-pair'
+
+    def deployment(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state = root / '.state'
+        state.mkdir()
+        shutil.copytree(machine.CONFIG, root / 'config')
+        home = machine.home(state / 'profiles')
+        atomic_json(state / 'host.json', machine.stating(machine.HOST, home, host_id='rosalina'))
+        return root / 'config', state, home
+
+    def run_cli(self, argv, config, state, state_dir=None):
+        built = []
+
+        def objects(name):
+            def factory(*args, **kwargs):
+                built.append(name)
+                raise AssertionError(name + ' was built to answer ' + argv[0])
+            return factory
+
+        out = io.StringIO()
+        with mock.patch.object(cli, 'Controller', objects('Controller')), \
+                mock.patch.object(cli, 'System', objects('System')), mock.patch.dict(os.environ, {
+                    'RUNTIME_CONFIG_DIR': str(config),
+                    'RUNTIME_STATE_DIR': str(state) if state_dir is None else state_dir}), \
+                mock.patch.object(sys, 'argv', ['ai-runtime', *argv]):
+            with contextlib.redirect_stdout(out):
+                cli.main()
+        self.assertEqual(built, [], argv[0] + ' answered the machine\'s own directory and then built a '
+            'backend to ask it the same question')
+        return json.loads(out.getvalue())
+
+    def test_registry_is_the_machine_answering_for_its_own_configurations(self):
+        config, state, home = self.deployment()
+        reported = self.run_cli(['registry'], config, state)
+        self.assertEqual(reported['home'], str(home), 'the audit names the directory this machine states, '
+            'not the one the source ships')
+        self.assertEqual(reported['record'], str(home / 'registry.json'))
+        self.assertEqual([entry['profile'] for entry in reported['offers']],
+            [name for name in machine.record()['selectable']
+                if 'rosalina' in read(machine.HOME / (name + '.json'))['hosts']])
+        self.assertIsNone(reported['running'], 'a machine that has never switched has nothing recorded as '
+            'active, and the JSON an operator reads says nothing rather than naming its default')
+
+    def test_retire_profile_takes_a_configuration_out_of_service_without_asking_a_backend(self):
+        config, state, home = self.deployment()
+        result = self.run_cli(['retire-profile', '--profile', self.YARN, '--replacement',
+            self.YARN_REPLACEMENT], config, state)
+        self.assertEqual(result['act'], {'retired': self.YARN, 'replacement': self.YARN_REPLACEMENT,
+            'carried_retirements': [], 'default_followed_replacement': False})
+        self.assertEqual(result['drain'], 'none')
+        self.assertFalse((home / (self.YARN + '.json')).exists())
+        self.assertEqual(read(home / 'registry.json')['retired'][self.YARN], self.YARN_REPLACEMENT)
+
+    def test_the_replacement_is_resolved_the_way_a_name_typed_at_a_keyboard_is(self):
+        # An operator types the name they have always typed. The retirement writes what the machine's own
+        # record resolves it to, so the row left behind points at a configuration that exists -- which is
+        # the rule that makes a refusal survivable -- and not at the spelling they happened to use.
+        config, state, home = self.deployment()
+        result = self.run_cli(['retire-profile', '--profile', self.YARN, '--replacement', self.RENAMED],
+            config, state)
+        self.assertEqual(result['act']['replacement'], self.RENAMED_ONTO)
+        self.assertEqual(read(home / 'registry.json')['retired'][self.YARN], self.RENAMED_ONTO)
+
+    def test_a_retirement_that_names_only_one_of_the_two_configurations_refuses(self):
+        config, state, home = self.deployment()
+        with self.assertRaisesRegex(RuntimeError, 'names the configuration it takes out of service with '
+                '--profile.*--replacement'):
+            self.run_cli(['retire-profile', '--profile', self.YARN], config, state)
+        self.assertTrue((home / (self.YARN + '.json')).exists())
+
+    def test_both_actions_asked_of_no_machine_refuse(self):
+        config, state, home = self.deployment()
+        for argv in (['registry'], ['retire-profile', '--profile', self.YARN, '--replacement',
+            self.YARN_REPLACEMENT]):
+            with self.subTest(action=argv[0]), self.assertRaisesRegex(RuntimeError,
+                    'no machine is being asked here'):
+                self.run_cli(argv, config, state, state_dir='')
+        self.assertTrue((home / (self.YARN + '.json')).exists(), 'a machine that was not named was not '
+            'written to')
+
+
+if __name__ == '__main__':
+    unittest.main()

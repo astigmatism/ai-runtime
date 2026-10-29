@@ -6,45 +6,53 @@ import shutil
 import tempfile
 import unittest
 
+import machine
 from models import CODING, CODING_Q6K, EVERYDAY, STRATA_DAISY, STRATA_PAIR, STRATA_SOLO
 from runtime.system import atomic_json
-from runtime.config import (ALIAS_MAX, CONFIGURATIONS, CONTAINER_CONTRACT, NAME_MAX,
-    DEFAULT_PROFILE, PROFILE_ALIASES, PROFILES_VERSION, REGISTRY_FILE, RETIRED_PROFILES,
+from runtime.config import (ALIAS_MAX, CONTAINER_CONTRACT, NAME_MAX, PROFILES_VERSION, REGISTRY_FILE,
     ALIASES_VERSION, available_profiles, belongs_to_host, card_model, catalog_names, clean_alias,
     configurations_for, host_display_name, host_name, is_exclusive, machine_registry, model_id,
     models_of, nameable_models, default_name, default_profile, digest, display_name, engine_interface,
     merge_settings, profile_body, profiles_home, read,
     power_plan, power_plan_for_name, power_plans, power_request, power_rung, read_aliases,
-    power_set_cards, power_set_entry, power_set_name, power_set_request, read_power_sets,
-    read_power_registry, render, resolve_profile, service_engine, service_key, text_gpus,
-    unknown_profile)
+    power_set_cards, power_set_entry, power_set_name, power_set_request,
+    read_power_sets, read_power_registry, render, resolve_profile, service_engine, service_key,
+    text_gpus, unknown_profile)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = read(ROOT / 'tests/fixtures/legacy-fingerprints.json')
+# The fixture host states the directory it keeps its own configurations in, which is what a deployed
+# host.json states and what separates asking a machine from asking a checkout. The bodies these tests
+# render live in that directory; the checkout's `config/` holds the engines they name and no
+# configuration of its own, because a configuration is a measurement of one machine and a checkout is
+# not a machine.
+BASELINE['host'] = machine.HOST
 VISION = 'GPU-465a9a1e-fcb9-27f2-8f6a-cca1c30de981'
 
 
 def profile_file(name):
     """What one profile file says, since half of these tests ask what a file states."""
-    return read(ROOT / 'config/profiles' / (name + '.json'))
+    return read(machine.HOME / (name + '.json'))
 
 
 def config_with(name, **changes):
-    """The shipped configuration directory with one profile file edited.
+    """A machine with one of its profile files edited.
 
     A refusal worth reaching through a real file: the same edit applied to a dict in memory skips the
-    part of the rule that lives in how a profile is found and read on disk.
+    part of the rule that lives in how a profile is found and read on disk. The whole machine is copied
+    -- the source's config directory, and this machine's own home beside it -- and the host returned
+    with it states that home, because the edit was made on a machine and a render has to be told which
+    one it is asking.
     """
-    directory = Path(tempfile.mkdtemp()) / 'config'
-    shutil.copytree(ROOT / 'config', directory)
-    path = directory / 'profiles' / (name + '.json')
+    config, home, host = machine.tree(Path(tempfile.mkdtemp()))
+    path = home / (name + '.json')
     definition = read(path)
     definition.update(changes)
     path.write_text(json.dumps(definition))
-    return directory
+    return config, home, host
 
 
-def one_pair_host(machine):
+def one_pair_host(machine_id):
     """A machine with one text pair, for a configuration that loads one model on it.
 
     The alternative is four cards and one model, which render refuses -- correctly: a declared card
@@ -53,7 +61,8 @@ def one_pair_host(machine):
     host = copy.deepcopy(BASELINE['host'])
     return {'model_root': host['model_root'], 'router_state_dir': host['router_state_dir'],
         'router_admin_url': host['router_admin_url'], 'router_admin_header': host['router_admin_header'],
-        'uid': host['uid'], 'gid': host['gid'], 'host_id': machine,
+        'uid': host['uid'], 'gid': host['gid'], 'host_id': machine_id,
+        'profiles_dir': host['profiles_dir'],
         'gpu_ids': {'daytime': host['gpu_ids']['daytime']},
         'gpu_names': {'daytime': host['gpu_names']['daytime']}}
 
@@ -63,15 +72,26 @@ def exclusive(name):
     return is_exclusive(profile_file(name))
 
 
-# How many models a configuration loads is a fact in its own `models` list, and the two shapes the
-# shipped set is in follow from reading it: one model across every card, or several with the cards
-# divided. Nothing here may assume the answer the way a `role` used to.
-NAMED = {name: [model_id(model) for model in models_of(ROOT / 'config', profile_file(name))]
-    for name in CONFIGURATIONS}
-ALONE = tuple(n for n in CONFIGURATIONS if len(NAMED[n]) == 1)
+# What the fixture machine offers is in its own record, and the shapes its configurations are in are in
+# their `models` lists: one model across every card, or several with the cards divided. Nothing here may
+# assume the answer the way a `role` used to. `SELECTED` is the machine saying which configurations it
+# offers, in the order it says them; `selectable_at()` below is the bodies that answer to those names,
+# and RegistryTests is where the two are compared.
+SELECTED = tuple(machine.record()['selectable'])
+# A retired name is never selectable and never silently resolves -- it refuses and says what to use
+# instead -- because its backends are described nowhere any more. A *renamed* one does resolve, for the
+# opposite reason: the same backends are still there. Both are the machine's own history.
+RETIRED = dict(machine.record()['retired'])
+RENAMED = dict(machine.record()['renamed'])
+# Started when no release has been recorded yet (a new or rebuilt host without an initial_profile), which
+# is this machine's first configuration: it states no default of its own, so its own order is the answer.
+STARTS_ON = default_profile(ROOT / 'config', BASELINE['host'])
+NAMED = {name: [model_id(model) for model in models_of(ROOT / 'config', profile_file(name), BASELINE['host'])]
+    for name in SELECTED}
+ALONE = tuple(n for n in SELECTED if len(NAMED[n]) == 1)
 # Which configurations load a model, read off the lists rather than from a role every file used to
 # carry: a test that says "every configuration that loads this model" says which model it means.
-LOADS = {model: tuple(n for n in CONFIGURATIONS if model in NAMED[n])
+LOADS = {model: tuple(n for n in SELECTED if model in NAMED[n])
     for model in {model for models in NAMED.values() for model in models}}
 # The file the Everyday model is defined in. It is a profile file like any other, and what makes it a
 # model rather than a configuration is that it names no `models` list of its own -- which is also why
@@ -80,9 +100,10 @@ EVERYDAY_FILE = 'everyday'
 # A configuration is filed under the model it is named after, and a model is filed under the id a
 # client routes on, so `service_key(model) is model_id(model)` is the whole identity rule; the tests
 # read it once here instead of trusting a key that used to be spelled `coding`.
-OWN = {name: service_key(profile_file(name)) for name in CONFIGURATIONS}
-# Every profile file the revision ships: the configurations, and the models their lists name.
-DEFINITIONS = tuple(sorted(path.stem for path in (ROOT / 'config/profiles').glob('*.json')))
+OWN = {name: service_key(profile_file(name)) for name in SELECTED}
+# Every profile file this machine keeps: the configurations its record offers, and the models their
+# lists name.
+DEFINITIONS = tuple(sorted(path.stem for path in machine.HOME.glob('*.json') if path.name != REGISTRY_FILE))
 # Daisy's own configuration, named by its file rather than by the model id it loads.
 DAISY_PROFILE = 'flash-next-strata-iq3-xxs-daisy'
 
@@ -106,8 +127,8 @@ ROSALINA = 'rosalina'
 # The second machine, now that it has a configuration of its own: its id is the one its private
 # settings state and the one its definitions name.
 DAISY = 'daisy'
-def a_rope_ring(config):
-    """A configuration written into a copied config tree that asks for a stretched position ring.
+def a_rope_ring(home):
+    """A configuration written into a machine's own home that asks for a stretched position ring.
 
     The rope rules are rules about an image's entry point and about the router's context ceiling, and
     both of those live in source. Whether a machine keeps a stretched rung beside its resident -- and
@@ -116,8 +137,8 @@ def a_rope_ring(config):
     the name, the definition as written, and the file it was written to.
     """
     from runtime.config import ROUTER_CONTEXT_LIMIT
-    for name in sorted(name for name in selectable_at(config) if interface_of(name) == 'environment'):
-        definition = read(config / 'profiles' / (name + '.json'))
+    for name in sorted(name for name in selectable_at(home) if interface_of(name) == 'environment'):
+        definition = read(Path(home) / (name + '.json'))
         arguments = definition.get('arguments', {})
         refinements = ('--conversation-cache-slots', '--conversation-cache-min-tokens')
         if not is_exclusive(definition) or arguments.get('--conversation-cache-mib') == 'off':
@@ -130,23 +151,23 @@ def a_rope_ring(config):
             if flag not in definition['argument_order']:
                 definition['argument_order'].append(flag)
         definition['context_tokens'] = ROUTER_CONTEXT_LIMIT
-        path = config / 'profiles' / (name + '.json')
+        path = Path(home) / (name + '.json')
         path.write_text(json.dumps(definition))
         return name, definition, path
-    raise AssertionError('no configuration of an environment-configured engine in this tree owns every '
+    raise AssertionError('no configuration of an environment-configured engine in this home owns every '
         'card and states a conversation cache, which is the rung a rope is written onto')
 
 
-# The configurations this tree ships, read off the files: a profile file is selectable when it names
-# the models it loads, and that is the whole of what makes one. `CONFIGURATIONS` is what
-# runtime/config.py claims about the same tree, and RegistryTests is the one place in these tests
-# where a list of configuration names is spelled out -- spelled out in order to be compared with the
-# tree, and not copied out to be compared with itself. Everything else asks what the tree ships, so
-# that a configuration can be retired on the machine that keeps it without a test here noticing.
-def selectable_at(config_dir=ROOT / 'config'):
-    """Every configuration in a config tree, in the order its profile files sort."""
-    names = tuple(sorted(path.stem for path in (config_dir / 'profiles').glob('*.json')))
-    return tuple(name for name in names if read(config_dir / 'profiles' / (name + '.json')).get('models'))
+# The configurations this machine keeps, read off its files: a profile file is selectable when it names
+# the models it loads, and that is the whole of what makes one. `SELECTED` is what the machine's own
+# record claims about the same home, and RegistryTests is the one place in these tests where a list of
+# configuration names is spelled out -- spelled out in order to be compared with the bodies, and not
+# copied out to be compared with itself. Everything else asks what the home holds, so that a
+# configuration can be retired on the machine that keeps it without a test here noticing.
+def selectable_at(home=machine.HOME):
+    """Every configuration in a machine's home, in the order its profile files sort."""
+    names = tuple(sorted(path.stem for path in Path(home).glob('*.json')))
+    return tuple(name for name in names if read(Path(home) / (name + '.json')).get('models'))
 
 
 SELECTABLE = selectable_at()
@@ -167,14 +188,14 @@ def vision_host(host=None):
     return host
 
 
-def deployed(host, machine):
+def deployed(host, machine_id):
     """A host that states which machine it is, which is what a deployed `host.json` does.
 
     A host that states nothing is shown every machine's configurations, and then a service ID another
     machine publishes really is one nothing loaded here answers -- which is what `offline_services`
     reports, and what a pin recorded on the machine its own definition names does not contain.
     """
-    return {**host, 'host_id': machine}
+    return {**host, 'host_id': machine_id}
 
 
 def fixture_host(profile):
@@ -212,6 +233,7 @@ def second_machine(**changes):
     host = {'model_root': '/models', 'router_state_dir': '/router',
         'router_admin_url': 'http://ai-router:11435', 'router_admin_header': 'X-Admin-Token',
         'uid': 1000, 'gid': 1000, 'host_id': 'daisy', 'gpu_architectures': ['86', '89'],
+        'profiles_dir': str(machine.HOME),
         'gpu_ids': {'daytime': ['GPU-daisy-1', 'GPU-daisy-2']},
         'gpu_names': {'daytime': ['RTX 2080 Ti', 'RTX 2080 Ti']}}
     host.update(changes)
@@ -268,11 +290,11 @@ class ConfigurationTests(unittest.TestCase):
         # describes a launch there is nothing left to render against -- its backends are described
         # nowhere -- so retiring a configuration takes its pins in the same action that takes the
         # configuration out of service, and takes nothing here.
-        self.assertFalse(set(CONFIGURATIONS) - set(recorded), 'These configurations are offered with no pin, '
-            'which is a launch nobody is checking: ' + ', '.join(sorted(set(CONFIGURATIONS) - set(recorded))))
-        self.assertFalse(set(recorded) - set(CONFIGURATIONS), 'These pins name a configuration this revision '
-            'does not offer: ' + ', '.join(sorted(set(recorded) - set(CONFIGURATIONS))))
-        for name in sorted(CONFIGURATIONS):
+        self.assertFalse(set(SELECTED) - set(recorded), 'These configurations are offered with no pin, '
+            'which is a launch nobody is checking: ' + ', '.join(sorted(set(SELECTED) - set(recorded))))
+        self.assertFalse(set(recorded) - set(SELECTED), 'These pins name a configuration this revision '
+            'does not offer: ' + ', '.join(sorted(set(recorded) - set(SELECTED))))
+        for name in sorted(SELECTED):
             expected = recorded[name]
             with self.subTest(profile=name, previous=expected['previous_id']):
                 bundle = render(ROOT / 'config', fixture_host(name), name)
@@ -292,24 +314,24 @@ class ConfigurationTests(unittest.TestCase):
         pinned = read(ROOT / 'tests/fixtures/active-bundles.json')
         # Same direction as the pins above: a whole-bundle digest is recorded for every configuration
         # this revision offers, and a configuration it no longer offers has no bundle to record.
-        self.assertFalse(set(CONFIGURATIONS) - set(pinned['bundles']), 'These configurations have no '
+        self.assertFalse(set(SELECTED) - set(pinned['bundles']), 'These configurations have no '
             'whole-bundle digest, which is the cheapest thing that notices a launch moved with an edit: ' +
-            ', '.join(sorted(set(CONFIGURATIONS) - set(pinned['bundles']))))
-        self.assertFalse(set(pinned['bundles']) - set(CONFIGURATIONS), 'A bundle is pinned for ' +
-            ', '.join(sorted(set(pinned['bundles']) - set(CONFIGURATIONS))) + ', which this revision offers '
+            ', '.join(sorted(set(SELECTED) - set(pinned['bundles']))))
+        self.assertFalse(set(pinned['bundles']) - set(SELECTED), 'A bundle is pinned for ' +
+            ', '.join(sorted(set(pinned['bundles']) - set(SELECTED))) + ', which this revision offers '
             'to nobody')
-        for name in sorted(CONFIGURATIONS):
+        for name in sorted(SELECTED):
             with self.subTest(profile=name):
                 self.assertEqual(digest(filed_by_role(
                     render(ROOT / 'config', fixture_host(name), name))), pinned['bundles'][name])
 
     def test_context_edit_updates_both_launch_flags_manifest_and_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles/qwen27b-q8-pair.json'
+            config, home, host = machine.tree(Path(tmp))
+            path = home / 'qwen27b-q8-pair.json'
             definition = read(path); definition['context_tokens'] = 98304
             path.write_text(json.dumps(definition))
-            result = render(config, BASELINE['host'], 'qwen27b-q8-pair')
+            result = render(config, host, 'qwen27b-q8-pair')
             argv = result['compose']['services'][CODING]['command']
             for flag in ['--ctx-size', '--kv-unified-per-slot']:
                 self.assertEqual(argv[argv.index(flag) + 1], '98304')
@@ -320,7 +342,7 @@ class ConfigurationTests(unittest.TestCase):
             # configuration loads keeps the window its own file states, which 98304 alone cannot show
             # (the Everyday model is served at that width) and the source of it can.
             self.assertEqual([m['context_length'] for m in result['catalog']['models']],
-                [98304, read(ROOT / 'config/profiles/everyday.json')['context_tokens']])
+                [98304, read(machine.HOME / 'everyday.json')['context_tokens']])
             self.assertEqual(result['catalog']['display_name'], 'Qwen3.8 27B Q8 (96K)')
 
     def test_gpu_groups_cannot_overlap(self):
@@ -331,15 +353,15 @@ class ConfigurationTests(unittest.TestCase):
     def test_unknown_retired_profile_and_output_cap_are_rejected(self):
         for retired in ('daytime', 'daytime-27b', 'daytime-flash-solo', 'daytime-swift'):
             with self.subTest(profile=retired), self.assertRaisesRegex(RuntimeError, 'retired'):
-                render(ROOT / 'config', BASELINE['host'], retired)
+                render(machine.CONFIG, BASELINE['host'], retired)
         with self.assertRaisesRegex(RuntimeError, 'Unknown'):
-            render(ROOT / 'config', BASELINE['host'], '../../secret')
+            render(machine.CONFIG, BASELINE['host'], '../../secret')
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            config, home, host = machine.tree(Path(tmp))
             path = config / 'shared.json'; value = read(path); value['arguments']['--n-predict'] = '100'
             path.write_text(json.dumps(value))
             with self.assertRaisesRegex(RuntimeError, 'unsupported policy'):
-                render(config, BASELINE['host'], 'qwen27b-q8-pair')
+                render(config, host, 'qwen27b-q8-pair')
 
     def test_no_qualification_is_synthesized(self):
         result = render(ROOT / 'config', BASELINE['host'], 'qwen27b-q8-pair')
@@ -352,7 +374,7 @@ class ConfigurationTests(unittest.TestCase):
         check_keys(result)
         # The imported capability name is historical metadata, not a generated receipt.
         self.assertEqual(result['catalog']['capability_profile'],
-            read(ROOT / 'config/profiles/qwen27b-q8-pair.json')['catalog']['capability_profile'])
+            read(machine.HOME / 'qwen27b-q8-pair.json')['catalog']['capability_profile'])
         self.assertEqual(len(result['artifacts']), 5)  # 27B weights, MTP draft, projector; Nighttime weights, projector
         self.assertEqual(result['catalog']['aliases'], ['local-active', 'daytime'])
 
@@ -423,7 +445,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('/weights/mtp.gguf', [m['target'] for m in cpu['compose']['services'][EVERYDAY]['volumes']])
         self.assertEqual(cpu['catalog']['models'][1]['mtp'], {'enabled': False})
         with tempfile.TemporaryDirectory() as tmp:
-            config_dir = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config_dir)
+            config_dir, home, _ = machine.tree(Path(tmp))
             for name, change, message, target in [
                     (EVERYDAY_FILE, {'draft_on_vision_gpu': False}, 'Draft model must remain on a text GPU', 'qwen27b-q8-pair'),
                     # A model that owns every text GPU cannot be named beside another one: the
@@ -434,10 +456,10 @@ class ConfigurationTests(unittest.TestCase):
                     # list is a decision, not something to load.
                     ('qwen27b-q8-pair', {'models': ['qwen27b-q8-pair', SOLO]},
                         'is a configuration and cannot be loaded as a model', 'qwen27b-q8-pair')]:
-                path = config_dir / 'profiles' / (name + '.json'); original = path.read_text()
+                path = home / (name + '.json'); original = path.read_text()
                 definition = read(path); definition.update(change); path.write_text(json.dumps(definition))
                 with self.subTest(profile=name), self.assertRaisesRegex(RuntimeError, message):
-                    render(config_dir, host, target)
+                    render(config_dir, machine.stating(host, home), target)
                 path.write_text(original)
 
     def test_exclusive_configurations_keep_the_model_on_text_gpus(self):
@@ -449,9 +471,10 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / 'config'
 
-            def solo_llama(host=None, **change):
-                shutil.rmtree(config, ignore_errors=True); shutil.copytree(ROOT / 'config', config)
-                path = config / 'profiles/qwen27b-q8-pair.json'
+            def solo_llama(lend_vision=True, **change):
+                config, home, tree_host = machine.tree(Path(tmp))
+                host = machine.stating(vision_host(tree_host) if lend_vision else tree_host, home)
+                path = home / 'qwen27b-q8-pair.json'
                 definition = read(path)
                 definition.update(exclusive=True, gpu_group='all')
                 # A model that owns every text GPU of this host owns it alone, so this exemplar loads
@@ -461,7 +484,7 @@ class ConfigurationTests(unittest.TestCase):
                     '--tensor-split': '1,1,1,1', '--spec-draft-device': 'CUDA4'})
                 definition['arguments'].update(change)
                 path.write_text(json.dumps(definition))
-                return render(config, vision_host() if host is None else host, 'qwen27b-q8-pair')
+                return render(config, host, 'qwen27b-q8-pair')
 
             reserved = solo_llama()['compose']['services'][CODING]['deploy']['resources']['reservations']['devices'][0]
             self.assertEqual(reserved['device_ids'], [*text, VISION])
@@ -479,10 +502,18 @@ class ConfigurationTests(unittest.TestCase):
             # The projector and the draft live on the one card no text model uses, so a host that was
             # never given one cannot run a llama.cpp model that owns the machine at all.
             with self.assertRaisesRegex(RuntimeError, 'configured vision GPU'):
-                solo_llama(BASELINE['host'])
+                solo_llama(lend_vision=False)
+            # A card that is named but not a whole GPU is not a card a projector can be put on.
             thin = vision_host(); thin['vision_gpu_id'] = 'GPU-night-2'
             with self.assertRaisesRegex(RuntimeError, 'full GPU UUID'):
-                solo_llama(thin)
+                config, home, tree_host = machine.tree(Path(tmp))
+                path = home / 'qwen27b-q8-pair.json'
+                definition = read(path)
+                definition.update(exclusive=True, gpu_group='all', models=['qwen27b-q8-pair'])
+                definition['arguments'].update({'--device': 'CUDA0,CUDA1,CUDA2,CUDA3',
+                    '--tensor-split': '1,1,1,1', '--spec-draft-device': 'CUDA4'})
+                path.write_text(json.dumps(definition))
+                render(config, machine.stating(thin, home), 'qwen27b-q8-pair')
             for name, change, message in [
                     (SOLO, {'exclusive': 'yes'}, 'true or false'),
                     (SOLO, {'gpu_group': 'daytime'}, '"all" GPU group'),
@@ -490,11 +521,11 @@ class ConfigurationTests(unittest.TestCase):
                     # Exclusivity is a fact about one model and its memory: the Everyday model naming
                     # it without naming every card is refused through the list that loads it.
                     (EVERYDAY_FILE, {'exclusive': True}, '"all" GPU group')]:
-                shutil.rmtree(config); shutil.copytree(ROOT / 'config', config)
-                target = config / 'profiles' / (name + '.json')
+                config, home, host = machine.tree(Path(tmp))
+                target = home / (name + '.json')
                 definition = read(target); definition.update(change); target.write_text(json.dumps(definition))
                 with self.subTest(profile=name, change=change), self.assertRaisesRegex(RuntimeError, message):
-                    render(config, vision_host(), name if name == SOLO else 'qwen27b-q8-pair')
+                    render(config, vision_host(host), name if name == SOLO else 'qwen27b-q8-pair')
 
     def test_a_solo_configuration_needs_every_text_card_named(self):
         # Every text card is reserved, so a host that cannot name four distinct cards is refused
@@ -513,7 +544,7 @@ class ConfigurationTests(unittest.TestCase):
         # model alone overrides it to 24 GiB: on the 123 GiB host its cache had grown to ~50 GB with
         # ~8 GB swapped and swap exhausted, so the worst-case combined pair is bounded at 72 GiB
         # instead of 96 GiB.
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             with self.subTest(profile=name):
                 definition = profile_file(name)
                 self.assertNotIn('--cache-ram', definition['arguments'])
@@ -521,7 +552,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(night['arguments']['--cache-ram'], '24576')
         self.assertIn('--cache-ram', night['argument_order'])
         # Only the flag-configured engines are given a cache budget at all, so only they publish one.
-        for name in [n for n in CONFIGURATIONS if interface_of(n) == 'argv']:
+        for name in [n for n in SELECTED if interface_of(n) == 'argv']:
             with self.subTest(profile=name):
                 rendered = render(ROOT / 'config', host_for(name), name)
                 self.assertEqual(rendered['catalog']['global_ram_prompt_cache_mib'], 49152)
@@ -580,7 +611,7 @@ class ConfigurationTests(unittest.TestCase):
         # a machine states the cards it has, and a definition states which machine it was written for.
         # Those three statements are the whole rule, which is why it says nothing about how many
         # configurations a machine keeps or what they are called.
-        self.assertEqual(set(CARDS), {machine for name in DEFINITIONS for machine in profile_file(name)['hosts']},
+        self.assertEqual(set(CARDS), {machine_id for name in DEFINITIONS for machine_id in profile_file(name)['hosts']},
             'the tree names a machine these tests have no cards for, or states cards for a machine no '
             'definition is written for')
         for name in DEFINITIONS:
@@ -590,14 +621,14 @@ class ConfigurationTests(unittest.TestCase):
                 architectures = engine['cuda_architectures']
                 self.assertTrue(architectures, name + ' pins ' + definition['engine'] +
                     ', which states no SASS its image runs on')
-                for machine in definition['hosts']:
-                    self.assertTrue(set(architectures) & set(CARDS[machine]),
+                for machine_id in definition['hosts']:
+                    self.assertTrue(set(architectures) & set(CARDS[machine_id]),
                         name + ' pins ' + engine['tag'] + ', whose SASS is built for ' +
-                        ', '.join(architectures) + ', on ' + machine + ', which has ' +
-                        ', '.join(CARDS[machine]))
-        for name in CONFIGURATIONS:
+                        ', '.join(architectures) + ', on ' + machine_id + ', which has ' +
+                        ', '.join(CARDS[machine_id]))
+        for name in SELECTED:
             bundle = render(ROOT / 'config', host_for(name), name)
-            for model in models_of(ROOT / 'config', profile_file(name)):
+            for model in models_of(machine.CONFIG, profile_file(name), host_for(name)):
                 service = service_key(model)
                 with self.subTest(profile=name, service=service):
                     # Loading two models is not the same as being one kind of engine: the two-card
@@ -636,38 +667,38 @@ class ConfigurationTests(unittest.TestCase):
         from runtime.config import ROUTER_CONTEXT_LIMIT
         self.assertEqual(ROUTER_CONTEXT_LIMIT, 524288)
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles/qwen27b-q6k-pair.json'
+            config, home, host = machine.tree(Path(tmp))
+            path = home / 'qwen27b-q6k-pair.json'
             definition = read(path)
             for tokens in (524289, 0, '524288'):
                 with self.subTest(tokens=tokens):
                     definition['context_tokens'] = tokens
                     path.write_text(json.dumps(definition))
                     with self.assertRaisesRegex(RuntimeError, 'router contract: 1–524288 tokens'):
-                        render(config, BASELINE['host'], 'qwen27b-q6k-pair')
+                        render(config, host, 'qwen27b-q6k-pair')
                     with self.assertRaisesRegex(RuntimeError, 'router contract'):
-                        available_profiles(config)
+                        available_profiles(config, host)
             definition['context_tokens'] = 524288
             path.write_text(json.dumps(definition))
-            self.assertEqual(render(config, BASELINE['host'], 'qwen27b-q6k-pair')['catalog']['context_length'], 524288)
+            self.assertEqual(render(config, host, 'qwen27b-q6k-pair')['catalog']['context_length'], 524288)
 
     def test_invalid_repeated_arguments_or_missing_model_mount_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles/qwen27b-q8-pair.json'; original = read(path)
+            config, home, host = machine.tree(Path(tmp))
+            path = home / 'qwen27b-q8-pair.json'; original = read(path)
             for key, value, message in [('--temp', ['1', '2'], 'Only --override-tensor'),
                     ('--cache-type-k', [], 'nonempty'), ('--model', '/weights/missing.gguf', 'declared artifact')]:
                 with self.subTest(key=key):
                     definition = copy.deepcopy(original); definition['arguments'][key] = value
                     path.write_text(json.dumps(definition))
-                    with self.assertRaisesRegex(RuntimeError, message): render(config, vision_host(), 'qwen27b-q8-pair')
+                    with self.assertRaisesRegex(RuntimeError, message): render(config, vision_host(host), 'qwen27b-q8-pair')
             # A sharded model is the one case where an undeclared file is not simply an argument that
             # points nowhere: the engine reads the folder, so a shard nobody declared still loads.
-            path = config / 'profiles' / (SOLO + '.json'); original = read(path)
+            path = home / (SOLO + '.json'); original = read(path)
             definition = copy.deepcopy(original); definition['artifacts'].pop(1)
             path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError, 'missing a declared shard'):
-                render(config, vision_host(), SOLO)
+                render(config, vision_host(host), SOLO)
 
 
 class AConfigurationNamesItsModels(unittest.TestCase):
@@ -684,8 +715,8 @@ class AConfigurationNamesItsModels(unittest.TestCase):
         # them, so the list is load-bearing for the drain: a renderer that sorted the models, or that
         # always put the configuration's own model first, would change what comes up when without
         # changing a byte of any profile.
-        config = config_with('qwen27b-q8-pair', models=[EVERYDAY_FILE, 'qwen27b-q8-pair'])
-        bundle = render(config, BASELINE['host'], 'qwen27b-q8-pair')
+        config, _, host = config_with('qwen27b-q8-pair', models=[EVERYDAY_FILE, 'qwen27b-q8-pair'])
+        bundle = render(config, host, 'qwen27b-q8-pair')
         self.assertEqual(list(bundle['compose']['services']), [EVERYDAY, CODING])
         self.assertEqual([s['service'] for s in bundle['manifest']['services']], [EVERYDAY, CODING])
         self.assertEqual([m['model'] for m in bundle['catalog']['models']], [EVERYDAY, CODING])
@@ -694,7 +725,7 @@ class AConfigurationNamesItsModels(unittest.TestCase):
         # One file, as many launches as it names: the number of Compose services is the number of
         # entries in the list, which is the whole content of the change and what every old assertion
         # about "the coding half and the everyday half" used to stand in for.
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             with self.subTest(profile=name):
                 bundle = render(ROOT / 'config', host_for(name), name)
                 self.assertEqual(sorted(bundle['compose']['services']), sorted(NAMED[name]),
@@ -703,8 +734,8 @@ class AConfigurationNamesItsModels(unittest.TestCase):
         # pair, told to load only its own model, loads one service. It needs a machine with the one
         # pair it keeps, because a declared card with nothing placed on it is refused -- as it should
         # be, and that refusal is the other half of what the list means.
-        only = render(config_with('qwen27b-q8-pair', models=['qwen27b-q8-pair']),
-            one_pair_host(ROSALINA), 'qwen27b-q8-pair')
+        config, home, _ = config_with('qwen27b-q8-pair', models=['qwen27b-q8-pair'])
+        only = render(config, machine.stating(one_pair_host(ROSALINA), home), 'qwen27b-q8-pair')
         self.assertEqual(list(only['compose']['services']), [CODING])
 
     def test_a_configuration_must_name_the_models_it_loads(self):
@@ -715,50 +746,50 @@ class AConfigurationNamesItsModels(unittest.TestCase):
                 (['qwen27b-q8-pair', 'qwen27b-q8-pair'], 'twice'),
                 (['qwen27b-q8-pair', SOLO], 'is a configuration and cannot be loaded as a model')]:
             with self.subTest(models=models):
+                config, _, host = config_with('qwen27b-q8-pair', models=models)
                 with self.assertRaisesRegex(RuntimeError, message):
-                    render(config_with('qwen27b-q8-pair', models=models),
-                        BASELINE['host'], 'qwen27b-q8-pair')
+                    render(config, host, 'qwen27b-q8-pair')
         # A configuration file with the list taken out is not "one model, implicitly". A file that
         # states no decision is refused, because the answer used to be that it was stated twice.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles/qwen27b-q8-pair.json'
+            config, home, host = machine.tree(Path(tmp))
+            path = home / 'qwen27b-q8-pair.json'
             definition = read(path); definition.pop('models')
             path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError, 'a configuration must name the models it loads'):
-                render(config, BASELINE['host'], 'qwen27b-q8-pair')
+                render(config, host, 'qwen27b-q8-pair')
 
     def test_a_model_that_names_a_list_of_its_own_is_a_configuration(self):
         # The list is what makes a file a configuration, so naming one is not a detail about who loads
         # it: `everyday` carrying its own list would be a decision somebody can select, filed under
         # the name another configuration is loading as a model.
+        config, _, host = config_with(EVERYDAY_FILE, models=[EVERYDAY_FILE])
         with self.assertRaisesRegex(RuntimeError, 'is a configuration and cannot be loaded as a model'):
-            render(config_with(EVERYDAY_FILE, models=[EVERYDAY_FILE]),
-                BASELINE['host'], 'qwen27b-q8-pair')
+            render(config, host, 'qwen27b-q8-pair')
 
 
 class RegistryTests(unittest.TestCase):
     def test_every_selectable_configuration_agrees_with_its_rendered_catalog(self):
-        registry = available_profiles(ROOT / 'config', BASELINE['host'])
+        registry = available_profiles(machine.CONFIG, BASELINE['host'])
 
         # The only list of configuration names spelled out in these tests, and it is spelled out to be
-        # checked: CONFIGURATIONS is the revision's claim about which profile files are selectable, and
+        # checked: SELECTED is the revision's claim about which profile files are selectable, and
         # the tree is what it is a claim about. The day the registry moves to the machine that carries
         # it, this guard is the test that says so, and it goes with the constant.
-        self.assertEqual(set(CONFIGURATIONS), set(selectable_at()),
+        self.assertEqual(set(SELECTED), set(selectable_at()),
             'runtime/config.py and config/profiles/ disagree about which profile files of this '
             'revision are selectable')
         # Loading more than one model is a statement about cards -- one model on one text pair and
         # another on the other -- and not about which engine the first of them runs, which is why a
         # Strata configuration joined this set on 2026-10-20 without either 27B pair changing.
-        multi = [name for name in CONFIGURATIONS if len(NAMED[name]) > 1]
+        multi = [name for name in SELECTED if len(NAMED[name]) > 1]
         self.assertEqual([x['profile'] for x in registry['selectable'] if len(x['models']) > 1], multi)
-        self.assertEqual([x['profile'] for x in registry['selectable']], list(CONFIGURATIONS))
+        self.assertEqual([x['profile'] for x in registry['selectable']], list(SELECTED))
         # The models a configuration loads are listed with it, in the order it names them. A model an
         # operator cannot see they are about to load is a model they did not choose.
         self.assertEqual([[m['model'] for m in x['models']] for x in registry['selectable']],
-            [NAMED[name] for name in CONFIGURATIONS])
-        for name in CONFIGURATIONS:
+            [NAMED[name] for name in SELECTED])
+        for name in SELECTED:
             with self.subTest(profile=name):
                 # One machine on both sides of the comparison, because a name now says which machine
                 # it is talking about: a registry read on an unscoped host and a render on the machine
@@ -849,7 +880,7 @@ class RegistryTests(unittest.TestCase):
         # model and its pack -- only the abliterated one is -- stated the same way whichever
         # configuration loads it, and a configuration that answers `nighttime` from a model that is
         # not abliterated says so rather than letting the service ID imply it.
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             with self.subTest(profile=name):
                 catalog = render(ROOT / 'config', host_for(name), name)['catalog']
                 flags = {m['model']: m['capability_profile']['nsfw'] for m in catalog['models']}
@@ -858,8 +889,8 @@ class RegistryTests(unittest.TestCase):
                 self.assertIs(catalog['models'][0]['capability_profile']['nsfw'], False)
                 self.assertIs(catalog['capability_profile']['nsfw'], False)
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles' / (EVERYDAY_FILE + '.json')
+            config, home, host = machine.tree(Path(tmp))
+            path = home / (EVERYDAY_FILE + '.json')
             definition = read(path)
             for value in (None, 'yes'):
                 if value is None:
@@ -868,22 +899,34 @@ class RegistryTests(unittest.TestCase):
                     definition['catalog']['capability_profile']['nsfw'] = value
                 path.write_text(json.dumps(definition))
                 with self.subTest(nsfw=value), self.assertRaisesRegex(RuntimeError, 'capability_profile.nsfw must be declared'):
-                    render(config, BASELINE['host'], 'qwen27b-q8-pair')
+                    render(config, host, 'qwen27b-q8-pair')
 
     def test_registry_offers_only_registered_profiles_and_names_configured_gpus(self):
-        definitions = {path.stem: read(path) for path in (ROOT / 'config/profiles').glob('*.json')}
+        definitions = {path.stem: read(path) for path in machine.HOME.glob('*.json') if path.name != REGISTRY_FILE}
         # A profile that names the models it loads is a configuration, and every one has to be
         # registered; everything else in the directory is a model, and it is reachable only because
         # some configuration names it. A file that is neither is a launch nothing renders.
         configurations = {name for name, value in definitions.items() if 'models' in value}
-        self.assertEqual(sorted(configurations), sorted(CONFIGURATIONS))
-        named = {model for name in CONFIGURATIONS for model in profile_file(name)['models']}
+        self.assertEqual(sorted(configurations), sorted(SELECTED))
+        named = {model for name in SELECTED for model in profile_file(name)['models']}
         self.assertEqual(configurations | named, set(definitions),
             'a profile file no configuration names or loads is dead configuration')
-        selectable = [x['profile'] for x in available_profiles(ROOT / 'config')['selectable']]
+        asked = available_profiles(machine.CONFIG, BASELINE['host'])
+        selectable = [x['profile'] for x in asked['selectable']]
         for retired in ('daytime-swift', 'daytime-256', 'nighttime-256', 'nighttime', 'primary'):
             self.assertNotIn(retired, selectable)
-        self.assertEqual(available_profiles(ROOT / 'config')['selectable'][0]['gpu_names'], [])
+        # The cards a registry names are the cards of the machine it was asked of. Nothing in this
+        # revision can fill them in for a machine that has not been asked, and a page that showed cards
+        # it had not been told about would be describing a machine it is not looking at.
+        cards = {name for group in BASELINE['host']['gpu_names'].values() for name in group}
+        self.assertTrue(asked['selectable'][0]['gpu_names'], 'a registry asked of a machine named no card it has')
+        for entry in asked['selectable']:
+            with self.subTest(profile=entry['profile']):
+                self.assertTrue(set(entry['gpu_names']) <= cards,
+                    entry['profile'] + ': the registry names a card this machine does not have')
+                for model in entry['models']:
+                    self.assertTrue(set(model['gpu_names']) <= cards,
+                        model['model'] + ': the registry names a card this machine does not have')
         listed = available_profiles(ROOT / 'config', BASELINE['host'])
         # Each model of a configuration is drawn with the cards it runs on, in the order the file
         # names them: the page reads the cards off this and not out of its own head.
@@ -891,7 +934,7 @@ class RegistryTests(unittest.TestCase):
             [BASELINE['host']['gpu_names']['daytime'], BASELINE['host']['gpu_names']['nighttime']])
 
     def test_registry_publishes_no_host_paths_artifacts_or_checksums(self):
-        registry = available_profiles(ROOT / 'config', BASELINE['host'])
+        registry = available_profiles(machine.CONFIG, BASELINE['host'])
         def check(value):
             if isinstance(value, dict):
                 self.assertTrue({'model_path', 'mmproj_path', 'source', 'sources', 'artifacts',
@@ -906,8 +949,8 @@ class RegistryTests(unittest.TestCase):
 
     def test_cli_list_is_generated_from_the_same_registry(self):
         from runtime.__main__ import listed
-        registry = available_profiles(ROOT / 'config')
-        lines = listed(ROOT / 'config').splitlines()
+        registry = available_profiles(machine.CONFIG, BASELINE['host'])
+        lines = listed(machine.CONFIG, BASELINE['host']).splitlines()
         # One row per configuration, and under it one indented row per model it loads: `list` is the
         # command that answers "what could this machine be doing", and the answer is models -- one,
         # two, or as many as its cards hold -- rather than a configuration with a footnote.
@@ -924,24 +967,26 @@ class RegistryTests(unittest.TestCase):
                     self.assertTrue(row.startswith('    '), row)
                     self.assertIn(model['display_name'], row)
                     self.assertIn('every text GPU of this host' if model['exclusive']
-                        else 'cards unknown', row)
+                        else ' + '.join(model['gpu_names']) or 'cards unknown', row)
                     self.assertIn(', '.join(model['service_ids']) or 'no service ID', row)
         self.assertEqual(at, len(lines), 'the listing says something the registry does not know')
 
     def registry_with(self, name, mutate):
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles' / (name + '.json')
+            config, home, host = machine.tree(Path(tmp))
+            path = home / (name + '.json')
             definition = read(path)
             if mutate is None:
                 path.write_text('{')
             else:
                 mutate(definition); path.write_text(json.dumps(definition))
-            return available_profiles(config)
+            return available_profiles(config, host)
 
     def test_registry_reports_an_unreadable_or_invalid_profile_instead_of_guessing(self):
         with self.subTest(case='unreadable file'):
-            with self.assertRaises(json.JSONDecodeError):
+            # The record names the bodies it offers, so a body the machine cannot read is not a row the
+            # registry may skip: it is a machine that cannot say what it offers.
+            with self.assertRaisesRegex(RuntimeError, 'is not JSON this revision can read'):
                 self.registry_with('qwen27b-q6k-pair', None)
         for name, mutate, expected in [
                 ('qwen27b-q8-pair', lambda definition: definition.update(engine='no-such-engine'), 'unknown engine'),
@@ -964,7 +1009,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         return render(ROOT / 'config', host_for(SOLO), SOLO)
 
     def test_every_argument_is_either_an_environment_variable_or_house_metadata(self):
-        definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
+        definition = read(machine.HOME / (SOLO + '.json'))
         engine = ENGINES[definition['engine']]
         self.assertEqual(engine_interface(engine), 'environment')
         for key in definition['argument_order']:
@@ -975,7 +1020,7 @@ class EnvironmentEngineTests(unittest.TestCase):
                     self.assertIn(key, engine['environment'])
 
     def test_the_service_is_rendered_from_its_own_arguments_and_mounts(self):
-        definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
+        definition = read(machine.HOME / (SOLO + '.json'))
         service = self.bundle()['compose']['services'][STRATA_SOLO]
         self.assertEqual(service['command'], [])
         self.assertEqual(service['entrypoint'], ['./docker-entrypoint.sh'])
@@ -1023,7 +1068,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         bundle = self.bundle()
         service = bundle['compose']['services'][STRATA_SOLO]
         host = host_for(SOLO)
-        text = text_gpus(host, read(ROOT / 'config/profiles' / (SOLO + '.json')))
+        text = text_gpus(host, read(machine.HOME / (SOLO + '.json')))
         self.assertEqual(service['deploy']['resources']['reservations']['devices'][0]['device_ids'],
             [*text, VISION])
         self.assertNotIn(VISION, service['environment']['GPUS'].split(','))
@@ -1037,7 +1082,7 @@ class EnvironmentEngineTests(unittest.TestCase):
 
     def test_a_host_with_no_shared_vision_gpu_renders_the_text_only_model_it_was(self):
         """host.json is the switch, and the profile is the same file whichever way it is set."""
-        definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
+        definition = read(machine.HOME / (SOLO + '.json'))
         service = render(ROOT / 'config', BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
         self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
         self.assertEqual(service['environment']['VISION'], 'no')
@@ -1055,16 +1100,16 @@ class EnvironmentEngineTests(unittest.TestCase):
         # states the preset the card asks for; a profile that states nothing renders nothing, which
         # leaves whatever the last-selected configuration wrote sitting in the workspace.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
+            config, home, host = machine.tree(Path(tmp))
+            service = render(config, host, SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['SAMPLING'], 'thinking')
             self.assertNotIn('VISION_DEVICE', service['environment'])
-            path = config / ('profiles/' + SOLO + '.json')
+            path = home / (SOLO + '.json')
             definition = read(path)
             definition['arguments'].pop('--sampling')
             definition['argument_order'].remove('--sampling')
             path.write_text(json.dumps(definition))
-            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
+            service = render(config, host, SOLO)['compose']['services'][STRATA_SOLO]
             self.assertNotIn('SAMPLING', service['environment'])
 
     def test_a_sampling_preset_the_entry_point_cannot_write_is_refused_before_any_drain(self):
@@ -1075,23 +1120,23 @@ class EnvironmentEngineTests(unittest.TestCase):
         for preset in ('temperature=1.0', '1.0', 'Thinking', 'greedy', '', True):
             with self.subTest(sampling=preset):
                 with tempfile.TemporaryDirectory() as tmp:
-                    config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-                    path = config / ('profiles/' + SOLO + '.json')
+                    config, home, host = machine.tree(Path(tmp))
+                    path = home / (SOLO + '.json')
                     definition = read(path)
                     definition['arguments']['--sampling'] = preset
                     path.write_text(json.dumps(definition))
                     with self.assertRaisesRegex(RuntimeError, '--sampling states'):
-                        render(config, BASELINE['host'], SOLO)
+                        render(config, host, SOLO)
         # And stating nothing at all is the engine's own default, which is what every profile that
         # has never heard of this key gets.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / ('profiles/' + SOLO + '.json')
+            config, home, host = machine.tree(Path(tmp))
+            path = home / (SOLO + '.json')
             definition = read(path)
             definition['arguments'].pop('--sampling')
             definition['argument_order'].remove('--sampling')
             path.write_text(json.dumps(definition))
-            service = render(config, BASELINE['host'], SOLO)['compose']['services'][STRATA_SOLO]
+            service = render(config, host, SOLO)['compose']['services'][STRATA_SOLO]
             self.assertNotIn('SAMPLING', service['environment'])
 
     def test_the_encoder_is_placed_at_the_end_of_whatever_cards_the_container_is_given(self):
@@ -1127,8 +1172,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         # mutually exclusive in one host file, because the solo layout's number was the only one the
         # host could state.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / ('profiles/' + SOLO + '.json')
+            config, home, host = machine.tree(Path(tmp))
+            path = home / (SOLO + '.json')
             definition = read(path)
             definition.pop('exclusive'); definition['gpu_group'] = 'daytime'
             # Half the cards for this model means the other half is somebody's: a configuration that
@@ -1138,13 +1183,16 @@ class EnvironmentEngineTests(unittest.TestCase):
             definition['arguments']['--gpus'] = '0,1'
             definition['container']['environment']['CUDA_VISIBLE_DEVICES'] = '0,1'
             path.write_text(json.dumps(definition))
-            service = render(config, vision_host(), SOLO)['compose']['services'][STRATA_SOLO]
+            service = render(config, vision_host(host), SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2')
             self.assertEqual(service['environment']['VISION_DEVICE'], '2')
             self.assertEqual(service['environment']['GPUS'], '0,1')
             self.assertEqual(service['environment']['VISION'], 'yes')
             # And the solo layout still renders on that same host, at its own number.
-            solo = render(ROOT / 'config', vision_host(), SOLO)['compose']['services'][STRATA_SOLO]
+            # The configuration as its machine keeps it, unedited, on the same host: the two layouts
+            # differ only in what a body says, and a body a machine keeps is the only place either one
+            # is decided.
+            solo = render(machine.CONFIG, vision_host(), SOLO)['compose']['services'][STRATA_SOLO]
             self.assertEqual(solo['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3,4')
             self.assertEqual(solo['environment']['VISION_DEVICE'], '4')
 
@@ -1156,8 +1204,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         # the tool-call switch, the conversation cache and the PLE table -- are the image's, so the
         # rollback drops those lines with it rather than rendering variables nothing in that image reads.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / ('profiles/' + SOLO + '.json')
+            config, home, host = machine.tree(Path(tmp))
+            path = home / (SOLO + '.json')
             definition = read(path)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
@@ -1168,7 +1216,7 @@ class EnvironmentEngineTests(unittest.TestCase):
                          '--conversation-cache-min-free-mib', '--ple-gguf'):
                 with self.subTest(argument=flag):
                     with self.assertRaisesRegex(RuntimeError, flag + ' has no environment variable'):
-                        render(config, vision_host(), SOLO)
+                        render(config, vision_host(host), SOLO)
                     definition['arguments'].pop(flag, None)
                     if flag in definition['argument_order']:
                         definition['argument_order'].remove(flag)
@@ -1178,7 +1226,7 @@ class EnvironmentEngineTests(unittest.TestCase):
                 if key in definition['argument_order']:
                     definition['argument_order'].remove(key)
             path.write_text(json.dumps(definition))
-            bundle = render(config, vision_host(), SOLO)
+            bundle = render(config, vision_host(host), SOLO)
             service = bundle['compose']['services'][STRATA_SOLO]
             self.assertEqual(service['environment']['CUDA_VISIBLE_DEVICES'], '0,1,2,3')
             self.assertEqual(service['environment']['VISION'], 'no')
@@ -1198,8 +1246,8 @@ class EnvironmentEngineTests(unittest.TestCase):
         # beside its resident is that machine's business, and what is under test here is what an image
         # can read and what the contract permits.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            name, definition, path = a_rope_ring(config)
+            config, home, host = machine.tree(Path(tmp))
+            name, definition, path = a_rope_ring(home)
             definition['engine'] = 'strata-296b59d2f73c'
             path.write_text(json.dumps(definition))
             for flag in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
@@ -1208,24 +1256,24 @@ class EnvironmentEngineTests(unittest.TestCase):
                          '--rope-scaling', '--rope-scale', '--yarn-orig-ctx'):
                 with self.subTest(argument=flag):
                     with self.assertRaisesRegex(RuntimeError, flag + ' has no environment variable'):
-                        render(config, vision_host(), name)
+                        render(config, vision_host(host), name)
                     definition['arguments'].pop(flag, None)
                     definition['argument_order'].remove(flag)
                     path.write_text(json.dumps(definition))
             # With every entry-point statement gone the image renders -- the window is what is left
             # of the stretched-window claim, and it is the contract that answers: 262,144 or nothing.
-            bundle = render(config, vision_host(), name)
+            bundle = render(config, vision_host(host), name)
             environment = bundle['compose']['services'][STRATA_SOLO]['environment']
             for variable in ('ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX', 'SAMPLING'):
                 self.assertNotIn(variable, environment)
             definition['context_tokens'] = 262144
             path.write_text(json.dumps(definition))
-            self.assertEqual(render(config, vision_host(), name)['catalog']['context_length'], 262144)
+            self.assertEqual(render(config, vision_host(host), name)['catalog']['context_length'], 262144)
 
     def test_an_exclusive_model_is_published_without_llama_cpp_only_claims(self):
         bundle = self.bundle()
         entry = bundle['catalog']['models'][0]
-        definition = read(ROOT / 'config/profiles' / (SOLO + '.json'))
+        definition = read(machine.HOME / (SOLO + '.json'))
         self.assertEqual(entry['model'], definition['arguments']['--alias'])
         # A model of this machine, so it answers the service IDs a client of this machine sends --
         # including `nighttime`, which it answers itself rather than leaving a client with nothing.
@@ -1279,7 +1327,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertEqual(cfg['ulimits'], {'core': 0, 'memlock': -1})
         self.assertEqual(cfg['stop_grace_period'], '180s')
     def test_the_engine_identity_is_pinned(self):
-        engine = ENGINES[read(ROOT / 'config/profiles' / (SOLO + '.json'))['engine']]
+        engine = ENGINES[read(machine.HOME / (SOLO + '.json'))['engine']]
         self.assertEqual(engine['revision'], '296b59d2f73c8f04a805df29c2fa97655adace78')
         self.assertEqual(engine['tag'], 'local/strata:296b59d2f73c-vision')
         self.assertEqual(engine['release'], 'v0.1.44.1')
@@ -1360,13 +1408,13 @@ class EnvironmentEngineTests(unittest.TestCase):
         # produced it are in the repo: the route-skip verdict is unreadable without the comparator
         # that prints confidence intervals, and the conversation cache is invisible to the benchmark
         # altogether, because a benchmark never lets its own conversations go cold.
-        for profile in sorted(n for n in CONFIGURATIONS if interface_of(n) == 'environment'):
+        for profile in sorted(n for n in SELECTED if interface_of(n) == 'environment'):
             # Derived from the engine interface rather than a list of names: a configuration added
             # tomorrow cannot opt out of carrying the measurement it was built on by not being in a
             # tuple somebody remembered to edit. The date and the percentage are looked for anywhere in
             # a warning, because this house writes a verdict as prose ("STRATA_HC_Q8=1 was measured on
             # 2026-10-14 and reverted: ...") and not as a header format.
-            warnings = read(ROOT / 'config/profiles' / (profile + '.json'))['catalog']['deployment_warnings']
+            warnings = read(machine.HOME / (profile + '.json'))['catalog']['deployment_warnings']
             measured = [w for w in warnings
                         if re.search(r'(?:Measured|measured|tried) on 2026-\d\d-\d\d', w)
                         and re.search(r'[-+]?\d[\d.]*\s*%', w)]
@@ -1399,7 +1447,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         for name in ('REVISION', 'REPOSITORY', 'TRIAL'):
             self.assertIn('ARG ' + name, stage)
         self.assertIn('test -n "$REVISION"', stage)
-        engine = ENGINES[read(ROOT / 'config/profiles' / (SOLO + '.json'))['engine']]
+        engine = ENGINES[read(machine.HOME / (SOLO + '.json'))['engine']]
         self.assertIn('--build-arg REVISION=' + engine['revision'], overlay)
         self.assertIn('--build-arg REPOSITORY=' + engine['repository'], overlay)
 
@@ -1446,7 +1494,7 @@ class EnvironmentEngineTests(unittest.TestCase):
         self.assertTrue(environment, 'no configuration in this tree runs on an engine configured by '
             'the environment, which is what this test is about')
         for name in environment:
-            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+            definition = read(machine.HOME / (name + '.json'))
             container = definition['container']
             reached = {definition['container_name'], *container['networks']['router']['aliases']}
             with self.subTest(profile=name):
@@ -1798,7 +1846,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         self.assertEqual(p['compose']['services'][EVERYDAY], night)
         self.assertEqual(p['catalog']['text_gpu_uuids'], host['gpu_ids']['daytime'])
         self.assertEqual(p['manifest']['services'][0]['parallel_slots'], 1)
-        self.assertNotIn('exclusive', read(ROOT / 'config/profiles' / (probe + '.json')))
+        self.assertNotIn('exclusive', read(machine.HOME / (probe + '.json')))
 
     def test_the_two_card_quant_arm_is_the_probe_with_its_pack_swapped(self):
         """The 3-bit arm of the trial is one artifact set deep from the two-card probe.
@@ -1862,8 +1910,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         # The entry point writes a JSON boolean and the engine starts on nothing else, so the words
         # are closed in source: a profile that invents a third one is refused here, with no drain.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            path = config / 'profiles/flash-next-strata-solo-thinking-recovery.json'
+            config, home, host = machine.tree(Path(tmp))
+            path = home / 'flash-next-strata-solo-thinking-recovery.json'
             definition = read(path)
             for stated in ('maybe', 'true', '1'):
                 with self.subTest(value=stated):
@@ -1871,7 +1919,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                     path.write_text(json.dumps(definition))
                     with self.assertRaisesRegex(RuntimeError,
                             '--tool-call-recovery states ' + stated):
-                        render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
+                        render(config, host, 'flash-next-strata-solo-thinking-recovery')
 
     def test_a_cache_or_table_that_cannot_be_honoured_refuses_before_anything_renders(self):
         """Values on this switch are refused for the shape of the thing they buy, not for spelling.
@@ -1884,9 +1932,9 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         exclusive model is the only thing serving and a refused boot is nothing serving.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            config, home, host = machine.tree(Path(tmp))
             name = 'flash-next-strata-solo-thinking-recovery-cache'
-            path = config / ('profiles/' + name + '.json')
+            path = home / (name + '.json')
             original = read(path)
             for argument, stated, refuses in (
                     ('--conversation-cache-mib', '8GiB', '--conversation-cache-mib states 8GiB'),
@@ -1901,7 +1949,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                     definition['arguments'][argument] = stated
                     path.write_text(json.dumps(definition))
                     with self.assertRaisesRegex(RuntimeError, refuses.replace('-', r'[-]')):
-                        render(config, BASELINE['host'], name)
+                        render(config, host, name)
             # The floor is required by a number and forbidden by nothing: take it out of the
             # configuration that turns the cache on and the budget is an unbounded one.
             definition = json.loads(json.dumps(original))
@@ -1910,10 +1958,10 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError,
                     'states a budget and no [-][-]conversation-cache-min-free-mib'):
-                render(config, BASELINE['host'], name)
+                render(config, host, name)
             # And a refinement is refused on a configuration that has switched the whole thing off,
             # which is where an inherited number would otherwise go unnoticed.
-            off = config / ('profiles/' + RECOVERY + '.json')
+            off = home / (RECOVERY + '.json')
             definition = read(off)
             definition['arguments']['--conversation-cache-slots'] = '4'
             definition['argument_order'].insert(
@@ -1922,7 +1970,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
             off.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError,
                     r'refines a conversation cache this configuration has switched off'):
-                render(config, BASELINE['host'], 'flash-next-strata-solo-thinking-recovery')
+                render(config, host, 'flash-next-strata-solo-thinking-recovery')
 
     def test_a_ring_the_engine_cannot_read_refuses_before_anything_renders(self):
         """The rope statements are refused the way every entry-point fact is: at render, because an
@@ -1933,8 +1981,8 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
         where every rope line is being taken back out."""
 
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            name, original, path = a_rope_ring(config)
+            config, home, host = machine.tree(Path(tmp))
+            name, original, path = a_rope_ring(home)
             for argument, stated, refuses in (
                     ('--rope-scaling', 'ntk', 'rope-scaling states ntk'),
                     ('--rope-scaling', '2.0', 'rope-scaling states 2.0'),
@@ -1948,7 +1996,7 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                     definition['arguments'][argument] = stated
                     path.write_text(json.dumps(definition))
                     with self.assertRaisesRegex(RuntimeError, refuses):
-                        render(config, BASELINE['host'], name)
+                        render(config, host, name)
             for gone in ('--rope-scale', '--yarn-orig-ctx'):
                 definition = json.loads(json.dumps(original))
                 del definition['arguments'][gone]
@@ -1956,14 +2004,14 @@ class AVariantIsOneLineApartFromItsOriginal(unittest.TestCase):
                 path.write_text(json.dumps(definition))
                 with self.subTest(missing=gone):
                     with self.assertRaisesRegex(RuntimeError, '[-][-]' + gone[2:]):
-                        render(config, BASELINE['host'], name)
+                        render(config, host, name)
             # A number beside `off` is a statement about a ring that is being taken back out.
             definition = json.loads(json.dumps(original))
             definition['arguments']['--rope-scaling'] = 'off'
             path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError,
                     'refines a rope scaling this configuration has switched to off'):
-                render(config, BASELINE['host'], name)
+                render(config, host, name)
 
 
 class ServiceIdentityTests(unittest.TestCase):
@@ -1978,7 +2026,7 @@ class ServiceIdentityTests(unittest.TestCase):
         # forbids in a drain, reached here through model identity instead. It is not theoretical: the
         # trial published `aliases: []` from 2026-10-11 until it was given its own alias on 2026-10-13,
         # and the primary client on this machine had no model at all to use while it was selected.
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             catalog = render(ROOT / 'config', host_for(name), name)['catalog']
             with self.subTest(profile=name):
                 # Publication merges the default's entry over the document root, so a client that reads
@@ -2013,8 +2061,8 @@ class ServiceIdentityTests(unittest.TestCase):
         model answers `nighttime` from that model, which is the whole reason it is a configuration and
         not an experiment.
         """
-        for name in CONFIGURATIONS:
-            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+        for name in SELECTED:
+            definition = read(machine.HOME / (name + '.json'))
             catalog = render(ROOT / 'config', host_for(name), name)['catalog']
             published = {alias for model in catalog['models'] for alias in model['aliases']}
             offline = {alias for service in catalog['offline_services'] for alias in service['aliases']}
@@ -2046,7 +2094,7 @@ class ServiceIdentityTests(unittest.TestCase):
         answering a name that meant something specific — but it is only honest because no *other*
         model picked the name up either, which is what this pins for every configuration.
         """
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             with self.subTest(profile=name):
                 catalog = render(ROOT / 'config', host_for(name), name)['catalog']
                 self.assertNotIn('trial', {alias for model in catalog['models'] for alias in model['aliases']})
@@ -2069,7 +2117,7 @@ class ContainerContractTests(unittest.TestCase):
         self.assertEqual(base['ulimits'], {'core': 0}, 'merge must not mutate what it inherited from')
 
     def test_every_service_carries_the_house_container_settings(self):
-        for name in CONFIGURATIONS:
+        for name in SELECTED:
             for service, cfg in render(ROOT / 'config', host_for(name), name)['compose']['services'].items():
                 for key in CONTAINER_CONTRACT:
                     with self.subTest(profile=name, service=service, setting=key):
@@ -2084,12 +2132,12 @@ class ConfigurationNamingTests(unittest.TestCase):
         # loads and the canonical model id is that model's alias, so the old name has to produce
         # byte-identical backends. If this ever differs, a host that renames while running would be
         # drained for a backend that is not the one it already has.
-        self.assertEqual(set(PROFILE_ALIASES.values()) & set(PROFILE_ALIASES), set(),
+        self.assertEqual(set(RENAMED.values()) & set(RENAMED), set(),
             'a rename must land on a current id, never on another alias')
-        for old, new in PROFILE_ALIASES.items():
+        for old, new in RENAMED.items():
             with self.subTest(profile=old):
-                self.assertIn(new, CONFIGURATIONS)
-                self.assertEqual(resolve_profile(old), new)
+                self.assertIn(new, SELECTED)
+                self.assertEqual(resolve_profile(old, machine.CONFIG, BASELINE['host']), new)
                 self.assertEqual(render(ROOT / 'config', host_for(new), old),
                     render(ROOT / 'config', host_for(new), new))
 
@@ -2097,21 +2145,21 @@ class ConfigurationNamingTests(unittest.TestCase):
         # A retired id is not an alias: its backends are described nowhere, so launching one from
         # memory is the drift this house refuses. It says what to use instead, because the operator
         # reading the refusal is the only lever left.
-        for old, replacement in RETIRED_PROFILES.items():
+        for old, replacement in RETIRED.items():
             with self.subTest(profile=old):
-                self.assertNotIn(old, CONFIGURATIONS)
-                self.assertNotIn(old, PROFILE_ALIASES)
-                self.assertIn(replacement, CONFIGURATIONS)
-                message = unknown_profile(old)
+                self.assertNotIn(old, SELECTED)
+                self.assertNotIn(old, RENAMED)
+                self.assertIn(replacement, SELECTED)
+                message = unknown_profile(old, machine.CONFIG, BASELINE['host'])
                 self.assertIn(old, message)
                 self.assertIn(replacement, message)
-                for name in CONFIGURATIONS:
+                for name in SELECTED:
                     self.assertIn(name, message)
         # The default is what a fresh host starts on, so it has to be a configuration and not a name
         # that only resolves by the grace of a transitional table.
-        self.assertIn(DEFAULT_PROFILE, CONFIGURATIONS)
-        self.assertNotIn(DEFAULT_PROFILE, PROFILE_ALIASES)
-        self.assertIn('never-existed', unknown_profile('never-existed'))
+        self.assertIn(STARTS_ON, SELECTED)
+        self.assertNotIn(STARTS_ON, RENAMED)
+        self.assertIn('never-existed', unknown_profile('never-existed', machine.CONFIG, BASELINE['host']))
 
     def test_every_retired_and_renamed_name_says_what_to_use_instead(self):
         # A retired configuration has no backends left to launch, so it refuses -- and the refusal is
@@ -2121,17 +2169,18 @@ class ConfigurationNamingTests(unittest.TestCase):
         # a name cannot be in both, which is how the 2026-10-18 consolidation of the Strata chain from
         # five configurations to two is kept honest: three retired ids and their old pre-rename id all
         # say `flash-next-strata-solo-thinking-recovery`, and none of them resolves by accident.
-        for table in (RETIRED_PROFILES, PROFILE_ALIASES):
+        for table in (RETIRED, RENAMED):
             for retired, replacement in table.items():
                 with self.subTest(name=retired):
-                    self.assertIn(replacement, CONFIGURATIONS,
+                    self.assertIn(replacement, SELECTED,
                         retired + ' points at ' + replacement + ', which is not selectable')
-                    self.assertEqual(resolve_profile(retired) if table is PROFILE_ALIASES else retired,
-                        retired if table is RETIRED_PROFILES else replacement)
-        self.assertFalse(set(RETIRED_PROFILES) & set(PROFILE_ALIASES),
+                    self.assertEqual(resolve_profile(retired, machine.CONFIG, BASELINE['host'])
+                        if table is RENAMED else retired,
+                        retired if table is RETIRED else replacement)
+        self.assertFalse(set(RETIRED) & set(RENAMED),
             'a name cannot both refuse and resolve')
-        self.assertEqual(DEFAULT_PROFILE, CONFIGURATIONS[0] if DEFAULT_PROFILE in PROFILE_ALIASES
-            else DEFAULT_PROFILE)
+        self.assertEqual(STARTS_ON, SELECTED[0] if STARTS_ON in RENAMED
+            else STARTS_ON)
 
     def test_every_engine_is_used_and_nothing_is_configured_by_an_absent_one(self):
         # A profile naming an engine that is not registered fails at render, and an engine nothing
@@ -2143,7 +2192,7 @@ class ConfigurationNamingTests(unittest.TestCase):
         rollback = {'strata-7695859aa13a', 'strata-296b59d2f73c'}
         used = set()
         for name in DEFINITIONS:
-            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+            definition = read(machine.HOME / (name + '.json'))
             self.assertIn(definition['engine'], engines, name + ' names an engine that is not registered')
             used.add(definition['engine'])
         self.assertEqual(set(engines) - used, rollback,
@@ -2155,7 +2204,7 @@ class ConfigurationNamingTests(unittest.TestCase):
         # router's model list and in a terminal, and asks the same question each time: which window.
         for name in DEFINITIONS:
             with self.subTest(profile=name):
-                definition = read(ROOT / 'config' / 'profiles' / (name + '.json'))
+                definition = read(machine.HOME / (name + '.json'))
                 self.assertEqual(default_name(definition),
                     definition['display_name'] + ' (' + str(definition['context_tokens'] // 1024) + 'K)')
                 self.assertEqual(display_name(definition, {}), default_name(definition))
@@ -2181,7 +2230,7 @@ class ConfigurationNamingTests(unittest.TestCase):
         # what it is called, with the machine in front and nothing between it and the model.
         for name in DEFINITIONS:
             with self.subTest(profile=name):
-                definition = read(ROOT / 'config/profiles' / (name + '.json'))
+                definition = read(machine.HOME / (name + '.json'))
                 produced = default_name(definition, {'host_id': ROSALINA, 'display_name': 'Rosalina'})
                 self.assertTrue(produced.startswith('Rosalina: ' + definition['display_name'] + ' ('),
                     produced)
@@ -2232,10 +2281,10 @@ class ConfigurationNamingTests(unittest.TestCase):
         # separate the arms.
         host = deployed(vision_host(), ROSALINA)
         for profile in SELECTABLE:
-            machine = host_for(profile)
+            measured_on = host_for(profile)
             with self.subTest(profile=profile):
-                published = catalog_names(ROOT / 'config', machine, {}, profile)
-                rendered = render(ROOT / 'config', machine, profile)['catalog']
+                published = catalog_names(machine.CONFIG, measured_on, {}, profile)
+                rendered = render(machine.CONFIG, measured_on, profile)['catalog']
                 self.assertEqual(published, {model['model']: model['display_name']
                     for model in rendered['models']})
         # The arms are what this names, and not the names. Two configurations of one model id are the
@@ -2249,7 +2298,7 @@ class ConfigurationNamingTests(unittest.TestCase):
             'backend_kind', 'input_modalities')
         arms = {}
         for profile in SELECTABLE:
-            for model in render(ROOT / 'config', host_for(profile), profile)['catalog']['models']:
+            for model in render(machine.CONFIG, host_for(profile), profile)['catalog']['models']:
                 arms.setdefault(model['model'], []).append(
                     (profile, {key: model[key] for key in launch_of}, model['display_name']))
         for model, launches in sorted(arms.items()):
@@ -2267,17 +2316,17 @@ class ConfigurationNamingTests(unittest.TestCase):
         for profile in SELECTABLE:
             model = NAMED[profile][0]
             with self.subTest(profile=profile):
-                self.assertEqual(catalog_names(ROOT / 'config', host_for(profile),
+                self.assertEqual(catalog_names(machine.CONFIG, host_for(profile),
                     {model: 'Workhorse'}, profile)[model], 'Workhorse')
         # A bundle whose configuration has since left the registry is published with the registry's
         # answer rather than a refusal: coming back is not the moment to argue about a name.
-        self.assertIn('qwen3.8-flash-next-ud-iq4_xs', catalog_names(ROOT / 'config', host, {}, 'retired-yesterday'))
+        self.assertIn('qwen3.8-flash-next-ud-iq4_xs', catalog_names(machine.CONFIG, host, {}, 'retired-yesterday'))
         # An operator alias still outranks the launch, because a retired name must not come back with a
         # restoration of a bundle rendered before it was retired.
         for profile in SELECTABLE:
             model = NAMED[profile][0]
             with self.subTest(profile=profile):
-                self.assertEqual(catalog_names(ROOT / 'config', host_for(profile),
+                self.assertEqual(catalog_names(machine.CONFIG, host_for(profile),
                     {model: 'Workhorse'}, profile)[model], 'Workhorse')
         # A bundle whose configuration has since left the registry is published with the registry's
         # answer rather than a refusal: coming back is not the moment to argue about a name.
@@ -2303,7 +2352,7 @@ class ConfigurationNamingTests(unittest.TestCase):
         self.assertNotEqual(named['config_sha256'], plain['config_sha256'])
 
     def test_an_alias_is_refused_with_the_rule_it_broke(self):
-        nameable = nameable_models(ROOT / 'config')
+        nameable = nameable_models(machine.CONFIG, BASELINE['host'])
         coding = 'qwen3.8-27b-q8_0-tensor-next'
         self.assertEqual(clean_alias(coding, '  Workhorse  ', nameable), 'Workhorse')
         self.assertIsNone(clean_alias(coding, '   ', nameable))
@@ -2335,7 +2384,7 @@ class ConfigurationNamingTests(unittest.TestCase):
             path.write_text('{"aliases": ["not", "a", "map"]}')
             aliases, note = read_aliases(path)
             self.assertEqual(aliases, {}); self.assertIn('malformed', note)
-            nameable = nameable_models(ROOT / 'config')
+            nameable = nameable_models(machine.CONFIG, BASELINE['host'])
             atomic_json(path, {'version': ALIASES_VERSION, 'aliases': {
                 'qwen3.8-27b-q8_0-tensor-next': '  Workhorse  ', 'gone-today': 'Ghost',
                 'qwen3.8-27b-abliterated-q6_k': '   '}})
@@ -2387,8 +2436,8 @@ class MoreThanOneMachineTests(unittest.TestCase):
     def config_with(self, name, **changes):
         """The shipped configuration with one definition changed, in a tree of its own."""
         tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp)
-        config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-        path = config / 'profiles' / (name + '.json')
+        config, home, host = machine.tree(Path(tmp))
+        path = home / (name + '.json')
         definition = read(path)
         for key, value in changes.items():
             if value is None:
@@ -2396,14 +2445,14 @@ class MoreThanOneMachineTests(unittest.TestCase):
             else:
                 definition[key] = value
         path.write_text(json.dumps(definition))
-        return config
+        return config, home, host
 
     def test_every_shipped_definition_names_the_machine_it_runs_on(self):
         # Nothing ships unscoped, and the split is now a real one: this is where the shipped set says
         # which machine each launch was measured on, so a definition that grows a second host has to
         # be changed here as well as there.
         for name in DEFINITIONS:
-            definition = read(ROOT / 'config/profiles' / (name + '.json'))
+            definition = read(machine.HOME / (name + '.json'))
             with self.subTest(profile=name):
                 self.assertTrue(definition['hosts'], name + ' names no machine at all')
                 self.assertEqual(belongs_to_host(definition, second_machine(host_id=ROSALINA)),
@@ -2411,8 +2460,8 @@ class MoreThanOneMachineTests(unittest.TestCase):
                 self.assertEqual(belongs_to_host(definition, second_machine(host_id=DAISY)),
                     DAISY in definition['hosts'],
                     name + ' belongs to the machine it was measured on and to no other')
-        self.assertEqual([name for name in CONFIGURATIONS if DAISY in
-                read(ROOT / 'config/profiles' / (name + '.json'))['hosts']],
+        self.assertEqual([name for name in SELECTED if DAISY in
+                read(machine.HOME / (name + '.json'))['hosts']],
             ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'],
             'The second machine has the four configurations it has been measured for, the last three '
             'measured there on 2026-10-25; a launch nobody has run there is not something it is offered')
@@ -2421,20 +2470,21 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # A default of "every machine" is how a configuration ends up rendered on hardware it was
         # never measured on, which is the failure this whole boundary exists to make impossible.
         for change in ({'hosts': None}, {'hosts': 'rosalina'}, {'hosts': []}, {'hosts': ['Rosalina']}):
+            config, _, host = self.config_with('qwen27b-q8-pair', **change)
             with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, 'hosts must state'):
-                render(self.config_with('qwen27b-q8-pair', **change), BASELINE['host'], 'qwen27b-q8-pair')
+                render(config, host, 'qwen27b-q8-pair')
 
     def test_a_host_that_names_no_machine_sees_the_whole_registry(self):
         # The private settings of a host that is already serving are edited by an operator, not by a
         # release: until they name the machine, the release does not filter anything away from them.
-        self.assertEqual([x['profile'] for x in available_profiles(ROOT / 'config')['selectable']],
-            list(CONFIGURATIONS))
+        self.assertEqual([x['profile'] for x in available_profiles(machine.CONFIG, BASELINE['host'])['selectable']],
+            list(SELECTED))
         self.assertEqual([x['profile'] for x in
-            available_profiles(ROOT / 'config', BASELINE['host'])['selectable']], list(CONFIGURATIONS))
-        self.assertEqual(default_profile(ROOT / 'config', BASELINE['host']), DEFAULT_PROFILE)
+            available_profiles(machine.CONFIG, BASELINE['host'])['selectable']], list(SELECTED))
+        self.assertEqual(default_profile(machine.CONFIG, BASELINE['host']), STARTS_ON)
 
     def test_a_named_host_sees_only_the_configurations_that_name_it_back(self):
-        registry = available_profiles(ROOT / 'config', second_machine())
+        registry = available_profiles(machine.CONFIG, second_machine())
         self.assertEqual([x['profile'] for x in registry['selectable']],
             ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc',
                 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'],
@@ -2444,23 +2494,25 @@ class MoreThanOneMachineTests(unittest.TestCase):
             'a machine is shown the models of the configurations it names, and no others')
         # Scoping one of Rosalina's launches to this machine *adds* it: the machine's own configuration
         # does not make way for it, and the order is the registry's, which is the order the page shows.
-        self.assertEqual(configurations_for(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']),
-            second_machine()), (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'))
+        config, home, _ = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'])
+        self.assertEqual(configurations_for(config, machine.stating(second_machine(), home)),
+            (self.TWO_CARD_SOLO, 'flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'))
 
     def test_a_host_whose_registry_is_empty_says_so(self):
         with self.assertRaisesRegex(RuntimeError, 'No configuration of this machine offers this host'):
-            default_profile(ROOT / 'config', second_machine(host_id='no-machine-claims-this-one'))
+            default_profile(machine.CONFIG, second_machine(host_id='no-machine-claims-this-one'))
 
     def test_another_machines_configuration_refuses_to_render_and_names_both(self):
         with self.assertRaisesRegex(RuntimeError,
                 r"qwen27b-q8-pair is a configuration of 'rosalina', and this host is 'daisy'"):
-            render(ROOT / 'config', second_machine(), 'qwen27b-q8-pair')
+            render(machine.CONFIG, second_machine(), 'qwen27b-q8-pair')
 
     def test_a_one_pair_host_runs_a_solo_configuration_across_its_two_cards(self):
         # The whole point of the boundary: not a degraded Rosalina, a configuration of this machine.
-        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all',
-            models=[self.TWO_CARD_SOLO])
-        bundle = render(config, second_machine(), self.TWO_CARD_SOLO)
+        config, home, _ = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True,
+            gpu_group='all', models=[self.TWO_CARD_SOLO])
+        daisy = machine.stating(second_machine(), home)
+        bundle = render(config, daisy, self.TWO_CARD_SOLO)
         self.assertEqual(list(bundle['compose']['services']), [STRATA_PAIR])
         self.assertEqual([s['service'] for s in bundle['manifest']['services']], [STRATA_PAIR])
         service = bundle['compose']['services'][STRATA_PAIR]
@@ -2492,39 +2544,41 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # Same definition, `exclusive` left off: it names two models again, and two models need two
         # text pairs, which this machine does not have. It refuses twice over, and the first refusal
         # is the one that names the machine: the other model it names is a launch of the other host.
+        config, home, _ = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'])
         with self.assertRaisesRegex(RuntimeError, 'cannot bring another machine'):
-            render(self.config_with(self.TWO_CARD_SOLO, hosts=['daisy']), second_machine(),
-                self.TWO_CARD_SOLO)
+            render(config, machine.stating(second_machine(), home), self.TWO_CARD_SOLO)
         # And with the other model scoped to this machine as well, so neither is foreign, the card
         # shortage still refuses: a host states the GPU groups it has, and this one has one.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
+            config, home, host = machine.tree(Path(tmp))
             for name in (self.TWO_CARD_SOLO, EVERYDAY_FILE):
-                path = config / 'profiles' / (name + '.json')
+                path = home / (name + '.json')
                 definition = read(path); definition['hosts'] = ['daisy']
                 path.write_text(json.dumps(definition))
             with self.assertRaisesRegex(RuntimeError, 'declares no "nighttime" GPU group'):
-                render(config, second_machine(), self.TWO_CARD_SOLO)
+                render(config, machine.stating(second_machine(), home), self.TWO_CARD_SOLO)
 
     def test_a_four_card_launch_refuses_a_host_with_two_cards(self):
         # The guard the two-card trial was the argument for: the container would have booted, been
         # healthy on its own health check, and asked the engine for cards it cannot see.
-        config = self.config_with(SOLO, hosts=['daisy'])
+        config, home, _ = self.config_with(SOLO, hosts=['daisy'])
         with self.assertRaisesRegex(RuntimeError, r'--gpus must name the text cards in the order'):
-            render(config, second_machine(), SOLO)
+            render(config, machine.stating(second_machine(), home), SOLO)
 
     def test_an_image_without_sass_for_these_cards_is_refused_where_it_is_rendered(self):
-        config = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True, gpu_group='all',
-            models=[self.TWO_CARD_SOLO])
+        config, home, _ = self.config_with(self.TWO_CARD_SOLO, hosts=['daisy'], exclusive=True,
+            gpu_group='all', models=[self.TWO_CARD_SOLO])
+        def asked(**changes):
+            return machine.stating(second_machine(**changes), home)
         with self.assertRaisesRegex(RuntimeError, 'carries SASS for CUDA 86/89'):
-            render(config, second_machine(gpu_architectures=['75']), self.TWO_CARD_SOLO)
+            render(config, asked(gpu_architectures=['75']), self.TWO_CARD_SOLO)
         # A host that does not state its cards gets no check it cannot answer -- and states them in
         # the form an engine states them when it does.
-        self.assertEqual(len(render(config, second_machine(gpu_architectures=None),
+        self.assertEqual(len(render(config, asked(gpu_architectures=None),
             self.TWO_CARD_SOLO)['compose']['services']), 1)
         for bad in ('75', [], ['Turing']):
             with self.subTest(architectures=bad), self.assertRaisesRegex(RuntimeError, 'gpu_architectures'):
-                render(config, second_machine(gpu_architectures=bad), self.TWO_CARD_SOLO)
+                render(config, asked(gpu_architectures=bad), self.TWO_CARD_SOLO)
 
     def test_the_second_machine_runs_the_shape_that_was_measured_on_it(self):
         # Each of these is a measurement and not a preference, and the suite above would stay green if
@@ -2533,7 +2587,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # the cache budget is off because the pack pins 40 GiB of this machine's 60.7; the projector is
         # not mounted because this image was built with no encoder in it; and the service ID is this
         # machine's own name because two machines cannot both answer `daytime` to one router.
-        bundle = render(ROOT / 'config', second_machine(gpu_architectures=['75']),
+        bundle = render(machine.CONFIG, second_machine(gpu_architectures=['75']),
             self.DAISY_CONFIGURATION)
         service = bundle['compose']['services'][STRATA_DAISY]
         environment = service['environment']
@@ -2558,9 +2612,10 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # And the image it runs is the one with SASS this machine can execute: the tag in service on the
         # four-GPU host is refused here by name, which is the guard a second machine needs and the one
         # nothing in the launch itself would ever have noticed.
-        config = self.config_with(self.DAISY_CONFIGURATION, engine='strata-vision-296b59d2f73c')
+        config, home, _ = self.config_with(self.DAISY_CONFIGURATION, engine='strata-vision-296b59d2f73c')
         with self.assertRaisesRegex(RuntimeError, 'carries SASS for'):
-            render(config, second_machine(gpu_architectures=['75']), self.DAISY_CONFIGURATION)
+            render(config, machine.stating(second_machine(gpu_architectures=['75']), home),
+                self.DAISY_CONFIGURATION)
 
     def test_a_model_no_configuration_loads_is_not_offered_to_this_host(self):
         # A model is offered to a host because a configuration of that host names it, and for no other
@@ -2568,26 +2623,26 @@ class MoreThanOneMachineTests(unittest.TestCase):
         # this machine can select loads it, and a page that drew it anyway would be drawing a launch
         # an operator could never start.
         from runtime.__main__ import listed
-        machine = 'a-machine-of-its-own'
+        machine_id = 'a-machine-of-its-own'
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / 'config'; shutil.copytree(ROOT / 'config', config)
-            for name, changes in ((self.TWO_CARD_SOLO, {'hosts': [machine], 'exclusive': True,
+            config, home, host = machine.tree(Path(tmp))
+            for name, changes in ((self.TWO_CARD_SOLO, {'hosts': [machine_id], 'exclusive': True,
                     'gpu_group': 'all', 'models': [self.TWO_CARD_SOLO]}),
-                    (EVERYDAY_FILE, {'hosts': [machine]})):
-                path = config / 'profiles' / (name + '.json')
+                    (EVERYDAY_FILE, {'hosts': [machine_id]})):
+                path = home / (name + '.json')
                 definition = read(path); definition.update(changes)
                 path.write_text(json.dumps(definition))
-            registry = available_profiles(config, second_machine(host_id=machine))
+            registry = available_profiles(config, machine.stating(second_machine(host_id=machine_id), home))
             self.assertEqual([x['profile'] for x in registry['selectable']], [self.TWO_CARD_SOLO])
             self.assertEqual([[m['model'] for m in x['models']] for x in registry['selectable']],
                 [[STRATA_PAIR]])
-            rows = listed(config, second_machine(host_id=machine)).splitlines()
+            rows = listed(config, machine.stating(second_machine(host_id=machine_id), home)).splitlines()
             self.assertEqual(len(rows), 2,
                 'a model no configuration of this host names is listed as if it ran: ' + repr(rows))
             row = rows[1]
             self.assertTrue(row.startswith('    '), row)
             self.assertIn(registry['selectable'][0]['models'][0]['display_name'], row)
-            self.assertNotIn(read(config / 'profiles/everyday.json')['display_name'], '\n'.join(rows),
+            self.assertNotIn(read(home / 'everyday.json')['display_name'], '\n'.join(rows),
                 'the abliterated model is scoped to this machine and loads on nothing it can select')
 
     def test_the_cli_listing_is_the_host_s_own(self):
@@ -2596,7 +2651,7 @@ class MoreThanOneMachineTests(unittest.TestCase):
         def blocks(host=None):
             # A listing is a row per configuration with one indented row per model under it.
             rows, current = [], None
-            for line in listed(ROOT / 'config', host).splitlines():
+            for line in listed(machine.CONFIG, host if host is not None else BASELINE['host']).splitlines():
                 if line.startswith(' '):
                     current.append(line)
                 else:
@@ -2604,32 +2659,32 @@ class MoreThanOneMachineTests(unittest.TestCase):
                     rows.append(current)
             return rows
 
-        machine = blocks(second_machine())
-        self.assertEqual([block[0].split(':')[0] for block in machine],
+        listed_rows = blocks(second_machine())
+        self.assertEqual([block[0].split(':')[0] for block in listed_rows],
             ['flash-next-strata-iq3-xxs-daisy', 'flash-next-strata-iq3-xxs-daisy-tc', 'flash-next-strata-iq3-xxs-daisy-128k', 'flash-next-strata-iq3-s-daisy'])
-        self.assertEqual(len(machine[0]), 2, 'a configuration is listed with the models it loads')
-        self.assertIn('every text GPU of this host', machine[0][1])
-        self.assertIn('daisy', machine[0][1], 'the service ID a client of this machine sends')
+        self.assertEqual(len(listed_rows[0]), 2, 'a configuration is listed with the models it loads')
+        self.assertIn('every text GPU of this host', listed_rows[0][1])
+        self.assertIn('daisy', listed_rows[0][1], 'the service ID a client of this machine sends')
         self.assertEqual(blocks(second_machine(host_id='no-machine-claims-this-one')), [])
         for block in blocks():
             name = block[0].split(':')[0]
             self.assertEqual(len(block) - 1, len(NAMED[name]),
                 name + ' is listed with ' + str(len(block) - 1) + ' models and loads '
                 + str(len(NAMED[name])))
-        self.assertEqual([block[0].split(':')[0] for block in blocks()], list(CONFIGURATIONS))
+        self.assertEqual([block[0].split(':')[0] for block in blocks()], list(SELECTED))
 
 
 class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
-    """A machine's record of its own configurations, and what moving them into its home costs.
+    """A machine's record of its own configurations, and what the source no longer has to say about them.
 
-    `.state/host.json` states `profiles_dir`, and that directory — which rides along with the state
+    `.state/host.json` states `profiles_dir`, and that directory -- which rides along with the state
     directory, is Git-excluded like every other fact about the box, and is mounted at the same path inside
-    the container as outside it — holds the body of every configuration the machine offers, plus
+    the container as outside it -- holds the body of every configuration the machine offers, plus
     `registry.json`: which ones it offers, in the order it offers them, what it renamed, what it retired,
-    and what it starts on when no release has been recorded. `config/profiles` in this checkout is where
-    they live until the machine says otherwise, which is why the move costs nothing: a home that states no
-    record of its own is given precisely the answer it has always been given, and a bundle that does not
-    change is a bundle that spends no drain.
+    and what it starts on when no release has been recorded. This revision ships no bodies of its own, so a
+    record is not an override of a list shipped in source -- it is the only list there is. That is why a
+    home with no record of its own refuses instead of guessing, and why a name a machine retires is a name
+    nobody can render here any more.
 
     The refusals here are the design. A record is allowed to be wrong about its own machine, and a wrong
     record about which configurations exist is not something a runtime can render around.
@@ -2651,22 +2706,21 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         return sorted(kept)
 
     def home_of(self, names=SELECTABLE, record=True):
-        """The shipped configuration tree with its configurations moved into a machine's own home.
+        """A machine whose configurations live in its own home, byte for byte the same launches.
 
-        Byte for byte, because the point of the move is that nothing about a launch changes. The revision's
-        own `config/profiles` is then removed, so a read that slips back to the checkout finds no body and
-        says so.
+        The bodies are copied out of the fixture machine's home -- nothing about a launch changes -- and the
+        source half of the tree keeps only what source keeps: the engines. A record is written beside the
+        bodies unless a test means to leave it unwritten.
         """
         tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
         config, home = tmp / 'config', tmp / 'machine' / 'profiles'
-        shutil.copytree(ROOT / 'config', config)
+        shutil.copytree(machine.CONFIG, config)
         home.mkdir(parents=True)
         for name in self.bodies_of(names):
-            shutil.copyfile(ROOT / 'config/profiles' / (name + '.json'), home / (name + '.json'))
+            shutil.copyfile(machine.HOME / (name + '.json'), home / (name + '.json'))
         if record is not None:
             stated = {'schema_version': PROFILES_VERSION, 'profiles': list(names)} if record is True else record
             (home / REGISTRY_FILE).write_text(json.dumps(stated))
-        shutil.rmtree(config / 'profiles')
         return config, home
 
     def machine_host(self, profile, home, **changes):
@@ -2679,7 +2733,7 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         config, home = self.home_of()
         for name in SELECTABLE:
             with self.subTest(profile=name):
-                before = render(ROOT / 'config', host_for(name), name)
+                before = render(machine.CONFIG, host_for(name), name)
                 after = render(config, self.machine_host(name, home), name)
                 # The same bundle, byte for byte: the same argv, the same mounts, the same catalog. A
                 # bundle that differs is a bundle that drains the workload reading it, and moving a
@@ -2691,11 +2745,11 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         order = list(reversed(SELECTABLE))
         self.assertNotEqual(order, sorted(order), 'the record here is deliberately not the order files sort in')
         config, home = self.home_of(names=order)
-        for machine, profile in ((ROSALINA, 'qwen27b-q8-pair'), (DAISY, DAISY_PROFILE)):
-            with self.subTest(host=machine):
-                host = self.machine_host(profile, home, host_id=machine)
+        for machine_id, profile in ((ROSALINA, 'qwen27b-q8-pair'), (DAISY, DAISY_PROFILE)):
+            with self.subTest(host=machine_id):
+                host = self.machine_host(profile, home, host_id=machine_id)
                 self.assertEqual([row['profile'] for row in available_profiles(config, host)['selectable']],
-                    [name for name in order if machine in profile_file(name)['hosts']],
+                    [name for name in order if machine_id in profile_file(name)['hosts']],
                     'the picker and the listing read the machine\'s order, not an accident of how '
                     'files sort')
         self.assertEqual(default_profile(config, self.machine_host('qwen27b-q8-pair', home, host_id=ROSALINA)),
@@ -2707,33 +2761,47 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         for name in SELECTABLE:
             with self.subTest(profile=name):
                 self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
-                    digest(render(ROOT / 'config', host_for(name), name)),
+                    digest(render(machine.CONFIG, host_for(name), name)),
                     name + ': this machine stated its own order, and a launch paid for it')
 
-    def test_a_home_that_states_no_record_of_its_own_gets_the_answer_it_always_had(self):
+    def test_a_home_that_kept_bodies_but_wrote_nothing_down_refuses(self):
+        # The other half of a move is the part that used to be optional. Bodies with no record are a home
+        # that knows what it has and not what it offers, and a runtime that guessed -- from a list this
+        # revision no longer carries -- would be choosing which configurations a machine serves out of the
+        # order the files happened to be copied in.
         config, home = self.home_of(record=None)
         host = dict(BASELINE['host'], profiles_dir=str(home))
-        self.assertFalse(machine_registry(config, host)['machine_owned'])
-        self.assertEqual(configurations_for(config, host), CONFIGURATIONS)
-        self.assertEqual(default_profile(config, host), DEFAULT_PROFILE)
-        self.assertEqual(resolve_profile('qwen27b-q8-with-nighttime', config, host),
-            PROFILE_ALIASES['qwen27b-q8-with-nighttime'], 'the renames a revision states are still the '
-            'renames of a machine that has not written down its own')
-        for name in SELECTABLE:
-            with self.subTest(profile=name):
-                self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
-                    digest(render(ROOT / 'config', host_for(name), name)))
-        # Bodies moved and no record is a half-finished move, and it is the half that can fail loudly: a
-        # name the revision offers with no body in the home this machine named refuses, naming the path it
-        # looked at.
-        (home / (DAISY_PROFILE + '.json')).unlink()
-        with self.assertRaisesRegex(RuntimeError, 'no configuration body at ' + str(home / (DAISY_PROFILE + '.json'))):
-            profile_body(config, self.machine_host(DAISY_PROFILE, home), DAISY_PROFILE)
+        for act in (configurations_for, available_profiles):
+            with self.subTest(act=act.__name__), self.assertRaisesRegex(RuntimeError,
+                    REGISTRY_FILE + ' is not there at ' + str(home)):
+                act(config, host)
+        with self.assertRaisesRegex(RuntimeError, REGISTRY_FILE):
+            # The refusal says what to write, because this is a machine that has already done the half it
+            # can see and has to be told the half it cannot.
+            render(config, host, 'qwen27b-q8-pair')
+        self.assertTrue((home / (DAISY_PROFILE + '.json')).exists(),
+            'the bodies are there; it is the record of what they are for that is missing')
 
     def test_a_record_that_offers_a_name_with_no_body_beside_it_refuses(self):
         config, home = self.home_of(record={'schema_version': PROFILES_VERSION,
             'profiles': [*SELECTABLE, 'a-configuration-nobody-wrote']})
         with self.assertRaisesRegex(RuntimeError, 'a-configuration-nobody-wrote.*is not there'):
+            configurations_for(config, self.machine_host('qwen27b-q8-pair', home))
+
+    def test_a_body_that_nothing_in_the_record_explains_refuses(self):
+        # The other direction, and the one a machine reaches on its own: a body a machine keeps is either a
+        # configuration it offers or a model one of them loads. Anything else is a launch that was written
+        # and never decided, and the record is what says which of the three it was.
+        config, home = self.home_of()
+        # The record is a file in the directory it records, and it is not itself a configuration: the home
+        # answers with the configurations its record offers, and with no others.
+        rosalina = [name for name in SELECTABLE if ROSALINA in profile_file(name)['hosts']]
+        self.assertEqual(configurations_for(config, self.machine_host('qwen27b-q8-pair', home)), tuple(rosalina),
+            'a machine named in the host is offered its own configurations, in the order it wrote them down')
+        orphan = json.loads((home / (self.YARN_REPLACEMENT + '.json')).read_text())
+        orphan['id'] = 'a-launch-nobody-offers'
+        (home / 'a-launch-nobody-offers.json').write_text(json.dumps(orphan))
+        with self.assertRaisesRegex(RuntimeError, 'a-launch-nobody-offers.*nothing there says what it is for'):
             configurations_for(config, self.machine_host('qwen27b-q8-pair', home))
 
     def test_every_way_a_machines_own_record_can_be_wrong_refuses(self):
@@ -2743,12 +2811,12 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
             ({**full, 'schema_version': 2}, 'this revision reads version ' + str(PROFILES_VERSION)),
             ({**full, 'schema_version': None}, 'states schema_version null'),
             ({**full, 'profiles': []}, 'non-empty list'),
-            ({**full, 'profiles': [SELECTABLE[0], '   ']}, 'non-empty list'),
-            ({**full, 'profiles': [SELECTABLE[0], SELECTABLE[0]]}, 'more than once'),
+            ({**full, 'profiles': [SELECTED[0], '   ']}, 'non-empty list'),
+            ({**full, 'profiles': [SELECTED[0], SELECTED[0]]}, 'more than once'),
             ({**full, 'renamed': {'an-old-name': 'not-a-configuration-here'}}, 'does not offer'),
             ({**full, 'retired': {'an-old-name': 'not-a-configuration-here'}}, 'does not offer'),
-            ({**full, 'renamed': {SELECTABLE[0]: SELECTABLE[1]}}, 'while also offering it'),
-            ({**full, 'retired': {SELECTABLE[2]: SELECTABLE[3]}}, None),
+            ({**full, 'renamed': {SELECTED[0]: SELECTED[1]}}, 'while also offering it'),
+            ({**full, 'retired': {SELECTED[2]: SELECTED[3]}}, None),
             ({**full, 'renamed': {'an-old-name': 5}}, 'mapping from an old configuration id'),
             ({**full, 'default_profile': 'not-a-configuration-here'}, 'which it does not offer'),
             ({**full, 'default_profile': '   '}, 'is not a configuration id'),
@@ -2768,11 +2836,11 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
     def test_a_directory_that_is_not_a_directory_a_machine_can_mount_refuses(self):
         home = Path(tempfile.mkdtemp())
         for stated in ('profiles', '../profiles', str(home) + '/../elsewhere', '', 5, ['profiles']):
-            config, moved = self.home_of()
+            config, _ = self.home_of()
             with self.subTest(profiles_dir=stated), self.assertRaisesRegex(RuntimeError,
                     'the absolute directory this machine keeps its configurations in'):
                 profiles_home(config, dict(BASELINE['host'], profiles_dir=stated))
-            self.assertEqual(configurations_for(config, dict(BASELINE['host'])), CONFIGURATIONS,
+            self.assertEqual(configurations_for(config, dict(BASELINE['host'])), SELECTED,
                 'the refusal is about the directory a machine named, not about the machine losing its '
                 'configurations')
 
@@ -2786,14 +2854,15 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
             profile_body(config, host, self.YARN_REPLACEMENT)
 
     def test_a_machine_retires_a_configuration_of_its_own_and_costs_nobody_else_a_drain(self):
-        # The worked example: one configuration on this machine, taken out of service where it lives.
+        # The record side of the worked example: what a machine says once a configuration is out of service.
+        # The act of writing that sentence down -- and the refusals that guard it -- is
+        # tests/test_profiles.py; here it is only what a runtime owes a name that is gone.
         names = [name for name in SELECTABLE if name != self.YARN]
         config, home = self.home_of(names=names, record={'schema_version': PROFILES_VERSION,
-            'profiles': names, 'renamed': dict(PROFILE_ALIASES),
+            'profiles': names, 'renamed': dict(RENAMED),
             'retired': {self.YARN: self.YARN_REPLACEMENT}})
         host = self.machine_host(self.YARN_REPLACEMENT, home)
         record = machine_registry(config, host)
-        self.assertTrue(record['machine_owned'])
         self.assertNotIn(self.YARN, record['selectable'])
         self.assertEqual(record['retired'], {self.YARN: self.YARN_REPLACEMENT})
         with self.assertRaisesRegex(RuntimeError, self.YARN + ' was retired; select ' + self.YARN_REPLACEMENT):
@@ -2801,16 +2870,18 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         # A retirement is not a rename: the retired id keeps refusing rather than quietly becoming the
         # configuration that replaced it, which is what keeps a name out of service out of service.
         self.assertEqual(resolve_profile(self.YARN, config, host), self.YARN)
-        self.assertIn(self.YARN, configurations_for(ROOT / 'config', host_for(self.YARN)))
+        # And retiring it here is retiring it here. Another machine that kept the same launch, on the same
+        # engine, measured on its own cards, still offers it -- which is the whole reason the list moved.
+        self.assertIn(self.YARN, configurations_for(machine.CONFIG, machine.HOST))
         for name in names:
             with self.subTest(profile=name):
                 self.assertEqual(digest(render(config, self.machine_host(name, home), name)),
-                    digest(render(ROOT / 'config', host_for(name), name)),
+                    digest(render(machine.CONFIG, host_for(name), name)),
                     name + ' is the same launch it was; a machine retiring its own configuration does not '
                     'touch another machine\'s or another configuration of its own')
 
     def test_a_machine_that_has_not_written_down_a_rename_does_not_resolve_it(self):
-        # The record replaces what the revision states rather than adding to it. That is the point of a
+        # The record replaces what a revision used to state rather than adding to it. That is the point of a
         # record and not a merge: a machine that writes its own answers owns them, and a rename nobody
         # wrote down is a rename this machine does not have.
         config, home = self.home_of()
@@ -2819,25 +2890,25 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         self.assertEqual(resolve_profile('qwen27b-q8-with-nighttime', config, host), 'qwen27b-q8-with-nighttime')
         with self.assertRaisesRegex(RuntimeError, 'Unknown or retired configuration'):
             render(config, host, 'qwen27b-q8-with-nighttime')
-        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTABLE),
-            'renamed': dict(PROFILE_ALIASES)})
+        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTED),
+            'renamed': dict(RENAMED)})
         self.assertEqual(render(config, self.machine_host('qwen27b-q8-pair', home), 'qwen27b-q8-with-nighttime'),
-            render(ROOT / 'config', host_for('qwen27b-q8-pair'), 'qwen27b-q8-with-nighttime'),
+            render(machine.CONFIG, host_for('qwen27b-q8-pair'), 'qwen27b-q8-with-nighttime'),
             'written down by the machine, the rename is the rename it was')
 
     def test_a_machine_states_the_configuration_it_starts_on(self):
-        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTABLE),
+        config, home = self.home_of(record={'schema_version': PROFILES_VERSION, 'profiles': list(SELECTED),
             'default_profile': self.TWO_CARD_SOLO})
         self.assertEqual(default_profile(config, self.machine_host(self.TWO_CARD_SOLO, home)),
             self.TWO_CARD_SOLO)
-        own = next(name for name in SELECTABLE if DAISY in profile_file(name)['hosts'])
+        own = next(name for name in SELECTED if DAISY in profile_file(name)['hosts'])
         self.assertEqual(default_profile(config, self.machine_host(DAISY_PROFILE, home)), own,
             'a default is only a default where its hardware exists: the machine that does not run it '
             'starts on the first configuration of its own')
 
-    def test_two_machines_in_one_checkout_keep_their_own_homes_and_their_own_answers(self):
-        def own(machine):
-            return [name for name in SELECTABLE if machine in profile_file(name)['hosts']]
+    def test_two_machines_reading_the_same_source_keep_their_own_homes_and_their_own_answers(self):
+        def own(machine_id):
+            return [name for name in SELECTED if machine_id in profile_file(name)['hosts']]
         rosalina_config, rosalina_home = self.home_of(names=own(ROSALINA))
         daisy_config, daisy_home = self.home_of(names=own(DAISY))
         rosalina, daisy = self.machine_host('qwen27b-q8-pair', rosalina_home), self.machine_host(DAISY_PROFILE, daisy_home)
@@ -2845,32 +2916,41 @@ class AConfigurationLivesOnTheMachineThatKeepsIt(unittest.TestCase):
         self.assertEqual(configurations_for(daisy_config, daisy), tuple(own(DAISY)))
         self.assertFalse((rosalina_home / (DAISY_PROFILE + '.json')).exists(),
             'a machine keeps the bodies of the configurations it offers, and no others')
-        # Nothing in either answer came from the checkout: each tree's `config/profiles` is gone.
-        self.assertFalse((rosalina_config / 'profiles').exists())
         for name, host, config in ((DAISY_PROFILE, rosalina, rosalina_config), ('qwen27b-q8-pair', daisy, daisy_config)):
             with self.subTest(profile=name):
                 with self.assertRaisesRegex(RuntimeError, 'Unknown or retired configuration'):
                     render(config, host, name)
 
-    def test_the_revision_that_ships_no_bodies_at_all_is_the_arrangement_this_describes(self):
-        # A machine that has moved everything reads its own home with nothing left in the checkout to read:
-        # the revision ships the rules and the vocabulary, and the bodies live where the machine lives.
-        tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
-        config, home = tmp / 'config', tmp / 'machine' / 'profiles'
-        config.mkdir(parents=True)
-        for source in (ROOT / 'config').iterdir():
-            if source.is_file():
-                shutil.copyfile(source, config / source.name)
-        home.mkdir(parents=True)
-        for name in self.bodies_of(SELECTABLE):
-            shutil.copyfile(ROOT / 'config/profiles' / (name + '.json'), home / (name + '.json'))
-        (home / REGISTRY_FILE).write_text(json.dumps({'schema_version': PROFILES_VERSION,
-            'profiles': list(SELECTABLE)}))
-        for name in SELECTABLE:
+    def test_the_source_ships_the_engines_and_no_body_of_a_configuration(self):
+        # A configuration is a measurement of one machine -- which cards, which weights, how much of each
+        # fit -- so the only thing this checkout may ship is what is the same on every machine: the engines
+        # a body may boot, and an example of what a machine has to say about itself. A body that crept back
+        # here would be a configuration whose machine is nobody, and a review of one machine's
+        # configurations would be a diff of the household's.
+        self.assertEqual(sorted(path.name for path in machine.CONFIG.glob('*.json')),
+            ['host.example.json', 'host.second-machine.example.json', 'host.shared-vision.example.json',
+             'shared.json', 'undervolt.json'],
+            'the engines a body may boot, the rung table a launch is measured against, and examples of '
+            'what a machine states about itself are the source\'s; everything else in this directory is '
+            'somebody\'s measurement')
+        # The name list is the shape of the claim; this is the claim. A file that states the models a
+        # launch loads, the window it runs with, or which machines it is for, is a body -- and every one
+        # of those facts is one machine's answer about its own cards and weights.
+        for path in sorted(machine.CONFIG.glob('*.json')):
+            with self.subTest(file=path.name):
+                stated = read(path)
+                for fact in ('models', 'context_tokens', 'hosts', 'artifacts', 'engine'):
+                    self.assertNotIn(fact, stated, path.name + ' is shipped with the source and states '
+                        + fact + ', which only the machine a configuration runs on can say')
+        with self.assertRaisesRegex(RuntimeError, 'keeps no list of configurations'):
+            # Asking the checkout -- a host that names no home of its own -- is the question this revision
+            # refuses, and the refusal is the recipe.
+            configurations_for(machine.CONFIG, {name: setting for name, setting in BASELINE['host'].items()
+                if name != 'profiles_dir'})
+        for name in SELECTED:
             with self.subTest(profile=name):
-                host = dict(host_for(name), profiles_dir=str(home))
-                self.assertEqual(digest(render(config, host, name)),
-                    digest(render(ROOT / 'config', host_for(name), name)))
+                self.assertTrue((machine.HOME / (name + '.json')).is_file(),
+                    name + ' is offered by no machine in these tests')
 
 
 def table_with(**changes):

@@ -11,6 +11,7 @@ from runtime.config import PROFILES_VERSION, REGISTRY_FILE, read
 from runtime.migration import WRAPPERS
 from runtime.recovery import export, install_wrappers, model_inventory, stable_state
 from runtime.system import atomic_json, lock
+import machine
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,11 +23,17 @@ class RecoveryTests(unittest.TestCase):
             active = {'revision': 'a' * 40, 'image': 'local/controller:current',
                       'bundle': {'profile': 'qwen27b-q6k-pair'}}
             atomic_json(state / 'active.json', active)
-            atomic_json(state / 'host.json', {'model_root': '/models'})
+            home = state / 'profiles'  # Where this box says it keeps its own configurations.
+            home.mkdir()
+            atomic_json(state / 'host.json', {'model_root': '/models', 'profiles_dir': str(home)})
             (state / 'router-token').write_text('synthetic-private-value')
             (root / '.env').write_text('PRIVATE=config')
             atomic_json(root / 'config/shared.json', {'engines': {}})
-            (root / 'config/profiles').mkdir()
+            # The receipt names the models of the configuration this machine is running, and it reads them
+            # where the machine keeps them. The checkout beside it ships no bodies to inventory.
+            for name in ('qwen27b-q6k-pair', 'everyday'):
+                shutil.copyfile(machine.HOME / (name + '.json'), home / (name + '.json'))
+            atomic_json(home / REGISTRY_FILE, {'schema_version': PROFILES_VERSION, 'profiles': ['qwen27b-q6k-pair']})
             destination = Path(tmp) / 'backup'
             calls = []
             def run(*args, **kwargs):
@@ -102,7 +109,9 @@ class RecoveryTests(unittest.TestCase):
             stable_state(state)
 
     def test_all_profiles_have_unique_artifact_inventory(self):
-        artifacts = model_inventory(ROOT)
+        # Asked of the machine that keeps these configurations -- the one whose bodies and record these
+        # tests are built from -- since the source ships no bodies of its own to inventory.
+        artifacts = model_inventory(ROOT, machine.HOST)
         # The shared-Q4_K_M Flash-Next MTP draft (1,907,151,936 bytes) retired with the paired Flash-Next profiles.
         # The Strata model adds its UD-IQ4_XS revision: three shards, 93,682,584,224 bytes in all,
         # and the two-card 3-bit arm adds ISTA-DASLab's GSQ-RCO IQ3_S: two shards, 83,617,662,656 bytes.
@@ -169,19 +178,35 @@ class RecoveryTests(unittest.TestCase):
             atomic_json(root / 'config/profiles' / 'a-configuration-of-another-machine.json',
                 {'id': 'a-configuration-of-another-machine',
                     'artifacts': [{'path': 'llm/somewhere-else.gguf', 'bytes': 7, 'sha256': 'a' * 64}]})
-            for body in sorted((ROOT / 'config/profiles').glob('*.json')):
-                shutil.copyfile(body, home / body.name)
+            # The machine whose receipt this is: one configuration it offers, and the model body it names
+            # beside it. Nothing else sits in its directory, because nothing else there would be explained.
+            for name in ('qwen27b-q8-pair', 'everyday'):
+                shutil.copyfile(machine.HOME / (name + '.json'), home / (name + '.json'))
             atomic_json(home / REGISTRY_FILE, {'schema_version': PROFILES_VERSION, 'profiles': ['qwen27b-q8-pair']})
-            self.assertEqual(model_inventory(root, {'profiles_dir': str(home)}), model_inventory(ROOT),
-                'the same artifacts, read from the machine instead of from the checkout')
-            self.assertEqual(model_inventory(root), [{'path': 'llm/somewhere-else.gguf', 'bytes': 7,
-                'sha256': 'a' * 64}], 'with no home named, this is still the checkout')
-            # The record beside the bodies says which configurations exist; it declares no launch and
-            # mounts nothing, so it is not a definition an inventory can be built from. A record that
-            # looked like one is skipped rather than adding an artifact nothing can run.
+            asked = model_inventory(root, {'profiles_dir': str(home)})
+            # An inventory is a set of files this machine carries, not a list of mountings: the projector
+            # both of these bodies mount is one item, and the same item twice would say two files can go
+            # away before the configuration that needs it stops working.
+            declared = {}
+            for name in ('qwen27b-q8-pair', 'everyday'):
+                for item in read(machine.HOME / (name + '.json'))['artifacts']:
+                    declared[item['path']] = {k: item[k] for k in ('path', 'bytes', 'sha256')}
+            self.assertEqual({a['path']: a for a in asked}, declared,
+                'the artifacts of the configuration this machine offers and of the models it names, read '
+                'from the machine instead of from the checkout')
+            # A checkout is not a machine. The body beside its config directory is somebody else's, and a
+            # checkout that has written down no answer cannot be asked what it carries: an export that
+            # filed an empty inventory as a receipt would promise a restore with no models in it.
+            with self.assertRaisesRegex(RuntimeError, 'keeps no list of configurations'):
+                model_inventory(root)
+            # The record says which configurations this machine offers, in the fields this revision
+            # understands about it. A record that tried to declare artifacts of its own -- as if a list of
+            # names mounted a file -- is refused where it is read, so an inventory can never be padded with
+            # a model nothing can run.
             atomic_json(home / REGISTRY_FILE, {'schema_version': PROFILES_VERSION, 'profiles': ['qwen27b-q8-pair'],
                 'artifacts': [{'path': 'llm/a-record-mounts-nothing.gguf', 'bytes': 1, 'sha256': 'b' * 64}]})
-            self.assertEqual(model_inventory(root, {'profiles_dir': str(home)}), model_inventory(ROOT))
+            with self.assertRaisesRegex(RuntimeError, 'nothing this revision understands'):
+                model_inventory(root, {'profiles_dir': str(home)})
 
 
 if __name__ == '__main__':

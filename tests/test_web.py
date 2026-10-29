@@ -5,14 +5,18 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from pathlib import Path
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
+import machine
 import test_power
 from models import CODING, CODING_Q6K, EVERYDAY
-from runtime.web import handler
 from runtime.compat import dispatch
+from runtime.system import atomic_json
+from runtime.web import handler
 
 
 class StatusTests(unittest.TestCase):
@@ -91,9 +95,23 @@ class StatusTests(unittest.TestCase):
         self.assertNotIn('.state', note)
 
     def test_compatibility_commands_preserve_profile_selection_and_retire_restore(self):
+        # The wrapper is a command that runs *on* a machine, so it asks the machine what its names mean,
+        # and a machine answers out of the record beside its own bodies. Pointed at no deployment it has
+        # nothing to ask, and it says so rather than guessing from a checkout that keeps no configurations
+        # of its own: these dispatches are made against a deployment whose settings name the machine, its
+        # rules, and the home its configurations live in.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'runtime'; state = root / '.state'
+            config, home, host = machine.tree(root)
+            atomic_json(state / 'host.json', host)
+            self.dispatch = lambda argv: dispatch(argv)
+            with patch.dict(os.environ, {'RUNTIME_CONFIG_DIR': str(config), 'RUNTIME_STATE_DIR': str(state)}):
+                self.preserving_selection_and_naming_what_replaced_a_retirement()
+
+    def preserving_selection_and_naming_what_replaced_a_retirement(self):
         # The legacy home commands for retired configurations name the current ones instead of guessing.
         for retired in ('daytime', 'daytime-27b'):
-            with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-strata-solo'): dispatch([retired])
+            with self.assertRaisesRegex(RuntimeError, 'retired.*flash-next-strata-solo'): self.dispatch([retired])
         # A retired id refuses and says what to select; a renamed id is applied under the id this
         # revision has, so an old habit reaches the backend that exists rather than a description of
         # one that does not. flash-next-strata-160k was the second kind while the configuration it was
@@ -103,16 +121,20 @@ class StatusTests(unittest.TestCase):
         for name in ('flash-next-solo-160k', 'flash-next-strata-160k'):
             with self.subTest(name=name), self.assertRaisesRegex(RuntimeError,
                     'retired.*select flash-next-strata-solo-thinking-recovery'):
-                dispatch([name])
-        self.assertEqual(dispatch(['flash-next-strata-solo-thinking-recovery']), ['apply', '--profile', 'flash-next-strata-solo-thinking-recovery'])
-        self.assertEqual(dispatch(['qwen27b-q6k-pair']), ['apply', '--profile', 'qwen27b-q6k-pair'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-pair']),
+                self.dispatch([name])
+        recovery = 'flash-next-strata-solo-thinking-recovery'
+        self.assertEqual(self.dispatch([recovery]), ['apply', '--profile', recovery])
+        self.assertEqual(self.dispatch(['qwen27b-q6k-pair']), ['apply', '--profile', 'qwen27b-q6k-pair'])
+        self.assertEqual(self.dispatch(['local-ai-config.sh', 'apply', 'qwen27b-q6k-pair']),
             ['apply', '--profile', 'qwen27b-q6k-pair'])
-        self.assertEqual(dispatch(['qwen27b-q6k-pair', 'status']), ['status', '--profile', 'qwen27b-q6k-pair'])
-        with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['daytime-swift'])
-        self.assertEqual(dispatch(['nighttime']), ['apply'])
-        self.assertEqual(dispatch(['local-ai-config.sh', 'show', 'qwen27b-q8-pair']), ['render', '--profile', 'qwen27b-q8-pair'])
-        with self.assertRaisesRegex(RuntimeError, 'retired'): dispatch(['primary', 'rollback'])
+        self.assertEqual(self.dispatch(['qwen27b-q6k-pair', 'status']), ['status', '--profile', 'qwen27b-q6k-pair'])
+        with self.assertRaisesRegex(RuntimeError, 'retired'): self.dispatch(['daytime-swift'])
+        # A resident name is not a configuration name: `nighttime` is a card's worth of service a client
+        # asks a router for, and it outlives whichever configuration loads it, so it dispatches with no
+        # profile attached rather than being looked up in a record that never offered it.
+        self.assertEqual(self.dispatch(['nighttime']), ['apply'])
+        self.assertEqual(self.dispatch(['local-ai-config.sh', 'show', 'qwen27b-q8-pair']), ['render', '--profile', 'qwen27b-q8-pair'])
+        with self.assertRaisesRegex(RuntimeError, 'retired'): self.dispatch(['primary', 'rollback'])
 
 
 try:

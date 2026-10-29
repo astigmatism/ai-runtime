@@ -57,15 +57,15 @@ New router admissions pause during maintenance. Existing active, queued, and dir
 
 After publication, the new controller is recreated with a 150-second health bound. The updater records image/commit/configuration identity and advances the checkout by fast-forward. No command performs Compose `down`, Git reset/stash, global pruning, or volume removal. A controller-only release retains the existing inference containers.
 
-If a new revision retires the configuration currently active on a host, the updater refuses before building the candidate and names the retired configuration and the configurations selectable in that revision. Switch the active configuration to one of them on the deployed revision (runtime page validated transition), then re-run the update. The deployed runtime keeps serving meanwhile; no manual state editing is required. A rename is not a retirement: `PROFILE_ALIASES` maps a renamed id to its new one, so a release whose only crime is renaming the configuration that happens to be running is accepted, while `RETIRED_PROFILES` maps a retired id to its replacement and refuses. A revision that keeps its configurations on the machines that run them states no list at all, and the same check is then asked of the machine: `host.json` names the directory it keeps its bodies in, and a release whose active configuration that machine has taken out of service refuses before the build, naming what the machine offers instead. [A machine's own configurations](#a-machines-own-configurations) is that arrangement, and the release order it imposes.
+If a new revision retires the configuration currently active on a host, the updater refuses before building the candidate and names the retired configuration and the configurations selectable in that revision. Switch the active configuration to one of them on the deployed revision (runtime page validated transition), then re-run the update. The deployed runtime keeps serving meanwhile; no manual state editing is required. A rename is not a retirement: the machine's own `renamed` row maps a renamed id to its new one, so a release whose only crime is renaming the configuration that happens to be running is accepted, while a `retired` row maps a retired id to its replacement and refuses. A revision that keeps its configurations on the machines that run them states no list at all, and the same check is then asked of the machine: `host.json` names the directory it keeps its bodies in, and a release whose active configuration that machine has taken out of service refuses before the build, naming what the machine offers instead. [A machine's own configurations](#a-machines-own-configurations) is that arrangement, and the release order it imposes.
 
 ## Browser configuration changes
 
 The runtime page can select any registered configuration without another source release once it is published. Each choice shows the models its `models` list names and the GPUs each of them uses. Names come from the profile files through `/api/status`, so the page needs no code change when a configuration or a model is added or renamed. Selecting a configuration that is not the live one redraws the GPU map as a promise — the same tiles, the models a switch would give them, the cards that would change hands, and the models that would stop because the target does not name them — read off the placement the registry publishes for that configuration, rather than from a second description of the machine that can drift from the first. Browser changes acquire the existing update and runtime locks and use the deployed controller's validated transition. They never edit source or advance a checkout. Nothing about a switch is conditional on which models the two configurations share: every model of the target is asked for, and any container of a model of this host that the target does not name is stopped and removed before the target's models start. What a switch costs is said before it starts, in the operation's `stops_models` and on the page, because it is the same cost whatever the pair of configurations happens to be. Source deployments and existing CLI administration retain their existing behavior.
 
-A model's *name* is operator state, and the page is where it changes. **Rename** saves an alias in `.state/aliases.json`, keyed by the model id a client routes on; the name it covers is always `<host>: <model> (<context>)` — the machine, the model, its session length — and clearing it takes that back, machine prefix included. Nothing is drained, re-rendered, or restarted, and the model id and the service IDs a client routes on do not move — an alias changes what a model is called, never what it is. Because the key is the model and not the configuration that happens to load it, a model shared by two configurations is named once and is called that in whichever of them is selected, and a configuration that loads two models has two names, neither a spare for the other. It then replaces the name on every surface that names the model: the page, `~/local-ai-config.sh list`, and the catalog published to the routers. Names are stamped as the catalog is published rather than stored in the launch bundle, because publication is an event and a stale record is never retried: a restoration or a re-announce must not bring back a name that has since been retired. What they are stamped with is the naming of the configuration being published, not of the first registry row that mentions the model id, because one model id can be launched at two session lengths or on two cards instead of four, and a document about the launch that is running labels it as that launch labels it. An alias saved while a switch holds the runtime lock is saved and left for that switch to publish — it reads the aliases when it publishes — which is why a rename is never refused for arriving mid-drain. This is not a rename in the paragraph below. `PROFILE_ALIASES` maps a retired *source* id to a current one and ships in a release; an alias is one machine's own word for a model, Git-excluded, unread by any earlier revision, and therefore free to walk back.
+A model's *name* is operator state, and the page is where it changes. **Rename** saves an alias in `.state/aliases.json`, keyed by the model id a client routes on; the name it covers is always `<host>: <model> (<context>)` — the machine, the model, its session length — and clearing it takes that back, machine prefix included. Nothing is drained, re-rendered, or restarted, and the model id and the service IDs a client routes on do not move — an alias changes what a model is called, never what it is. Because the key is the model and not the configuration that happens to load it, a model shared by two configurations is named once and is called that in whichever of them is selected, and a configuration that loads two models has two names, neither a spare for the other. It then replaces the name on every surface that names the model: the page, `~/local-ai-config.sh list`, and the catalog published to the routers. Names are stamped as the catalog is published rather than stored in the launch bundle, because publication is an event and a stale record is never retried: a restoration or a re-announce must not bring back a name that has since been retired. What they are stamped with is the naming of the configuration being published, not of the first registry row that mentions the model id, because one model id can be launched at two session lengths or on two cards instead of four, and a document about the launch that is running labels it as that launch labels it. An alias saved while a switch holds the runtime lock is saved and left for that switch to publish — it reads the aliases when it publishes — which is why a rename is never refused for arriving mid-drain. This is not a rename in the paragraph below. A rename is a machine's decision about its own configurations and it lives in that machine's record; an alias is one machine's own word for a model, Git-excluded, unread by any earlier revision, and therefore free to walk back.
 
-A rename is one release. The target revision maps the old id to the new one in `PROFILE_ALIASES`, and the updater accepts a release whose active configuration is recorded only under its old name; the new revision resolves that recorded id to the new one on every read. `tests/fixtures/renamed-profiles.json` records each renamed configuration's Compose digest, so a rename cannot change a backend. A retired id has no such pass: it refuses, and `RETIRED_PROFILES` says what to select instead.
+A rename is one edit to a machine's record, not one release. The machine's `renamed` row maps the old id to the new one, and the updater accepts a release whose active configuration is recorded only under its old name, because the machine that wrote the row resolves that recorded id on every read. `tests/fixtures/renamed-profiles.json` records each renamed configuration's Compose digest, so a rename cannot change a backend. A retired id has no such pass: it refuses, and the machine's `retired` row says what to select instead. Until the revision that ships this document, both maps were the source's — `PROFILE_ALIASES` and `RETIRED_PROFILES` in `runtime/config.py` — and the history below names them as they were written when they were.
 
 The sections below are the history of the retired and renamed configurations: `daytime`, `daytime-flash-f16`, `daytime-27b`, `daytime-flash-next`, `daytime-flash-solo`, and `daytime-flash-solo-tuned`. `daytime-27b-tensor-next` is `qwen27b-q8-pair`; `daytime-flash-solo-tuned-mtp3` became `flash-next-solo-128k` and was retired on 2026-10-15.
 
@@ -158,7 +158,9 @@ disappear at the moment they are needed. Beside the bodies sits `registry.json`:
   decide either. It is not the order that costs a drain: a rendered bundle describes the one configuration it
   was asked to render, and the sequence its digest sees is that body's own `models` list. A name listed with
   no `<profiles_dir>/<name>.json` beside it refuses: a configuration is a body, and a name with nothing behind
-  it is a decision nothing can launch.
+  it is a decision nothing can launch. A body sitting in that directory which the record neither offers nor
+  has a configuration loading it refuses the same way, because a machine's directory and its record are one
+  statement: a leftover body there looks selectable to the next person who reads it and is not.
 - `renamed` — this machine's map of an old id to the id it resolves to, and `retired` — its map of an id
   taken out of service to what replaced it. Both point at configurations this machine offers, and a name
   cannot be both offered and retired.
@@ -167,32 +169,71 @@ disappear at the moment they are needed. Beside the bodies sits `registry.json`:
 
 The record **replaces** what a revision states instead of adding to it. That is the point of a record: a
 machine that writes down its own renames owns them, and a rename nobody wrote down is a rename that machine
-does not have. Migration therefore copies a machine's own alias and retirement rows into its record byte for
-byte, rather than inheriting them.
+does not have. Migration therefore copied a machine's own alias and retirement rows into its record byte for
+byte, rather than inheriting them: Rosalina's eight rows came over as it had written them, and Daisy brought
+none because it had none.
 
 Nothing about the arrangement changes a launch, and the tests hold that line. Every configuration this house
 runs renders byte-identically before and after its bodies move into their machine's home, so its
 `config_sha256` is unchanged and no workload is drained by a change that only moved who answers the
 question of which configurations exist. `profiles_dir` is deliberately outside the bundle the digest covers,
-which is why adding it to a `host.json` is a drain-free edit. A home that states no `registry.json` is given
-precisely the answer it has always been given — the revision's own `CONFIGURATIONS`, `PROFILE_ALIASES`,
-`RETIRED_PROFILES` and `DEFAULT_PROFILE` — so the move can be done one machine at a time, in either order,
-with the source list still standing behind it.
+which is why adding it to a `host.json` is a drain-free edit. A home that states no `profiles_dir` is read at
+`config/profiles` beside the checkout it was run from, and this revision ships no bodies there — what is left
+beside a checkout is the record a machine has not written yet, so such a home refuses and names both things it
+has to state. There is no list in this repository for it to fall back on, and `runtime list` run against a bare
+source tree answers the same refusal, because a checkout is not a machine and has no measurements to report.
+The last revision-shaped fallback in this area is the directory a missing `profiles_dir` points at, and it is
+one a machine closes by saying where it lives.
 
-The ordering that follows from that is a release-order constraint, and it is the reason this revision exists.
-A revision that *deletes* the source list can only be deployed onto a machine whose updater already accepts
-the machine-owned spelling of the gate, because the gate runs before the merge and against the deployed
-revision's code: the deployed updater must be able to read a target that states `PROFILES_VERSION` instead of
-`CONFIGURATIONS`, and it must ask this machine which configurations it offers. This revision is that revision.
-A box therefore moves in two steps — first its bodies and its record, verified against unchanged digests, then
-the release that stops shipping bodies at all — and a machine that has done neither is still deployable.
+The ordering that follows from the fallback is a release-order constraint, and it is the reason the work was
+split in two. A revision that *deletes* the source list can only be deployed onto a machine whose updater
+already accepts the machine-owned spelling of the gate, because the gate runs before the merge and against the
+deployed revision's code: the deployed updater has to be able to read a target that states `PROFILES_VERSION`
+instead of `CONFIGURATIONS`, and it has to ask this machine which configurations it offers. The revision that
+ships this document is the one that stopped shipping bodies and stopped keeping a list of its own; the gate on
+both boxes of this house was already built from the revision that introduced the machine-owned spelling, and
+`PROFILES_VERSION` is the name a deployed updater looks for, so a target still states it. A box therefore
+moved in two steps — its bodies and its record first, verified against unchanged digests, then the release that
+ships no bodies — and a box that has done neither is still deployable onto the revision before this one.
 
-Retiring a configuration is then an act on the machine that has it: its id comes out of `profiles`, a row goes
-into `retired` naming what replaced it, and its body is removed. The other configurations of that machine, and
-every configuration of every other machine, render the same as before. What a machine may not do is retire what
-it is serving, and what the updater may not do is pretend the question is about a list in a source tree: a
-release whose active configuration this machine has taken out of service refuses before anything is built, and
-names the configurations this machine offers.
+Which configurations a machine offers, and what it has taken out of service, is read and written by two
+commands run against a deployment: `runtime registry` and `runtime retire-profile --profile <retiring>
+--replacement <replacing>`. Both ask the machine its own `.state/host.json` names — the replacement is
+resolved the way a name typed at the status page is, so an operator may type the name they have always typed —
+and neither builds a controller, asks a backend, or touches a launch. `registry` is the audit in JSON: the
+directory the machine states and the record it read, each configuration this machine offers with its display
+name, its service IDs and the models it loads, the model bodies it keeps with the configurations that mount
+them, the configurations its record carries that belong to another machine, its renames, its retirements, the
+configuration it starts on, and the one it is running now. It is built out of the same call the status page and
+`runtime list` use, which is why the three cannot disagree about what this machine is.
+
+`retire-profile` takes a configuration out of service: its id comes out of `profiles`, a row goes into `retired`
+naming the replacement, and its body is removed. The other configurations of that machine, and every
+configuration of every other machine a shared home keeps, render the same as before. What it does instead of
+guessing is refuse, and the refusals are the design: while the configuration is what the machine is running
+(`apply --profile <replacement>` first, because a retirement is not a switch), while anything else holds the
+maintenance locks (a drain, a restoration, a router held for a deployment), in favour of itself, for a
+replacement this machine does not offer, while a configuration it still offers loads it as a model — retiring
+it would delete a definition another configuration mounts — and while a `renamed` row still points at it,
+because a rename promises the backends a configuration ran and a retirement says they are gone, and which of
+the two was meant is a fact only the operator has. What is left says what to do instead: move those rows onto
+the replacement, or drop them, and retire it again.
+
+What it accepts, it does holding both locks, as one write of `registry.json` and one deletion of the body.
+Retirement rows that pointed at the retired configuration are carried onto its replacement, so a client refused
+by the older name is still pointed at a configuration that exists; a stated `default_profile` follows the
+replacement it was a default of, and the result says whether it moved. The machine's remaining configurations
+are then rendered, and if the write would leave this machine offering something it cannot launch, the record and
+the body go back exactly where they were and the refusal says so — a retirement that would leave a machine
+offering a dead end does not happen. The configuration the machine is running is rendered against the digest
+its receipt holds, before the write and after it, and comes out identical: that is the proof that taking a
+definition out of a directory drained nobody, and it is why a retirement that would change a digest is a
+refusal rather than a surprise. There is no second retirement log — the record is the receipt — and every row
+of it was written by the machine it describes.
+
+What a machine may not do, and what no release may paper over, is retire what it is serving. What the updater
+may not do is pretend the question is a list in a source tree: a target whose active configuration this machine
+has taken out of service refuses before anything is built, and names the configurations this machine offers.
 
 
 `daytime-flash-solo` is `daytime-flash-next` (the same weights, projector, ggml-org Q4_0 MTP head, 128K context, q8_0 K/V, lazy n-gram table, and engine `qwen38-dual-836d571`) moved onto all four text GPUs with automatic fitting. `daytime-flash-solo-tuned-mtp3` is the recommended solo configuration of its generation: the measured tuning winners on engine `qwen38-dual-43fe9c6` with a three-token draft. `daytime-flash-solo-tuned` is the same with a two-token draft. All three set `"exclusive": true` and `"gpu_group": "all"`, so nothing runs beside them while one is selected — a configuration may not name a second model next to one that owns every text GPU of its host — and each keeps its own alias (`qwen3.8-flash-next-ad4.27-solo`, `-solo-tuned`, `-solo-tuned-mtp3`) for benchmark history. The three were retired on 2026-10-15, with the engine they were tuned on; `flash-next-strata-solo` is the solo configuration that replaces them, and the placement and transition rules below are the rules a solo configuration follows.

@@ -10,11 +10,14 @@ import socket
 import subprocess
 import sys
 
-from .config import CONFIGURATIONS, read, render, require
+from .config import profiles_home, read, render, require
 from .system import atomic_json, lock, now
 from .update import Updater
 
 WRAPPERS = ['primary', 'daytime', 'daytime-27b', 'nighttime', 'daytime-256', 'nighttime-256', 'local-ai-config.sh']
+# The configuration ids the legacy primary deployment selected. They are this module's own vocabulary --
+# names of a deployment this runtime replaced, held here because the migration is the thing that defines
+# them, and nothing else in this revision or on any machine of this house keeps a body for either one.
 LEGACY_DAYTIME_PROFILES = ('daytime', 'daytime-27b')
 
 
@@ -67,10 +70,20 @@ class Migration:
             self.home / '.local-ai-selected-profile.json']
 
     def prepare(self):
-        # The one-time migration from the legacy primary deployment completed on 2026-09-22; the
-        # legacy coding profiles it reproduces are retired, so it can no longer be prepared.
-        require(all(profile in CONFIGURATIONS for profile in LEGACY_DAYTIME_PROFILES),
-            'The legacy migration is complete and its source profiles (' + ', '.join(LEGACY_DAYTIME_PROFILES) + ') are retired')
+        # The one-time migration from the legacy primary deployment completed on 2026-09-22. The ids it
+        # selected were that deployment's own names, held here as this module's vocabulary rather than as
+        # configurations of this revision; a machine that has since written a body with either name into
+        # the home it reads its decisions out of has reintroduced a definition the migration was done to
+        # retire, and that is refused first because it is the failure a source change can no longer see.
+        home = profiles_home(self.root / 'config',
+            read(self.state / 'host.json') if (self.state / 'host.json').is_file() else None)
+        kept = [profile for profile in LEGACY_DAYTIME_PROFILES if (home / (profile + '.json')).is_file()]
+        require(not kept, 'This machine keeps ' + ', '.join(str(home / (profile + '.json')) for profile in kept) +
+            ' beside its own record. ' + ', '.join(LEGACY_DAYTIME_PROFILES) + ' are the configuration ids of '
+            'the legacy deployment this migration replaced, and a body for one of them is a definition the '
+            'migration was done to retire')
+        require(False, 'The legacy migration is complete (2026-09-22), and the source profiles it reproduced ('
+            + ', '.join(LEGACY_DAYTIME_PROFILES) + ') are retired')
         revision = self.updater.source_preflight()
         require(not (self.primary / 'runtime-owner.json').exists(), 'Runtime migration is already installed')
         selected = read(self.primary / 'profiles/selected.json')['selected']

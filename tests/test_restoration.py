@@ -28,6 +28,7 @@ from runtime.controller import Controller
 from runtime.operations import Operations, OperationError, public_operation
 from runtime.system import atomic_json
 from runtime.web import public_status
+import machine
 import test_publication as publication_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -810,16 +811,19 @@ class OnePairHostRestorationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.state = Path(self.tmp.name)
         self.config = self.state / 'config'
+        self.profiles = self.state / 'profiles'  # The home this box states, and where its bodies are.
         shutil.copytree(ROOT / 'config', self.config)
+        shutil.copytree(machine.HOME, self.profiles)
         # Two configurations of this machine, each running alone across its two cards. As a model
         # that owns every card it loads nothing else, so its list is just itself.
         for name in self.PAIR:
-            path = self.config / 'profiles' / (name + '.json')
+            path = self.profiles / (name + '.json')
             definition = read(path)
             definition.update(hosts=['daisy'], exclusive=True, gpu_group='all', models=[name])
             path.write_text(json.dumps(definition))
         host = copy.deepcopy(self.HOST)
         host['router_state_dir'] = str(self.state / 'router')
+        host['profiles_dir'] = str(self.profiles)
         atomic_json(self.state / 'host.json', host)
         (self.state / 'router-token').write_text('synthetic-token')
         self.bundle = render(self.config, host, self.PAIR[0])

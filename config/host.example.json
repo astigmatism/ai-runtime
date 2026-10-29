@@ -3,6 +3,7 @@
   "display_name": "REPLACE-machine-name",
   "gpu_architectures": ["86", "89"],
   "model_root": "/home/operator/ai/models",
+  "profiles_dir": "/home/operator/deployments/ai-runtime/.state/profiles",
   "router_state_dir": "/home/operator/apps/local-ai-ollama-stack/runtime/router",
   "router_admin_url": "http://local-ai-ollama-router:11435",
   "router_admin_header": "X-Admin-Token",
