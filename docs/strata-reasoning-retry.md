@@ -8,6 +8,11 @@ Strata documents `reasoning_close_retry: true` for this case. It closes thinking
 and continues once; it does not promote reasoning to a visible answer. Success
 must be measured with real prompts and tool calls, not inferred from HTTP health.
 
+The upgrade improved retained replays but did not close the reliability incident.
+See [residual premature completions](strata-premature-completions.md) for fresh
+0.2.8 measurements, the retry's measured boundaries, and the prepared upstream
+report. Existing upgrades and live policy remain in place.
+
 ## Release integration
 
 The new `strata-vision-870aedd9e1eb` and `strata-sm75-870aedd9e1eb` entries use
