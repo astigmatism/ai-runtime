@@ -246,7 +246,9 @@
       "revision": "296b59d2f73c8f04a805df29c2fa97655adace78",
       "release": "v0.1.44.1",
       "repository": "https://github.com/Niko1221/Strata",
-      "cuda_architectures": ["75"],
+      "cuda_architectures": [
+        "75"
+      ],
       "build_base_digest": "sha256:6888297fdf1428a5f7cc28ad6c620426d6c45117038d18b63f495cf4e2134f9f",
       "runtime_base_digest": "sha256:6888297fdf1428a5f7cc28ad6c620426d6c45117038d18b63f495cf4e2134f9f",
       "architecture": "The same source revision as strata-296b59d2f73c, compiled for a different card. The image in service on the four-GPU host carries `archs [86, 89]` — no sm_75 SASS — so on a Turing card it starts, answers its own health check, and dies at its first kernel launch; `engine/BUILD.json` in this one reads `{\"archs\": [75], \"vision\": \"none\"}`. `require_engine_architecture` is what refuses the other direction, and it is the reason this entry exists at all rather than the tag being edited in place.",
@@ -258,7 +260,9 @@
       "readiness": "Thirty minutes, against the hour the Ampere/Ada entries carry, and for a different reason. The model library on this machine is one SMR spindle that reads 109 MB/s, and the engine pins a ~40 GiB expert complement into RAM before it answers anything: 579 s measured at 0.08 GiB/s over a warm page cache, 13.5 minutes for a first boot that also builds the pack. The same disk busy with a 40 GB staging pass is what turned a 13-minute boot into a stall long enough to look like a hung deploy, so the window is not padding — it is the measured floor of the slowest thing this host does at start, plus room for a cold cache. The tier table in the report is the reason `--gpus 0,1` and not one card.",
       "provisioning": {
         "workspace_target": "/data",
-        "ready_files": ["config/strata-*.json"],
+        "ready_files": [
+          "config/strata-*.json"
+        ],
         "why": "Same engine, same marker: the run config this house's entry point writes is the proof the workspace was set up, and it is written by the same code path the Ampere/Ada entry waits on. It is not named after the quant, for the reason recorded on that entry — provisioning is read off the engine, and a marker that names a quant breaks the first time one engine serves two of them."
       },
       "environment": {
@@ -298,20 +302,246 @@
         "values": "As on the other entry: `off` takes the flags out, a number is MiB of host RAM, `--conversation-cache-min-free-mib` is required with a number, and the slots/min-tokens refinements are refused on a cache that is off.",
         "image": "Mapped because this tag carries this house's entry point. Stating a budget here is a measured decision about RAM this host does not have to spare, not a switch to flip."
       },
-            "ple_table": {
+      "ple_table": {
         "why": "Upstream's setup names the PLE table itself when a pack comes in two shards or fewer — its own `len(shards) <= 2` branch, whose comment calls the explicit flag the measured setup — and stays quiet at three or more, where the engine finds the table's shard from shard 1. Every pack on this machine is a GSQ-RCO two-shard pack, so every configuration of it names shard 2, which is also the shard the IQ3_S, IQ3_XXS and IQ2_XS tiers share by hardlink.",
         "values": "As on the other entry: `off` takes the key out, and on this machine that is not a no-op — it takes out a table the engine's own setup pass puts in, so `off` here is a third unmeasured variable spent on the 3-bit pack that can least afford one. A stated path is checked against the mounts the configuration declares, exactly as the model path is.",
         "risk": "Nothing is bought here and nothing moves: naming shard 2 is what every boot of this machine has already run with, so the statement buys a profile that says what the engine reads and costs no boot, no bytes and no token of decode.",
         "image": "Mapped because this tag carries this house's entry point, which it has done since the 2026-10-27 rebuild named in `build`; before that date the key was read by nothing on this machine."
       },
-"model_directory": "GGUF_DIR",
+      "model_directory": "GGUF_DIR",
       "context_environment": "CONTEXT",
       "container_defaults": {
-        "entrypoint": ["./docker-entrypoint.sh"],
+        "entrypoint": [
+          "./docker-entrypoint.sh"
+        ],
         "read_only": false,
-        "ulimits": {"core": 0},
+        "ulimits": {
+          "core": 0
+        },
         "healthcheck": {
-          "test": ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"],
+          "test": [
+            "CMD",
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:8080/health"
+          ],
+          "interval": "30s",
+          "timeout": "5s",
+          "retries": 8,
+          "start_period": "3600s"
+        }
+      }
+    },
+    "strata-vision-870aedd9e1eb": {
+      "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+      "tag": "local/strata:0.2.8-cuda13-runtime",
+      "revision": "870aedd9e1ebe1c91f94da93b59af17729f6c5c0",
+      "release": "v0.2.8",
+      "repository": "https://github.com/Niko1221/Strata",
+      "cuda_architectures": [
+        "75",
+        "86",
+        "89",
+        "120"
+      ],
+      "build_base_digest": "sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "runtime_base_digest": "sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "interface": "environment",
+      "runs_as_image_user": true,
+      "readiness_wait_seconds": 3600,
+      "vision": {
+        "encoder": "strata-vision, the llama.cpp mtmd encoder, compiled into engine/ with BUILD_VISION=1; engine/BUILD.json in the image reports vision gpu. Same source revision as strata-296b59d2f73c, because BUILD_VISION is not a runtime switch: one revision, built twice, and a profile picks one. Rolling back to the text-only tag is a profile change.",
+        "placement": "VISION_DEVICE names the card the encoder runs on alone. The engine reads that fact from one place, vision.cuda_device in its own run config, and setup.py has no flag for it, so this image carries this house's entry point (runtime/overlay/), which writes the declared value into that file on every start and then execs the upstream entry point unchanged. The entry point also owns the section's existence: the setup pass is its only writer, and the upstream entry point runs that pass only for a workspace with no config at all, so where the config has no vision section the entry point runs that pass itself (the upstream entry point's setup arguments, --no-start, the profile's model arguments) and fails the boot rather than serve text-only if it still comes back without one. The encoder is a separate process from the engine, so the text placement is untouched and the reserve the text cards no longer need for an on-card encoder is a separate measurement.",
+        "weights": "mmproj-Qwen3.8-Flash-Next-BF16.gguf, mounted beside the shards in GGUF_DIR. setup.py looks in GGUF_DIR before it reaches for Hugging Face, which is what keeps a first start on a fresh workspace off the network."
+      },
+      "provisioning": {
+        "workspace_target": "/data",
+        "ready_files": [
+          "config/strata-*.json"
+        ],
+        "why": "Same engine and same first start as strata-296b59d2f73c: the pack and the MTP layer are built in the workspace before a health check is answered, so the readiness window is measured on this host. One marker per workspace and not per quant, for the reasons recorded there."
+      },
+      "environment": {
+        "--family": "FAMILY",
+        "--quant": "MODEL",
+        "--kv": "KV",
+        "--kv-streaming": "KV_STREAMING",
+        "--vision": "VISION",
+        "--vision-device": "VISION_DEVICE",
+        "--gpus": "GPUS",
+        "--layer-split": "LAYER_SPLIT",
+        "--low-ram": "LOW_RAM",
+        "--host": "HOST",
+        "--port": "PORT",
+        "--sampling": "SAMPLING",
+        "--tool-call-recovery": "TOOL_CALL_RECOVERY",
+        "--reasoning-close-retry": "REASONING_CLOSE_RETRY",
+        "--conversation-cache-mib": "CONVERSATION_CACHE_MIB",
+        "--conversation-cache-min-free-mib": "CONVERSATION_CACHE_MIN_FREE_MIB",
+        "--conversation-cache-slots": "CONVERSATION_CACHE_SLOTS",
+        "--conversation-cache-min-tokens": "CONVERSATION_CACHE_MIN_TOKENS",
+        "--ple-gguf": "PLE_GGUF",
+        "--rope-scaling": "ROPE_SCALING",
+        "--rope-scale": "ROPE_SCALE",
+        "--yarn-orig-ctx": "YARN_ORIG_CTX"
+      },
+      "rope_scaling": {
+        "why": "Which position ring a session is read through. The Qwen3.8 pack is trained to 262,144 and carries no scaling keys of its own, so a window wider than that is YaRN interpolation and nothing else: --rope-scaling yarn with a --rope-scale and the --yarn-orig-ctx it stretches, written into the run config's args list on every start because the engine fixes its ring at startup and cached keys are post-RoPE. The factor-2.0 524,288 rung is measured on this box (docs/deployment.md, 'Beyond the ladder' and the factor table): boot 100 s like the trained window, a 493K-token tail question answered identically in five rounds where the trained edge answers its own edge half the time, decode 119.5 against the 90 floor. 3.0 was where answers stopped repeating and 4.0 where prefill fell to 2.2K tok/s, which is why this word ships at 2.0 and not past it.",
+        "values": "yarn and linear state a ring and demand their numbers (--rope-scale always, --yarn-orig-ctx for yarn, and a window above it -- the engine refuses the pair otherwise); none and off take every rope line the file carries back out; and -- unusually among the facts -- unstated strips too, because a profile that names no ring is promising the trained geometry and a stranger's factor surviving the switch in silence would lie about it with nothing in /slots to catch it. Checked when it renders, not when it boots: an exclusive resident on a ring the engine refuses is nothing serving on a drain already spent.",
+        "image": "Mapped only on this engine, for the standing reason: the text-only tags run upstream's entry point and cannot be told, so a profile stating a rope on one of those engines is refused when it renders. This tag was rebuilt for this line on 2026-10-18 and its new id is pinned above; the image before it is kept on the box as local/strata:296b59d2f73c-vision-pre-rope, and a rollback to it re-pins this line and takes the rope fact with it."
+      },
+      "reasoning_close_retry": {
+        "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+        "why": "Verified deployment adapter writes the upstream-supported JSON boolean. Absence and off clear stale settings."
+      },
+      "tool_call_recovery": {
+        "why": "Strata 0.2.8 enables tool-call recovery by default. Explicit profile on/off remains authoritative through the deployment adapter; existing profiles already state on.",
+        "values": "on writes JSON true; off removes the key, retaining the existing adapter contract. Because upstream now defaults to true, off must explicitly write false for this release."
+      },
+      "sampling": {
+        "why": "A request that sends no sampling of its own gets the engine's own default, and that is greedy: serve/server.py states it plainly (\"An absent temperature keeps the engine's default, which is greedy\"), and setup.py never writes the run config's optional sampling block. The router forwards an omitted temperature as omitted and this house's coding agent sends none, so before this key the Strata resident answered every routed request greedily while the llama.cpp residents answered the same request at --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0. That llama.cpp set is the Qwen3.8-Flash-Next card's thinking-mode set, so this is one policy for the house rather than a new one.",
+        "presets": "thinking is the card's thinking-mode set (temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, no penalties); instruct is its non-thinking set (0.7 / 0.80 / 20 / 0.0 plus presence_penalty 1.5, which the engine does not apply inside batch windows); off takes the block back out, which is the engine's default, and a profile stating nothing leaves the file alone -- so going back to greedy is a profile change and not a hand edit inside a workspace a text-only image cannot take it out of. A profile names a preset and never numbers: the numbers live in runtime/overlay/strata-vision-entrypoint.sh, because a value the engine does not like in that block is a SystemExit at start, and for an exclusive resident that is nothing serving. A request that brings its own sampling still wins, so Bench Studio (every built-in profile pins temperature 0) and scripts/strata_replay.py (it sends temperature 0) measure exactly what they measured before.",
+        "cost": "Measured upstream on this model with --spec 4 --mtp: draft acceptance 81.2% to 72.7% and decode 0.94x (CI 0.83-1.23) on short prompts, and about 76% to 72% with 62 to 59 tok/s on UD-IQ4_XS, this resident's quant. No measured accuracy gain: 26/30 against 25/30 exact answers and 15/15 against 15/15 valid tool calls. What it buys is conformance with the card and the removal of the deterministic repetition loop greedy reproduces, which upstream's own 2-bit report says sampling fixes. The replay's sampled arm is what records the real number on this box.",
+        "image": "Mapped only on this engine, because only this image carries this house's entry point: the text-only tags run upstream's entry point unchanged, and an entry point that cannot write the block must not be declarable. A profile that names --sampling on one of those engines is refused when it renders, not ignored."
+      },
+      "conversation_cache": {
+        "why": "The engine's own default budget is 0, which means every conversation that comes back is re-prefilled from the start. setup.py never writes the flag: on a box with RAM to spare it only prints a tip the operator has to notice and act on by hand, and its gate (RAM left beside the model, 24 GiB) this box passes several times over. What this box's own engine log says the re-reads cost is smaller and more specific than the upstream figure this house's docs repeated: of 75,911 s of prompt time over 7,196 requests, 6.3% is conversations already read before (five prompt sizes visited three or more times each, 207 requests -- one 126,614-token prompt read from scratch 54 times, 2,614 s by itself), and 25.5% is requests whose reusable prefix stops dead at one constant (11,563, 11,221, 11,225 tokens) while the prompt grows past 130,000. Parking matches exact token prefixes, so it buys the first group and nothing at all for the second: those turns re-read the same 80,000 tokens with the cache on as with it off. The upstream ~90% figure the docs quoted is its own benchmark (#882 #440), from a box without this house's --prompt-cache 6 checkpoints, which already give back 88.3% of prompt tokens.",
+        "values": "off takes the four flags out, which is the engine's default; a number is MiB of host RAM to park in. --conversation-cache-min-free-mib is required with a number and is not left to the engine's default: this workspace holds a 32.93 GiB page-locked expert complement on the same RAM, and a parked conversation that outbids it pays on the serving path. --conversation-cache-slots and --conversation-cache-min-tokens refine a cache that is on, are refused on one that is off, and are written at the engine's own defaults (4 and 0) when unstated, so a number an older profile wrote cannot survive a switch in silence. Every configuration of this engine states the budget, the floor and --ple-gguf rather than only the one that wants them, because what the entry point writes sits in the workspace until a configuration says otherwise.",
+        "risk": "It is RAM, and under --layer-split a parked conversation holds one image per stage, so a budget sized for one card is a quarter of what four stages want. That is bounded by the budget and by the floor and not by hope: /metrics reports a \"conversation_cache\" object with parks, restores, evictions and the prompt tokens given back, and restores staying near zero while evictions climb is the reading that says the money is not being saved, at which point off is one profile switch away. It does not execute requests concurrently and needs no client session id, only an exact prefix with a matching steering mode.",
+        "image": "Mapped only on this engine, for the standing reason: it is an argument of the engine's, written into the engine's own run config by this house's entry point, and setup.py offers no flag to extend that args list. A profile that states it on an image without that entry point is refused when it renders. The tag was rebuilt for this and for --ple-gguf on 2026-10-17, carrying the identity labels the runtime reads back, and the new id is pinned above; the image the tag pointed at before the rebuild is kept as local/strata:296b59d2f73c-vision-pre-cache, which is what a re-pin of this line goes back to. A container started from the image before it ignores both variables, so the configurations that use them become real with the deploy that lands this pin -- and a deploy that lands this pin changes nothing about the configuration in service, which states off and was checked against this box's real run config to leave it byte-for-byte as it found it."
+      },
+      "ple_table": {
+        "why": "The n-gram embedding table is read unbuffered off the SSD by the CPU path -- 83,911 rows/s on this box by its own probe, and at 170-byte rows about 16 MB/s, which is not a load -- and it is never streamed to a card. That makes a wider table the one accuracy purchase here that does not go through the host-to-device path that cost UD-Q4_K_XL 7-15% of decode and 41% of prefill and cost this house's STRATA_HC_Q8 trial 8-15% of prefill. What the table is today is decided by the packer and not by this house: setup.py passes the key by itself only at two shards or fewer (its own len(shards) <= 2 test), so this three-shard file has the table read out of shard 2 at Unsloth's own IQ4_NL, which upstream's packer describes as \"8% off these values per row\". Q8_0 rows are read natively since 0.1.38 with no kernel change; the FP8 table that keeps Qwen's values bit for bit needs the original checkpoint (128 safetensors shards, 51.2 GB) through tools/ple_fp8_pack.py.",
+        "values": "off leaves the key unwritten, which at three shards means shard 2's table at that file's own quantization -- what every boot of this workspace has done. A path is checked against the mounts the configuration declares, exactly as the model path is, because a table named that nothing downloaded is a boot that either does not happen or happens with layer one's PLE silently skipped, and the engine's own help is the source of that consequence. The entry point checks the file again before it writes.",
+        "risk": "Not yet bought, and deliberately not bought blind: the ceiling has to be measured before 51 GB of table is downloaded, and the measurement is one configuration -- score a run with --no-ple, which takes the layer out entirely. If a run without the table scores where the run with it scores, no table precision is worth the disk, and this row closes as measured and declined rather than as assumed. Its 28.8 GB becoming 54.4 GB also grows the row cache from 94 MB to 170 MB, which is noise against 71 GiB of free RAM and is written here so the next reader does not mistake it for the cost.",
+        "image": "Mapped only on this engine, for the same reason as the cache above. No configuration of this engine states a path yet: the capability and the check ship together, and the profile comes with the file."
+      },
+      "session_window": {
+        "why": "The context a resident publishes is a promise the switch checks: a profile states `context_tokens`, the catalog publishes it as the model's `context_window` with `context_safety_reserve` taken off the top, and before a switch is allowed to publish, the window the running engine reports on `/slots` is compared with the one that was promised — a resident that reports another number is refused with reason `slot context` and the release that last served is restored. Until 2026-10-18 the value travelled as `CONTEXT` and stopped there. setup.py reads it, but only when it writes the run config, and the upstream entry point runs setup.py only when that file does not exist yet — so over a workspace that already existed the window was fixed the day the pack was made, and no profile could move it. The container's environment said one number, the portal offered that number, the engine booted another, and the only symptom was a deployment that drained the house to be refused.",
+        "values": "A number of tokens, written into the args list the engine reads its context from on every boot. A profile that states nothing leaves the file alone, because the file is the engine's own state and a container started by hand over an existing workspace keeps the window it was set up with rather than being quietly resized to this script's own default; a stated `CONTEXT` that is not a positive number of tokens fails the boot before the file is touched, since the alternative is a drain spent to be refused. The two text-only tags take the window only through setup.py, which is enough for them and was not enough for this one: they run upstream's entry point, so on them a workspace's window is still born once.",
+        "cost": "RAM, and specifically not VRAM. The pack runs `--kv k8v4` with streaming, where each token of context is about 10.6 KB of page-locked host RAM — 1.7 GiB at 163,840 and 2.8 GiB at 262,144, against 123 GiB of which this box keeps a floor clear for the page-locked expert complement — while `--kv-resident 32768` bounds what a card holds, so widening the window moves no weight. The engine's own ceiling for this pack is 262,144, which is the number the resident's `ROUTER_CONTEXT_LIMIT` already names. A parked conversation scales with it: the conversation cache holds whole prefixes, so a 256K turn that parks wants what a 256K turn costs, and `--conversation-cache-min-free-mib` is what keeps the two from bidding for the same RAM. One thing the route does not do is re-tune: the calibration setup.py stores is keyed on a hardware key that includes the context, so the next setup pass over a widened workspace spends its 15–30 minutes again.",
+        "image": "Written only on this engine, for the standing reason: it is an argument of the engine's, written into the engine's own run config by this house's entry point, and setup.py offers no flag to extend that args list. This tag was rebuilt for it on 2026-10-18 and the new id is pinned above; the image the tag pointed at before is kept as local/strata:296b59d2f73c-vision-pre-context, which is what a re-pin of this line goes back to, and a container started from it ignores `CONTEXT` exactly as the block above describes. The rebuild moves one layer: `docker image inspect --format '{{json .RootFS.Layers}}'` differs at the entry point and at nothing else, and the identity labels the runtime reads back are carried. Receipt ops/reports/20261018-strata-vision-context/."
+      },
+      "model_directory": "GGUF_DIR",
+      "context_environment": "CONTEXT",
+      "container_defaults": {
+        "entrypoint": [
+          "./docker-entrypoint.sh"
+        ],
+        "read_only": false,
+        "ulimits": {
+          "core": 0
+        },
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:8080/health"
+          ],
+          "interval": "30s",
+          "timeout": "5s",
+          "retries": 8,
+          "start_period": "3600s"
+        }
+      },
+      "build": "Official immutable Strata 0.2.8 CUDA13 image, engine 0.1.54, portable AVX2 and sm75/86/89/120. runtime/overlay/Dockerfile.release adds only deployment integration; upstream engine and serving sources are unmodified. See docs/strata-reasoning-retry.md.",
+      "base": "ghcr.io/niko1221/strata@sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "architecture": "Official portable AVX2 CUDA13 release package, sm75/86/89/120, with a GPU vision reader. Vision remains disabled on the Daisy profiles. Engine and serving sources are unmodified."
+    },
+    "strata-sm75-870aedd9e1eb": {
+      "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+      "tag": "local/strata:0.2.8-cuda13-runtime",
+      "revision": "870aedd9e1ebe1c91f94da93b59af17729f6c5c0",
+      "release": "v0.2.8",
+      "repository": "https://github.com/Niko1221/Strata",
+      "cuda_architectures": [
+        "75",
+        "86",
+        "89",
+        "120"
+      ],
+      "build_base_digest": "sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "runtime_base_digest": "sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "architecture": "Official portable AVX2 CUDA13 release package, sm75/86/89/120, with a GPU vision reader. Vision remains disabled on the Daisy profiles. Engine and serving sources are unmodified.",
+      "build": "Official immutable Strata 0.2.8 CUDA13 image, engine 0.1.54, portable AVX2 and sm75/86/89/120. runtime/overlay/Dockerfile.release adds only deployment integration; upstream engine and serving sources are unmodified. See docs/strata-reasoning-retry.md.",
+      "base": "ghcr.io/niko1221/strata@sha256:27f04a7437c7d2940d067331ead66e3942826c55b57334908c8767625bbdbb04",
+      "interface": "environment",
+      "runs_as_image_user": true,
+      "readiness_wait_seconds": 1800,
+      "readiness": "Thirty minutes, against the hour the Ampere/Ada entries carry, and for a different reason. The model library on this machine is one SMR spindle that reads 109 MB/s, and the engine pins a ~40 GiB expert complement into RAM before it answers anything: 579 s measured at 0.08 GiB/s over a warm page cache, 13.5 minutes for a first boot that also builds the pack. The same disk busy with a 40 GB staging pass is what turned a 13-minute boot into a stall long enough to look like a hung deploy, so the window is not padding — it is the measured floor of the slowest thing this host does at start, plus room for a cold cache. The tier table in the report is the reason `--gpus 0,1` and not one card.",
+      "provisioning": {
+        "workspace_target": "/data",
+        "ready_files": [
+          "config/strata-*.json"
+        ],
+        "why": "Same engine, same marker: the run config this house's entry point writes is the proof the workspace was set up, and it is written by the same code path the Ampere/Ada entry waits on. It is not named after the quant, for the reason recorded on that entry — provisioning is read off the engine, and a marker that names a quant breaks the first time one engine serves two of them."
+      },
+      "environment": {
+        "--family": "FAMILY",
+        "--quant": "MODEL",
+        "--kv": "KV",
+        "--kv-streaming": "KV_STREAMING",
+        "--vision": "VISION",
+        "--gpus": "GPUS",
+        "--layer-split": "LAYER_SPLIT",
+        "--low-ram": "LOW_RAM",
+        "--host": "HOST",
+        "--port": "PORT",
+        "--sampling": "SAMPLING",
+        "--tool-call-recovery": "TOOL_CALL_RECOVERY",
+        "--reasoning-close-retry": "REASONING_CLOSE_RETRY",
+        "--conversation-cache-mib": "CONVERSATION_CACHE_MIB",
+        "--conversation-cache-min-free-mib": "CONVERSATION_CACHE_MIN_FREE_MIB",
+        "--conversation-cache-slots": "CONVERSATION_CACHE_SLOTS",
+        "--conversation-cache-min-tokens": "CONVERSATION_CACHE_MIN_TOKENS",
+        "--ple-gguf": "PLE_GGUF"
+      },
+      "session_window": {
+        "why": "Same entry point, same fact: `context_tokens` travels as `CONTEXT` and is written into the args list the engine reads on every boot, so the window a profile states is the window the machine serves. On this host it is not cosmetic. IQ3_XXS with the full 131,072 window and no VRAM reserve aborts with SIGABRT during the prefill of a ~127 k prompt — reproduced twice, then ~10 minutes of arena reload — because the smaller quant fills more of each card with cached experts and leaves less for the KV cache and activations. The configuration this entry serves caps the window at 65,536 instead of reserving VRAM away from the cache: the capped arm keeps 96.8–97.3 % expert-cache hits and 78–97 tok/s warm, where the reserve arm gives up 13–18 % of decode and 26 % of its resident experts to keep 128 k alive.",
+        "cost": "Page-locked host RAM, and on this machine RAM is the whole argument: 60.7 GiB total, ~14.7 GiB available with the model loaded and the ComfyUI stack stopped. `--kv k8v4` with streaming is about 10.6 KB per token of window, so halving the window is ~0.7 GiB — the cost is not why it is capped. It is capped because the abort happens on the cards.",
+        "image": "Mapped on this engine because this tag carries this house's entry point; it was rebuilt on 2026-10-20 to carry it and the new id is pinned above. The id above is the 2026-10-27 rebuild named in `build`: the 2026-10-22 image did not in fact carry the swap, so until this revision `CONTEXT` was honored only because upstream's entry point reads it, and the house facts beside it were written into a file nothing consulted."
+      },
+      "sampling": {
+        "why": "One sampling policy for the house: a request that sends none gets the Flash-Next card's thinking-mode set rather than the engine's greedy default. The measurement and the presets are recorded on strata-vision-296b59d2f73c; nothing about the card changes the numbers.",
+        "image": "Mapped because this tag carries this house's entry point, which is the only thing that can write the block. A profile stating a preset on an image without it is refused when it renders rather than rendered into a variable nothing reads."
+      },
+      "reasoning_close_retry": {
+        "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+        "why": "Verified deployment adapter writes the upstream-supported JSON boolean. Absence and off clear stale settings."
+      },
+      "tool_call_recovery": {
+        "why": "Strata 0.2.8 enables tool-call recovery by default. Explicit profile on/off remains authoritative through the deployment adapter; existing profiles already state on.",
+        "values": "on writes JSON true; off removes the key, retaining the existing adapter contract. Because upstream now defaults to true, off must explicitly write false for this release."
+      },
+      "conversation_cache": {
+        "why": "The engine's default budget is 0, so every conversation that comes back is re-prefilled from the start. On this machine the budget competes with the arena for the same RAM — the pack pins ~40 GiB of the 60.7 this host has, and the trial left 14.7 GiB available with ComfyUI stopped — so no configuration of this engine states a budget yet, and every one states `off` explicitly rather than leaving the workspace to remember a number a future host might not afford.",
+        "values": "As on the other entry: `off` takes the flags out, a number is MiB of host RAM, `--conversation-cache-min-free-mib` is required with a number, and the slots/min-tokens refinements are refused on a cache that is off.",
+        "image": "Mapped because this tag carries this house's entry point. Stating a budget here is a measured decision about RAM this host does not have to spare, not a switch to flip."
+      },
+      "ple_table": {
+        "why": "Upstream's setup names the PLE table itself when a pack comes in two shards or fewer — its own `len(shards) <= 2` branch, whose comment calls the explicit flag the measured setup — and stays quiet at three or more, where the engine finds the table's shard from shard 1. Every pack on this machine is a GSQ-RCO two-shard pack, so every configuration of it names shard 2, which is also the shard the IQ3_S, IQ3_XXS and IQ2_XS tiers share by hardlink.",
+        "values": "As on the other entry: `off` takes the key out, and on this machine that is not a no-op — it takes out a table the engine's own setup pass puts in, so `off` here is a third unmeasured variable spent on the 3-bit pack that can least afford one. A stated path is checked against the mounts the configuration declares, exactly as the model path is.",
+        "risk": "Nothing is bought here and nothing moves: naming shard 2 is what every boot of this machine has already run with, so the statement buys a profile that says what the engine reads and costs no boot, no bytes and no token of decode.",
+        "image": "Mapped because this tag carries this house's entry point, which it has done since the 2026-10-27 rebuild named in `build`; before that date the key was read by nothing on this machine."
+      },
+      "model_directory": "GGUF_DIR",
+      "context_environment": "CONTEXT",
+      "container_defaults": {
+        "entrypoint": [
+          "./docker-entrypoint.sh"
+        ],
+        "read_only": false,
+        "ulimits": {
+          "core": 0
+        },
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:8080/health"
+          ],
           "interval": "30s",
           "timeout": "5s",
           "retries": 8,

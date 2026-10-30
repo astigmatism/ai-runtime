@@ -1,0 +1,29 @@
+# Deployment adapter around the immutable, unmodified upstream release image.
+# No engine or serving Python source is replaced. Existing workspaces keep their
+# paths; Strata's documented source-server interface reads their run config.
+ARG UPSTREAM
+FROM ${UPSTREAM}
+ARG REVISION
+ARG REPOSITORY
+RUN test -n "$REVISION" && test -n "$REPOSITORY"
+LABEL org.opencontainers.image.revision=${REVISION}
+LABEL org.opencontainers.image.source=${REPOSITORY}
+LABEL io.service-portal.trial=strata
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/strata
+RUN set -eu; \
+    for item in terminal/*; do name=${item##*/}; [ -e "$name" ] || ln -s "$item" "$name"; done; \
+    ln -s terminal/python .venv; \
+    set -- components/engine/*; [ "$#" -eq 1 ]; \
+    test -x "$1/strata"; ln -s "$1" engine; \
+    ln -s seed/third_party third_party; \
+    chmod a+w /opt/strata
+COPY strata-vision-entrypoint.sh /opt/strata/docker-entrypoint.sh
+COPY strata-source-server.sh /opt/strata/strata-source-server.sh
+RUN chmod +x /opt/strata/docker-entrypoint.sh /opt/strata/strata-source-server.sh
+ENV STRATA_SOURCE_SERVER=1 STRATA_ANSWER_ROOM=off
+ENV LD_LIBRARY_PATH=/opt/strata/engine
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD []

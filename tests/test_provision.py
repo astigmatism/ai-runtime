@@ -688,7 +688,7 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
                     'CONVERSATION_CACHE_MIN_FREE_MIB', 'CONVERSATION_CACHE_SLOTS',
                     'CONVERSATION_CACHE_MIN_TOKENS', 'ROPE_SCALING', 'ROPE_SCALE', 'YARN_ORIG_CTX',
                     'VRAM_RESERVE_MIB', 'CONTROL_VECTOR', 'CONTROL_VECTOR_SCALE',
-                    'CONTROL_VECTOR_LAYERS', 'STRATA_LOG'):
+                    'CONTROL_VECTOR_LAYERS', 'STRATA_LOG', 'REASONING_CLOSE_RETRY', 'STRATA_SOURCE_SERVER'):
             env.pop(key, None)
         if extra:
             env.update(extra)
@@ -869,6 +869,33 @@ class VisionEntrypointOverlayTests(unittest.TestCase):
         # never told to remove stays, because the profile states it either way.
         self.start()
         self.assertEqual(json.loads(self.config.read_text())['sampling']['temperature'], 1.0)
+
+    def test_reasoning_retry_is_enabled_then_cleared_on_a_profile_switch(self):
+        self.given({'model': 'UD-IQ4_XS', 'args': ['--max-context', '262144']})
+        self.start(device=None, extra={'VISION': 'no', 'REASONING_CLOSE_RETRY': 'on'})
+        self.assertIs(json.loads(self.config.read_text())['reasoning_close_retry'], True)
+        self.start(device=None, extra={'VISION': 'no'})
+        self.assertNotIn('reasoning_close_retry', json.loads(self.config.read_text()))
+
+    def test_reasoning_retry_explicit_off_removes_a_stale_key(self):
+        self.given({'reasoning_close_retry': True})
+        self.start(device=None, extra={'VISION': 'no', 'REASONING_CLOSE_RETRY': 'off'})
+        self.assertNotIn('reasoning_close_retry', json.loads(self.config.read_text()))
+
+    def test_invalid_retry_setting_fails_before_any_workspace_mutation(self):
+        self.given({'reasoning_close_retry': False})
+        before = self.config.read_bytes()
+        self.start(device=None, extra={'VISION': 'no', 'REASONING_CLOSE_RETRY': 'true'}, expect_fail=True)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(self.setup_calls(), [])
+
+    def test_retry_on_prepares_a_fresh_workspace_and_is_idempotent(self):
+        self.given(None)
+        self.start(device=None, extra={'VISION': 'no', 'REASONING_CLOSE_RETRY': 'on'})
+        before = self.config.read_bytes()
+        self.start(device=None, extra={'VISION': 'no', 'REASONING_CLOSE_RETRY': 'on'})
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertIs(json.loads(before)['reasoning_close_retry'], True)
 
     def test_tool_call_recovery_on_writes_the_boolean_the_engine_reads(self):
         # serve/server.py reads the run config's top-level key and raises SystemExit unless it is a

@@ -1336,6 +1336,26 @@ def engine_tool_call_recovery(name, engine, options):
 CACHE_BUDGET_OFF = 'off'
 
 
+def engine_reasoning_close_retry(name, engine, options):
+    """A single continuation after a reasoning-only stop, on a verified overlay image.
+
+    The currently pinned overlays predate this setting. Mapping a variable alone would silently
+    promise recovery on those images, so an explicit setting also requires a rebuild receipt tied
+    to the image identity. Absence leaves existing launches byte-identical; the new overlay removes
+    a stale workspace key on absence as well as on off.
+    """
+    flag = '--reasoning-close-retry'
+    if flag not in options:
+        return
+    stated = options[flag]
+    require(type(stated) is str and stated in ('on', 'off'),
+        name + ': --reasoning-close-retry must be on or off')
+    receipt = engine.get('reasoning_close_retry', {})
+    require(bool(receipt.get('image_id')) and receipt['image_id'] == engine.get('image_id'),
+        name + ': --reasoning-close-retry requires a rebuilt overlay image and a matching '
+        'reasoning_close_retry.image_id receipt; the existing image does not support this setting')
+
+
 def engine_conversation_cache(name, engine, options):
     """Whether a conversation that comes back is read again from the start, and what it may spend.
 
@@ -1550,7 +1570,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
                  'is written into the engine\'s own run config and not passed to the engine, so a '
                  'profile that states it does not roll back to an image without that entry point '
                  'until this line is dropped'
-                 if key in ('--sampling', '--tool-call-recovery', '--conversation-cache-mib',
+                 if key in ('--sampling', '--tool-call-recovery', '--reasoning-close-retry', '--conversation-cache-mib',
                             '--conversation-cache-min-free-mib', '--conversation-cache-slots',
                             '--conversation-cache-min-tokens', '--ple-gguf',
                             '--rope-scaling', '--rope-scale', '--yarn-orig-ctx') else ''))
@@ -1559,6 +1579,7 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
         environment[variable] = '' if value is True else str(value)
     engine_sampling_preset(name, engine, options)
     engine_tool_call_recovery(name, engine, options)
+    engine_reasoning_close_retry(name, engine, options)
     engine_conversation_cache(name, engine, options)
     engine_ple_table(name, engine, options, definition['artifacts'])
     engine_rope_scaling(name, engine, options, ctx)
@@ -1606,6 +1627,8 @@ def environment_service(name, definition, engine, shared, host, root, ctx, slots
     # policy, no init, no logging and no pull policy, and the observer crashed on the missing key.
     cfg = merge_settings(shared['container_defaults'], engine.get('container_defaults', {}))
     cfg = merge_settings(cfg, definition['container'])
+    require('REASONING_CLOSE_RETRY' not in cfg.get('environment', {}), name +
+        ': state --reasoning-close-retry in arguments, not REASONING_CLOSE_RETRY in container.environment')
     # What the profile states about the environment comes first: the engine's own settings are the
     # rendered ones and win, so a profile cannot accidentally overwrite a derived variable.
     environment = {**cfg.get('environment', {}), **environment}

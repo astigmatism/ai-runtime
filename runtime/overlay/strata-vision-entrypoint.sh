@@ -1,7 +1,7 @@
 #!/bin/sh
 # This house's overlay on Strata's own entry point, not an upstream file.
 #
-# Eleven facts about this container have to reach the engine's own run config. Five of them are not
+# Twelve facts about this container have to reach the engine's own run config. Six of them are not
 # arguments the engine takes; the other six are, but they go in the run config's "args" list, which
 # setup.py writes and offers no flag to extend.
 #
@@ -139,6 +139,12 @@
 # is a misconfigured card, and a misconfigured card fails the boot instead of serving text-only with
 # a log gap. Then hand over to the upstream entry point unchanged.
 set -e
+
+# Validate before setup or any workspace edits, including on a fresh workspace.
+case "${REASONING_CLOSE_RETRY:-off}" in
+    on|off) ;;
+    *) echo "strata overlay: REASONING_CLOSE_RETRY must be on or off" >&2; exit 1 ;;
+esac
 
 STRATA_DATA="${STRATA_DATA:-/data}"
 FAMILY="${FAMILY:-qwen}"
@@ -405,7 +411,40 @@ else:
 PY
 fi
 
-# The argv analogue of the two blocks above. The two facts that follow are engine arguments, and the
+# 12. One continuation when a stop leaves only reasoning. Never promote reasoning to an answer.
+# Unlike tool-call recovery, absence removes the key: switching to an unstated profile must disable
+# retry even when its persistent workspace was last used by an opted-in profile.
+if [ "${REASONING_CLOSE_RETRY:-off}" = on ] && [ ! -f "$cfg" ]; then
+    run_setup_pass "$cfg does not exist and reasoning_close_retry has to go in it"
+    if [ ! -f "$cfg" ]; then
+        echo "strata overlay: the setup pass left no $cfg to write reasoning_close_retry into" >&2
+        exit 1
+    fi
+fi
+if [ -f "$cfg" ]; then
+    python3 - "$cfg" "${REASONING_CLOSE_RETRY:-off}" <<'PY'
+import json, os, sys
+
+path, stated = sys.argv[1:]
+with open(path, encoding='utf-8-sig') as handle:
+    cfg = json.load(handle)
+if stated == 'on':
+    changed = cfg.get('reasoning_close_retry') is not True
+    cfg['reasoning_close_retry'] = True
+else:
+    changed = 'reasoning_close_retry' in cfg
+    cfg.pop('reasoning_close_retry', None)
+if changed:
+    tmp = path + '.reasoning-close-retry.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        json.dump(cfg, handle, indent=1)
+        handle.write('\n')
+    os.replace(tmp, path)
+print('strata overlay: reasoning_close_retry %s (%s)' % (stated, path), flush=True)
+PY
+fi
+
+# The argv analogue of the blocks above. The two facts that follow are engine arguments, and the
 # engine reads them out of the run config's "args" list, which is a flat argv array and not a key:
 # setup.py writes it, offers no flag to extend it, and (for the cache) only prints a tip that the
 # operator has to act on by hand. So this is where a profile's statement has to land. It goes through
@@ -936,4 +975,8 @@ apply_vram_reserve
 apply_control_vector
 apply_engine_log
 
+if [ "${STRATA_SOURCE_SERVER:-0}" = 1 ]; then
+    [ -f "$cfg" ] || { echo "strata overlay: missing prepared run config $cfg" >&2; exit 1; }
+    exec ./strata-source-server.sh "$cfg"
+fi
 exec ./docker-entrypoint.upstream.sh "$@"

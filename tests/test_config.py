@@ -593,7 +593,8 @@ class ConfigurationTests(unittest.TestCase):
         # launch, which is what require_engine_architecture refuses at render now.
         self.assertEqual(set(engines), {'qwen38-dual-836d571',
                                         'strata-7695859aa13a', 'strata-296b59d2f73c',
-                                        'strata-vision-296b59d2f73c', 'strata-sm75-296b59d2f73c'})
+                                        'strata-vision-296b59d2f73c', 'strata-sm75-296b59d2f73c',
+                                        'strata-vision-870aedd9e1eb', 'strata-sm75-870aedd9e1eb'})
         engine = engines['qwen38-dual-836d571']
         self.assertEqual(engine['revision'], '836d57176dc699a726c55418e4f96b8ca628e1bf')
         self.assertEqual(engine['tag'], 'local/llama.cpp:qwen38-dual-836d57176dc6')
@@ -2189,7 +2190,10 @@ class ConfigurationNamingTests(unittest.TestCase):
         engines = read(ROOT / 'config/shared.json')['engines']
         # The 0.1.43 image, until the 0.1.44.1 candidate is decided; and the text-only image of
         # 0.1.44.1, until the encoder that joined the image on 2026-10-16 has earned its place.
-        rollback = {'strata-7695859aa13a', 'strata-296b59d2f73c'}
+        # Release candidates are staged before private machine profiles move; the
+        # controller-only publication must preserve the existing inference launch.
+        rollback = {'strata-7695859aa13a', 'strata-296b59d2f73c',
+                    'strata-vision-870aedd9e1eb', 'strata-sm75-870aedd9e1eb'}
         used = set()
         for name in DEFINITIONS:
             definition = read(machine.HOME / (name + '.json'))
