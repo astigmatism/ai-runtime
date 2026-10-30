@@ -333,8 +333,8 @@
       }
     },
     "strata-vision-870aedd9e1eb": {
-      "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
-      "tag": "local/strata:0.2.8-cuda13-runtime",
+      "image_id": "sha256:6d7874f9b112d073ab5a1a9c744e02403a5f41cde22a9efec7da0962fb42bf4c",
+      "tag": "local/strata:0.2.8-cuda13-runtime-r2",
       "revision": "870aedd9e1ebe1c91f94da93b59af17729f6c5c0",
       "release": "v0.2.8",
       "repository": "https://github.com/Niko1221/Strata",
@@ -391,7 +391,7 @@
         "image": "Mapped only on this engine, for the standing reason: the text-only tags run upstream's entry point and cannot be told, so a profile stating a rope on one of those engines is refused when it renders. This tag was rebuilt for this line on 2026-10-18 and its new id is pinned above; the image before it is kept on the box as local/strata:296b59d2f73c-vision-pre-rope, and a rollback to it re-pins this line and takes the rope fact with it."
       },
       "reasoning_close_retry": {
-        "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+        "image_id": "sha256:6d7874f9b112d073ab5a1a9c744e02403a5f41cde22a9efec7da0962fb42bf4c",
         "why": "Verified deployment adapter writes the upstream-supported JSON boolean. Absence and off clear stale settings."
       },
       "tool_call_recovery": {
@@ -450,8 +450,8 @@
       "architecture": "Official portable AVX2 CUDA13 release package, sm75/86/89/120, with a GPU vision reader. Vision remains disabled on the Daisy profiles. Engine and serving sources are unmodified."
     },
     "strata-sm75-870aedd9e1eb": {
-      "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
-      "tag": "local/strata:0.2.8-cuda13-runtime",
+      "image_id": "sha256:6d7874f9b112d073ab5a1a9c744e02403a5f41cde22a9efec7da0962fb42bf4c",
+      "tag": "local/strata:0.2.8-cuda13-runtime-r2",
       "revision": "870aedd9e1ebe1c91f94da93b59af17729f6c5c0",
       "release": "v0.2.8",
       "repository": "https://github.com/Niko1221/Strata",
@@ -507,7 +507,7 @@
         "image": "Mapped because this tag carries this house's entry point, which is the only thing that can write the block. A profile stating a preset on an image without it is refused when it renders rather than rendered into a variable nothing reads."
       },
       "reasoning_close_retry": {
-        "image_id": "sha256:a7957f8eb635a4e8114ac59bde0637d2c2ceac226ae44108891bfb3d75fd59ea",
+        "image_id": "sha256:6d7874f9b112d073ab5a1a9c744e02403a5f41cde22a9efec7da0962fb42bf4c",
         "why": "Verified deployment adapter writes the upstream-supported JSON boolean. Absence and off clear stale settings."
       },
       "tool_call_recovery": {

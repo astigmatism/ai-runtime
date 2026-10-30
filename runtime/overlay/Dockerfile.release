@@ -9,7 +9,6 @@ RUN test -n "$REVISION" && test -n "$REPOSITORY"
 LABEL org.opencontainers.image.revision=${REVISION}
 LABEL org.opencontainers.image.source=${REPOSITORY}
 LABEL io.service-portal.trial=strata
-USER root
 RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/strata
